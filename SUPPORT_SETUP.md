@@ -126,6 +126,18 @@ Chi phí khi app mở mà không thao tác gì (License đã Active):
 Realtime chỉ bật sau khi deploy route stream lên Gateway (`wrangler deploy` trong `cloudflare-worker/`);
 trước khi deploy, app chạy ở chế độ đọc theo yêu cầu và vẫn dùng đủ chức năng.
 
+### Vòng đời kết nối (số liệu đo trên production)
+
+- Firebase RTDB gửi `event: keep-alive` khoảng **30 giây** một lần (đo thực tế: 100 giây → 1 `put` + 3 `keep-alive`),
+  nên kết nối được giữ mở liên tục và **không cần nối lại định kỳ**.
+- Nếu luồng đứt: nối lại với backoff **5s → 10s → 20s → … tối đa 300s**. Luồng sống đủ lâu (≥ 30 giây) rồi mới
+  đứt thì coi là bình thường và nối lại sau **2 giây** (đồng thời reset backoff) — nhờ vậy upstream “flapping”
+  không tạo vòng lặp nối lại dày.
+- Mỗi thời điểm chỉ có **đúng một** kết nối tới Gateway; khi không còn cửa sổ nào nghe, app đóng luôn kết nối.
+- Kiểm tra thủ công phần này: `node tools/realtime-lifecycle-check.mjs` (chạy ~50 giây, không nằm trong `npm test`).
+- `cloudflare-worker/wrangler.jsonc` phải khớp cấu hình đang chạy trên dashboard (nhất là `GAS_URL`), nếu không
+  `wrangler deploy` sẽ ghi đè production bằng giá trị trong file — wrangler cảnh báo và dừng khi thấy lệch.
+
 ## Bảo mật và vận hành
 
 - Không đưa `GAS_SHARED_SECRET`, `TOKEN_SECRET`, Telegram bot token hoặc Firebase service-account vào source/EXE/Google Sheet; token bot chỉ nằm trong secret của Gateway/Worker. Token cũ từng bị hardcode trong `code.gs.txt`, `code.txt` và `set-telegram-webhook.js` nên phải thu hồi (BotFather → `/revoke`) rồi cấp token mới trước khi phát hành.

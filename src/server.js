@@ -243,17 +243,22 @@ function ensureSupportStream() {
   }
   const controller = new AbortController();
   supportStreamController = controller;
+  let openedAt = 0;
   support.watchMessages(
     messages => { lastSupportMessages = messages; broadcastSupport({ type: 'messages', messages }); },
-    { signal: controller.signal, onOpen: () => { supportStreamBackoff = 5000; setSupportRealtime(true); log('Đã nối luồng chat realtime tới Gateway.'); } },
-  ).then(result => finishSupportStream(controller, result)).catch(error => finishSupportStream(controller, { ok: false, reason: error.message }));
+    { signal: controller.signal, onOpen: () => { openedAt = Date.now(); setSupportRealtime(true); log('Đã nối luồng chat realtime tới Gateway.'); } },
+  ).then(result => finishSupportStream(controller, result, openedAt)).catch(error => finishSupportStream(controller, { ok: false, reason: error.message }, openedAt));
 }
-function finishSupportStream(controller, result) {
+// Kết thúc một kết nối: luồng sống đủ lâu (>= 30s) thì nối lại nhanh (2s); đóng sớm hoặc lỗi thì
+// backoff tăng dần 5s -> 10s -> 20s… tối đa 300s, tránh vòng lặp nối lại liên tục khi upstream flapping.
+const SUPPORT_STREAM_STABLE_MS = 30000;
+function finishSupportStream(controller, result, openedAt) {
   if (supportStreamController !== controller) return; // đã có luồng mới thay thế
   supportStreamController = null;
   setSupportRealtime(false);
-  const clean = !!(result && result.ok);
-  const delay = clean ? 2000 : (supportStreamBackoff = Math.min(Math.max(supportStreamBackoff * 2, 5000), 300000));
+  const stable = !!(result && result.ok) && openedAt > 0 && (Date.now() - openedAt) >= SUPPORT_STREAM_STABLE_MS;
+  const delay = stable ? 2000 : supportStreamBackoff;
+  supportStreamBackoff = stable ? 5000 : Math.min(supportStreamBackoff * 2, 300000);
   supportStreamRetryAt = Date.now() + delay;
   log(`Luồng chat dừng (${(result && result.reason) || 'không rõ'}) — thử lại sau ${Math.round(delay / 1000)}s.`);
   scheduleSupportStream();

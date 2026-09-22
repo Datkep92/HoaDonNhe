@@ -1,9 +1,18 @@
 {
+  // HoaDonNhe - License/Support Gateway (Cloudflare Worker).
+  // LƯU Ý: các giá trị dưới đây phải KHỚP với cấu hình đang chạy trên dashboard, nếu không
+  // `wrangler deploy` sẽ ghi đè production bằng giá trị trong file này. Lần đồng bộ gần nhất:
+  // bản phát hành v1.0.0 (GAS_URL lấy theo đúng giá trị đang chạy; logs/traces đang bật).
   "name": "hoadon-support-gateway",
   "main": "src/index.js",
   "compatibility_date": "2026-09-19",
+  "preview_urls": false,
+  "observability": {
+    "logs": { "enabled": true },
+    "traces": { "enabled": true }
+  },
   "vars": {
-    "GAS_URL": "https://script.google.com/macros/s/AKfycbwVRej5nII2JdE97jBPwFEGXKoSYADI0MaZ6jswcpS-ZgngNW7fiT__IYsaUiPnvrulmA/exec",
+    "GAS_URL": "https://script.google.com/macros/s/AKfycbx9hnceqeUpYMN1QbTsw2EKhwnEXnUM2n9GE95njYK45oQ4EHi6Os3mYjm9mTSeZW0A/exec",
     "FIREBASE_DATABASE_URL": "https://hddt-49af7-default-rtdb.firebaseio.com",
     "TELEGRAM_CHAT_ID": "-1004449774852"
   }

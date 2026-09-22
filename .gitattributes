@@ -1,0 +1,11 @@
+# File NSIS (packaging/installer.nsi) phải giữ BOM UTF-8 để makensis đọc đúng
+# tiếng Việt; khai báo text/eol chỉ để git không đụng tới BOM đó.
+*.nsi text eol=crlf
+*.nsh text eol=crlf
+
+# Tài nguyên nhị phân: không chuyển đổi.
+*.exe binary
+*.ico binary
+*.png binary
+*.jpg binary
+*.mp3 binary

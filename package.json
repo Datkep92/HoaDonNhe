@@ -1,6 +1,6 @@
 {
   "name": "hoadon-desktop",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "Ung dung nhe tai hoa don qua Chrome/Edge he thong",
   "author": "HoaDon Desktop",
   "private": true,
@@ -10,7 +10,11 @@
     "start": "node src/server.js",
     "test": "node --test --test-isolation=none tests/core.test.js tests/tct-api.test.js tests/secrets.test.js tests/pace.test.js tests/folders.test.js tests/period.test.js tests/excel.test.js tests/app-lock.test.js tests/support-license.test.js tests/support-trial.test.js",
     "test:browser": "node tests/browser-regression.js",
-    "build": "pkg . --compress GZip --targets node16-win-x64 --no-bytecode --public --public-packages \"*\" --output release/HoaDonNhe-v13.exe && node tools/hide-console.cjs release/HoaDonNhe-v13.exe",
+    "build": "node tools/build-app.cjs",
+    "installer": "node tools/build-installer.cjs",
+    "release:local": "npm run build && npm run installer",
+    "set-version": "node tools/set-version.cjs",
+    "icon": "node tools/make-icon.cjs",
     "hide-console": "node tools/hide-console.cjs",
     "smoke": "node src/server.js --smoke-test"
   },
@@ -18,7 +22,9 @@
     "jszip": "3.10.1",
     "chrome-remote-interface": "0.33.3"
   },
-  "devDependencies": { "pkg": "5.8.1" },
+  "devDependencies": {
+    "pkg": "5.8.1"
+  },
   "pkg": {
     "assets": [
       "src/index.html",

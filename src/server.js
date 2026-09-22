@@ -12,6 +12,8 @@ const XLSX = require('../resources/xlsx.cjs');
 const { ensureFolder } = require('./folders');
 const { SupportStore } = require('./support');
 const { AppLockStore } = require('./app-lock');
+const VERSION = require('./version');
+const { checkUpdate } = require('./update-check');
 
 const packed = !!process.pkg;
 const appDir = packed ? path.dirname(process.execPath) : path.resolve(__dirname, '..');
@@ -46,6 +48,9 @@ process.on('uncaughtException', error => {
 // (chưa có du_lieu/support-gateway.json — xem SUPPORT_SETUP.md mục 4). Bọc Promise.resolve để
 // không chết ở bước khởi động như bản v12.
 Promise.resolve(support.register()).catch(() => {});
+// Kiểm tra bản mới trên GitHub Releases (CHỈ ĐỌC, không tự cập nhật). Chạy nền ngay khi khởi động
+// và im lặng nếu lỗi mạng; UI đọc kết quả qua /api/update. Tắt bằng HOADON_NO_UPDATE_CHECK=1.
+if (!testServer && process.env.HOADON_NO_UPDATE_CHECK !== '1') checkUpdate().catch(() => {});
 let lastUiPoll = 0;
 let accounts = loadJson(accountsFile, { accounts: [], selected: '' });
 let engine = null;
@@ -333,6 +338,9 @@ async function endpoint(req, res, url) {
     if (req.method === 'GET' && url.pathname === '/api/support/status') return reply(res, 200, { ok: true, value: await support.status() });
     if (req.method === 'GET' && url.pathname === '/api/support/notice') return reply(res, 200, { ok: true, value: await support.notice() });
     if (req.method === 'GET' && url.pathname === '/api/app-lock/status') return reply(res, 200, { ok: true, value: appLock.status() });
+  // Version hiện tại + kiểm tra bản mới (chỉ đọc GitHub Releases, không tự ghi đè EXE).
+  if (url.pathname === '/api/version') return reply(res, 200, { ok: true, value: { name: VERSION.name, version: VERSION.version } });
+  if (url.pathname === '/api/update') return reply(res, 200, { ok: true, value: await checkUpdate(url.searchParams.get('refresh') === '1') });
     if (req.method === 'POST' && !String(req.headers['content-type'] || '').startsWith('application/json')) throw new Error('Yêu cầu không hợp lệ.');
     if (req.method === 'POST' && url.pathname === '/api/app-lock/set-pin') { const input = await readBody(req); return reply(res, 200, { ok: true, value: appLock.setPin(input.pin) }); }
     if (req.method === 'POST' && url.pathname === '/api/app-lock/unlock') { const input = await readBody(req); return reply(res, 200, { ok: true, value: appLock.verify(input.pin) }); }

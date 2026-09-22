@@ -68,16 +68,18 @@ Cookie và JWT vẫn có thể hết hạn theo cổng thuế. Khi đó chọn M
 - Request Node tới cổng thuế (`src/tct-api.js`) phải mang bộ header giống Chrome: `User-Agent` + `sec-ch-ua`, `sec-ch-ua-mobile`, `sec-ch-ua-platform` + `sec-fetch-site/mode/dest` + `Origin`/`Referer` + `request-id`. Đo ngày 18/09/2026: POST thiếu bộ này bị WAF trả HTTP 403 `Hệ thống phát hiện hành vi không hợp lệ. Yêu cầu đã bị chặn.`; chỉ thêm `User-Agent` hoặc chỉ thêm client hints vẫn bị chặn, phải đủ cả bộ mới tới được ứng dụng.
 - `src/pace.js` giữ **nhịp** giữa hai request tới cổng thuế (mặc định 900ms + jitter 300ms, đổi bằng `HOADON_NHIP_MS` / `HOADON_NHIP_JITTER_MS`) và **tự nghỉ** khi cổng trả 429 hoặc 403: 429 nghỉ theo `Retry-After` của cổng, không có thì tăng dần 20s → 40s → 80s… (tối đa 10 phút); 403 đúng thông báo chặn thì nghỉ 10 phút. Cả đường tải qua Node (`src/tct-api.js`) và qua trang cổng thuế (`src/browser.js`) đều dùng chung nhịp này. Cổng thuế trả 429 là **quá nhiều yêu cầu** — VNIT không bị vì nó cũng có "nhịp" và tự nghỉ (`NHIP`, `PHUT_NGHI_MIN/MAX`, chế độ an toàn); bản này trước đây gọi tra cứu/tải liên tiếp không chờ nên bị chặn.
 - Không lấy hay thay đổi cookie trong profile Chrome/Edge cá nhân của người dùng.
+- Icon/version: **file Setup** mang icon + thông tin version; khi cài, installer đặt thêm `HoaDonNhe.ico` cạnh app và trỏ shortcut Desktop/Start Menu + mục gỡ cài đặt vào icon đó. Không gán icon trực tiếp vào app EXE vì `rcedit` ghi lại PE resource làm hỏng snapshot nhúng của `pkg` (EXE báo `Pkg: Error reading from file`).
 
 ## Build
 
 ```powershell
 npm install
 npm test
-npm run test:browser
 npm run smoke
-npm run build
-node tests/browser-regression.js release/HoaDonNhe-v6.exe
+npm run build          # -> release/HoaDonNhe-v<version>.exe  (payload, đã ẩn console)
+npm run installer      # -> release/HoaDonNhe-Setup-v<version>.exe (+ .sha256, RELEASE_NOTES.md)
+npm run test:browser   # cần Chrome thật: kiểm tra CSP/đăng nhập/CAPTCHA
+node tests/browser-regression.js release/HoaDonNhe-v1.0.0.exe
 ```
 
 `npm run smoke` kiểm tra server và việc tìm Chrome/Edge. `npm test` kiểm tra phân trang, XML ZIP, resume, chống trùng, tạm dừng và cách ly tài khoản. Cần đăng nhập thật để kiểm chứng API GDT cho từng MST.
@@ -85,3 +87,42 @@ node tests/browser-regression.js release/HoaDonNhe-v6.exe
 Kiểm thử trình duyệt dùng Chrome thật và profile tạm riêng để kiểm tra CSP, API localhost, form đăng nhập, CAPTCHA, báo lỗi và xóa mật khẩu. Phần xác thực dùng dữ liệu mô phỏng, không dùng tài khoản thuế thật. Bản v3 sửa CSP thành `connect-src 'self'` để giao diện gọi đúng server nội bộ, đồng thời giữ xác thực phiên localhost.
 
 Bản v6 đóng popup chào mừng của TCT trước khi bấm Đăng nhập, đợi tối đa 60 giây để TCT tải nội dung, và có thêm nút Ẩn/Hiện Chrome ngay bên cạnh danh sách MST. Nút Ẩn chỉ thu nhỏ cửa sổ, không đóng Chrome nên cookie và phiên vẫn giữ nguyên.
+
+## Phát hành (Release)
+
+Chỉ phát hành **một file duy nhất**: `HoaDonNhe-Setup-vX.Y.Z.exe`. Người dùng tải đúng file đó, chạy và chọn một trong hai chế độ:
+
+- **CÀI ĐẶT VÀO WINDOWS** — cài vào `%LOCALAPPDATA%\Programs\HoaDonNhe` (không cần Administrator), tạo shortcut Desktop + Start Menu, có mục gỡ cài đặt trong Windows, có tuỳ chọn chạy ngay sau khi cài.
+- **PORTABLE** — chỉ giải nén `HoaDonNhe.exe` vào thư mục người dùng chọn để chạy trực tiếp; không ghi vào Windows, không có gỡ cài đặt.
+
+Cả hai chế độ lưu dữ liệu vào thư mục `du_lieu` **nằm cạnh `HoaDonNhe.exe`**, nên bản Portable mang cả thư mục sang máy khác là dùng được. Cả hai đều KHÔNG cần Node.js/Python/Chromium/dependency ngoài: app dùng **Google Chrome hoặc Microsoft Edge** có sẵn trên máy (Edge có sẵn trong Windows 10/11); installer kiểm tra và nhắc nếu máy thiếu cả hai. Bản build hiện tại là **Windows 64-bit (x64)** (pkg target `node16-win-x64`).
+
+Chạy im lặng (tuỳ chọn, cho triển khai script):
+
+```powershell
+HoaDonNhe-Setup-vX.Y.Z.exe /S /PORTABLE /D="C:\ThuMuc\HoaDonNhe"   # giải nén, không shortcut/gỡ cài đặt
+```
+
+### Phát hành bằng GitHub Actions
+
+Workflow `.github/workflows/release.yml` chạy khi push tag dạng `vX.Y.Z` trên runner `windows-latest`:
+
+```powershell
+node tools/set-version.cjs 1.0.1   # (tuỳ chọn) đồng bộ version ở máy, nên commit cùng
+npm test                           # kiểm tra trước khi tag
+git add -A
+git commit -m "release v1.0.1"
+git tag v1.0.1
+git push origin main
+git push origin v1.0.1
+```
+
+Workflow tự làm: checkout → cài dependency → **đồng bộ version theo tag** → chạy test → build app EXE (`npm run build`) → cài NSIS → đóng gói Setup (`npm run installer`, nhúng payload + tính SHA-256) → tạo GitHub Release và upload `HoaDonNhe-Setup-vX.Y.Z.exe` kèm file `.sha256`. Không cần build tay trên máy cá nhân.
+
+### Version
+
+`src/version.js` là nguồn version trong repo; `node tools/set-version.cjs X.Y.Z` đồng bộ nó với `package.json` và `package-lock.json`. Workflow tự chạy lệnh này theo tag trước khi build, nên app, file Setup và tên file Release luôn khớp tag.
+
+### Kiểm tra bản mới
+
+App đọc bản phát hành mới nhất trên GitHub Releases (endpoint `/api/update`, chỉ đọc) và hiện nhãn **Có bản mới vX.Y.Z** ở cột trái nếu có; bấm vào sẽ mở trang Release. **Không có updater tự động ghi đè EXE đang chạy** — người dùng tự tải bản mới. Tắt kiểm tra bằng biến môi trường `HOADON_NO_UPDATE_CHECK=1`.

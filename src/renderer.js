@@ -407,3 +407,30 @@ function applyPeriod() {
 ['period-mode', 'period-year', 'period-month', 'period-quarter'].forEach(id => { $(id).onchange = applyPeriod; });
 syncPeriodOptions();
 refresh(); setInterval(refresh, 1500);
+
+// ---- Version đang chạy + thông báo bản mới ----
+// Chỉ ĐỌC thông tin bản phát hành mới nhất từ server (server gọi GitHub Releases).
+// Không tự tải/ghi đè EXE đang chạy — người dùng tự tải bản mới từ GitHub.
+async function initVersion() {
+  try {
+    const response = await fetch('/api/version');
+    const data = await response.json();
+    const el = document.getElementById('app-version');
+    if (data && data.ok && data.value && el) el.textContent = `${data.value.name} v${data.value.version}`;
+  } catch { /* không có version cũng không sao */ }
+}
+async function initUpdateCheck() {
+  try {
+    const response = await fetch('/api/update', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    const data = await response.json();
+    const value = data && data.value;
+    const badge = document.getElementById('update-available');
+    if (!badge || !value || !value.updateAvailable) return;
+    badge.textContent = `Có bản mới v${value.latest}`;
+    badge.title = value.url || '';
+    badge.hidden = false;
+    badge.onclick = () => { if (value.url) window.open(value.url, '_blank', 'noopener'); };
+  } catch { /* kiểm tra bản mới là tuỳ chọn, lỗi mạng bỏ qua */ }
+}
+initVersion();
+initUpdateCheck();

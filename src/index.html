@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'"><title>HoaDon Desktop</title><link rel="stylesheet" href="style.css"><link rel="stylesheet" href="login.css"></head>
+<body><aside><div class="brand">H<span>Đ</span></div><h2>HoaDon<span>NHẸ / SYSTEM BROWSER</span></h2>
+  <label class="srch"><span class="srch-icon">⌕</span><input id="mst-search" type="search" placeholder="Tìm theo tên hoặc MST…" autocomplete="off" spellcheck="false" aria-label="Tìm MST"></label>
+  <div class="side-caption" id="mst-count">Danh sách MST</div>
+  <div id="mst-items" class="mst-items" role="list" aria-label="Danh sách MST"></div>
+  <div class="side-actions"><button id="add-mst" class="primary">＋ Thêm MST</button><button id="mst-login">Đăng nhập</button></div>
+  <div class="side-license"><strong id="side-license-state">Trial</strong></div>
+  <div class="side-bottom"><span class="dot"></span> Mỗi MST một phiên Chrome riêng<br><small>Không kèm Chromium</small></div></aside>
+<main><header><div><div class="eyebrow">KHÔNG GIAN LÀM VIỆC</div><h1>Tải hóa đơn điện tử <span id="main-license-badge" class="license-badge">Trial</span></h1><p>Chọn một MST ở cột bên trái. Còn phiên thì vào thẳng, hết phiên thì đăng nhập lại.</p></div></header>
+<section class="account"><div><span class="dot" id="auth-dot"></span><strong id="account">Chưa chọn MST</strong><span id="account-hint">Chọn một MST trong danh sách bên trái.</span></div><div class="account-actions"><button id="settings-open" class="link" type="button">Cài đặt</button><button id="browser-toggle" class="link" disabled>Hiện Chrome đăng nhập</button><button id="account-login" class="link">Đăng nhập MST này</button></div></section>
+<dialog id="login-dialog" aria-labelledby="login-title">
+  <div class="login-heading"><div><h2 id="login-title">Đăng nhập cổng thuế</h2><p>Lấy CAPTCHA và đăng nhập trực tiếp như VNIT; không cần mở Chrome.</p></div><button id="login-close" type="button" aria-label="Đóng form đăng nhập">×</button></div>
+  <form id="login-form" autocomplete="off">
+    <label>MST doanh nghiệp<input id="login-mst" inputmode="numeric" placeholder="MST cần tải hóa đơn (chỉ gồm chữ số)" required></label>
+    <div class="login-actions"><button id="login-prepare" class="primary" type="button">Lấy CAPTCHA</button><button id="login-show-page" type="button">Mở Chrome dự phòng</button></div>
+    <div id="login-credentials" hidden>
+      <div class="login-fields"><label>Tên đăng nhập<input id="login-user" placeholder="Tên đăng nhập / MST" autocomplete="username" required maxlength="120"></label></div>
+      <label>Mật khẩu<input id="login-password" type="password" autocomplete="current-password" placeholder="Mật khẩu cổng thuế" maxlength="200"></label>
+      <label class="remember"><input type="checkbox" id="login-remember" checked> Nhớ mật khẩu cho MST này <span class="muted">(để lần sau chỉ cần gõ mã CAPTCHA)</span></label>
+      <div class="captcha-row"><div class="captcha-display"><img id="login-captcha-image" alt="Ảnh CAPTCHA từ cổng thuế" hidden><span id="login-captcha-placeholder">Đang lấy CAPTCHA…</span></div><button id="login-refresh" type="button" disabled>Đổi CAPTCHA</button></div>
+      <label>Mã xác nhận<input id="login-captcha" placeholder="Nhập mã trong ảnh" autocomplete="off" spellcheck="false" required maxlength="10"></label>
+      <div class="login-actions"><button id="login-submit" class="primary" type="submit" disabled>Đăng nhập</button></div>
+    </div>
+    <p id="login-status" role="status">Nhập MST, rồi bấm Lấy CAPTCHA.</p><p id="login-error" role="alert" hidden></p>
+    <p class="hint">Phiên đăng nhập (token + cookie) được lưu riêng theo MST trên máy này. Mật khẩu đã nhớ được mã hoá theo tài khoản Windows hiện tại. <button id="login-forget" class="link" type="button" hidden>Xoá mật khẩu đã lưu</button></p>
+  </form>
+</dialog>
+<dialog id="settings-dialog" class="settings-dialog" aria-labelledby="settings-title">
+  <div class="login-heading"><div><h2 id="settings-title">Cài đặt</h2><p>Bản quyền, đăng ký và khóa giao diện cá nhân.</p></div><button id="settings-close" type="button" aria-label="Đóng cài đặt">×</button></div>
+  <div class="settings-tabs" role="tablist" aria-label="Cài đặt"><button id="settings-tab-license" class="active" type="button">Bản quyền & Đăng ký</button><button id="settings-tab-lock" type="button">Khóa giao diện</button></div>
+  <section id="settings-license" class="settings-pane">
+    <div class="license-summary"><div><span>Gói hiện tại</span><strong id="license-current-package">Trial</strong></div><div><span>Trạng thái</span><strong id="license-current-status">Chưa kích hoạt</strong></div><div><span>Ngày hết hạn</span><strong id="license-current-expiry">—</strong></div><div><span>Tên key</span><strong id="license-current-key">—</strong></div><div><span>Khách hàng</span><strong id="license-current-name">—</strong></div><div><span>SĐT</span><strong id="license-current-phone">—</strong></div><div class="wide-info"><span>Hardware ID</span><code id="license-hardware-id">—</code></div></div>
+    <form id="settings-license-form" class="settings-form"><label>License Key<input id="settings-license-key" maxlength="160" autocomplete="off" placeholder="Nhập License Key"></label><button class="primary" type="submit">Kích hoạt</button></form>
+    <p id="settings-license-message" class="settings-message" role="status"></p>
+    <button id="open-plans" class="primary wide" type="button">Đăng ký / xem gói</button>
+  </section>
+  <section id="settings-lock" class="settings-pane" hidden>
+    <div class="lock-status"><strong id="lock-enabled-label">Chưa thiết lập mã PIN</strong><span>Mã PIN chỉ lưu trên máy này, không gửi lên Google Sheet hay server.</span></div>
+    <form id="pin-form" class="settings-form"><label>Thiết lập mã PIN 4 số<input id="pin-new" type="password" inputmode="numeric" maxlength="4" pattern="[0-9]{4}" autocomplete="new-password" placeholder="••••"></label><button class="primary" type="submit">Lưu PIN</button></form>
+    <form id="pin-reset-form" class="settings-form"><label>Quên PIN: nhập License Key đã kích hoạt<input id="pin-reset-license" maxlength="160" autocomplete="off" placeholder="License Key ban đầu"></label><label>PIN mới<input id="pin-reset-new" type="password" inputmode="numeric" maxlength="4" pattern="[0-9]{4}" autocomplete="new-password" placeholder="••••"></label><button type="submit">Đặt lại PIN</button></form>
+    <p id="pin-message" class="settings-message" role="status"></p>
+    <p class="hint">Mã khôi phục là <b>License Key đã kích hoạt</b> trên máy này. Quên PIN: mở màn hình khoá → “Quên mã PIN? · Dùng mã khôi phục”, hoặc nhắn Zalo <a href="https://zalo.me/0395995035" target="_blank" rel="noopener noreferrer">039.599.5035</a> để được cấp lại.</p>
+  </section>
+</dialog>
+<dialog id="payment-dialog" class="payment-dialog" aria-labelledby="payment-title">
+  <div class="login-heading"><div><h2 id="payment-title">Đăng ký gói</h2><p id="payment-subtitle">Thanh toán mẫu để test giao diện.</p></div><button id="payment-close" type="button" aria-label="Đóng thanh toán">×</button></div>
+  <div class="payment-plans" id="payment-plans" role="radiogroup" aria-label="Chọn gói đăng ký">
+    <article class="plan-card active" data-plan="Plus" data-price="299.000đ"><h3>Plus</h3><strong>299.000đ</strong><p>Cho nhu cầu tải hóa đơn cơ bản.</p><button type="button" role="radio" aria-checked="true">Chọn gói này</button></article>
+    <article class="plan-card" data-plan="Pro" data-price="599.000đ"><h3>Pro</h3><strong>599.000đ</strong><p>Nhiều khách hàng hơn.</p><button type="button" role="radio" aria-checked="false">Chọn gói này</button></article>
+    <article class="plan-card" data-plan="Doanh nghiệp" data-price="1.499.000đ"><h3>Doanh nghiệp</h3><strong>1.499.000đ</strong><p>Cho đội vận hành doanh nghiệp.</p><button type="button" role="radio" aria-checked="false">Chọn gói này</button></article>
+  </div>
+  <div class="payment-body"><div class="qr-sample" aria-label="Mã QR thanh toán mẫu"></div><p>Chụp màn hình chuyển khoản gửi Zalo <strong>039.599.5035</strong> để nhận License Key.</p></div>
+  <div class="payment-info-heading"><strong>Thông tin đăng ký</strong><span>Điền Họ tên và SĐT để bộ phận hỗ trợ liên hệ và cấp key cho đúng máy này.</span></div>
+  <form id="payment-info-form" class="payment-form">
+    <label>Họ tên<input id="payment-name" maxlength="80" autocomplete="name" placeholder="VD: Nguyễn Văn A"></label>
+    <label>Số điện thoại<input id="payment-phone" maxlength="40" inputmode="tel" autocomplete="tel" placeholder="VD: 0912345678"></label>
+    <button class="primary" type="submit">Gửi thông tin</button>
+  </form>
+  <p id="payment-message" class="settings-message payment-note" role="status"></p>
+</dialog>
+<dialog id="mst-dialog" aria-labelledby="mst-title">
+  <div class="login-heading"><div><h2 id="mst-title">Thêm MST</h2><p id="mst-subtitle">Lưu khách hàng vào danh sách bên trái. Mỗi MST dùng một phiên Chrome riêng.</p></div><button id="mst-close" type="button" aria-label="Đóng form MST">×</button></div>
+  <form id="mst-form" autocomplete="off">
+    <label>Tên khách hàng<input id="mst-name" placeholder="VD: Công ty TNHH ABC" maxlength="120"></label>
+    <label>Mã số thuế<input id="mst-code" inputmode="numeric" placeholder="Chỉ gồm chữ số" required></label>
+    <label>Mật khẩu cổng thuế<input id="mst-password" type="password" placeholder="Để lưu sẵn cho lần sau" maxlength="200"></label>
+    <label class="remember"><input type="checkbox" id="mst-remember" checked> Lưu mật khẩu cho khách này <span class="muted">(mã hoá theo tài khoản Windows hiện tại)</span></label>
+    <div class="login-actions"><button id="mst-submit" class="primary" type="submit">Lưu vào danh sách</button><button id="mst-cancel" type="button">Huỷ</button></div>
+    <p id="mst-error" role="alert" hidden></p>
+  </form>
+</dialog>
+<div class="workspace"><section class="card filters"><h3>Điều kiện tra cứu</h3><label>Loại tra cứu<select id="direction"><option value="purchase">Hóa đơn mua vào</option><option value="sold">Hóa đơn bán ra</option></select></label><label>Nhóm hóa đơn<select id="family"><option value="query">Hóa đơn điện tử</option><option value="sco-query">Hóa đơn máy tính tiền</option><option value="both" selected>Cả hai nhóm</option></select></label><div class="date-grid"><label>Từ ngày<input id="from" type="date"></label><label>Đến ngày<input id="to" type="date"></label></div><div class="period-row"><span class="period-label">Chọn nhanh</span><select id="period-mode" title="Kiểu chọn: theo tháng, theo quý hoặc cả năm"><option value="month">Tháng</option><option value="quarter">Quý</option><option value="year">Năm</option></select><select id="period-year" title="Năm"></select><select id="period-month" title="Tháng"></select><select id="period-quarter" title="Quý" hidden></select></div><label>Trạng thái hóa đơn<select id="status"><option value="">Tất cả</option><option value="1">Hóa đơn mới</option><option value="2">Hóa đơn thay thế</option><option value="3">Hóa đơn điều chỉnh</option><option value="4">Đã bị thay thế</option><option value="5">Đã bị điều chỉnh</option><option value="6">Đã bị hủy</option></select></label><h3 class="section-title">Định dạng tải</h3><div class="formats"><label><input type="checkbox" value="xml" checked> XML</label><label><input type="checkbox" value="zip"> ZIP</label><label><input type="checkbox" value="xlsx" checked> Excel</label><label><input type="checkbox" value="html"> HTML</label><label><input type="checkbox" value="pdf"> PDF</label></div><p class="hint">Excel là bảng tổng hợp. HTML/PDF là bản hiển thị dựng từ dữ liệu API.</p><label>Thư mục lưu (dùng chung cho mọi MST)<div class="folder"><input id="output" placeholder="Chưa chọn — bấm Chọn thư mục…" autocomplete="off" spellcheck="false"><button id="choose" type="button" title="Chọn thư mục trong máy">Chọn thư mục…</button></div></label><p class="hint">Một thư mục chung cho mọi MST; file nằm trong <b>&lt;thư mục này&gt;\MST-&lt;số MST&gt;\Mua_vao|Ban_ra\xml|pdf|html|zip</b>. Có thể gõ/dán đường dẫn đầy đủ rồi bấm ra ngoài ô.</p><button id="search" class="primary wide">Tra cứu hóa đơn</button></section>
+<section class="results"><div class="stats"><div class="card"><span>TÌM THẤY</span><strong id="total">0</strong></div><div class="card"><span>ĐÃ HOÀN TẤT</span><strong id="done">0</strong></div><div class="card"><span>CẦN THỬ LẠI</span><strong id="failed">0</strong></div></div><section class="card table-card"><div class="table-head"><h3>Danh sách hóa đơn</h3><span id="state" class="badge">Sẵn sàng</span></div><div class="table-scroll"><table><thead><tr><th class="stt">STT</th><th>Số / Ký hiệu</th><th>Người bán</th><th>Tổng tiền</th><th>Kết quả</th></tr></thead><tbody id="rows"></tbody></table><div id="empty"><div class="empty-icon">▤</div><h3>Bắt đầu một lượt tra cứu</h3><p>Đăng nhập, chọn khoảng ngày và thư mục lưu.<br>Kết quả hóa đơn sẽ xuất hiện tại đây.</p></div></div><p id="limit" class="hint"></p></section><section class="card progress-card"><div class="progress-heading"><strong id="message">Đăng nhập để bắt đầu.</strong><span id="percentage">0%</span></div><progress id="progress" value="0" max="100"></progress><div class="actions"><button id="export-excel" class="secondary" disabled>Xuất Excel theo mẫu MISA</button><button id="download" class="primary" disabled>Tải hóa đơn</button><button id="pause" class="secondary" disabled>Tạm dừng</button><button id="resume" class="secondary" disabled>Tải tiếp / Thử lại lỗi</button><button id="open" class="link">Mở thư mục ↗</button></div><p class="hint" id="stats"></p></section></section></div><div id="notice" role="alert" hidden></div><footer>XML được lấy từ cổng thuế · Tiến độ được lưu trên máy · Không cần extension</footer></main>
+<button id="app-lock-button" class="lock-floating" type="button" title="Khóa giao diện">🔒</button>
+<div id="lock-screen" class="lock-screen" hidden>
+  <div class="unlock-card">
+    <form id="unlock-form"><h2>Ứng dụng đã khóa</h2><p>Nhập mã PIN 4 số để tiếp tục.</p><input id="unlock-pin" type="password" inputmode="numeric" maxlength="4" pattern="[0-9]{4}" autocomplete="current-password" placeholder="••••"><button class="primary" type="submit">Mở khóa</button><small id="unlock-error" role="alert"></small></form>
+    <details class="unlock-recovery">
+      <summary>Quên mã PIN? · Dùng mã khôi phục</summary>
+      <form id="unlock-recovery-form">
+        <p>Mã khôi phục là <b>License Key đã kích hoạt</b> trên máy này. Không còn key thì nhắn Zalo để được cấp lại.</p>
+        <label>Mã khôi phục (License Key)<input id="unlock-recovery-key" maxlength="160" autocomplete="off" placeholder="XXXX-XXXX-XXXX"></label>
+        <label>PIN mới (4 số)<input id="unlock-recovery-pin" type="password" inputmode="numeric" maxlength="4" pattern="[0-9]{4}" autocomplete="new-password" placeholder="••••"></label>
+        <button class="primary" type="submit">Đặt lại PIN và mở khoá</button>
+        <a class="link" href="https://zalo.me/0395995035" target="_blank" rel="noopener noreferrer">Liên hệ hỗ trợ để cấp lại mã · Zalo 039.599.5035</a>
+        <small id="unlock-recovery-error" role="alert"></small>
+      </form>
+    </details>
+    <small class="unlock-hardware">Hardware ID gửi cho hỗ trợ: <code id="unlock-hardware-id">—</code></small>
+  </div>
+</div>
+<div id="license-lock" class="lock-screen" hidden>
+  <div class="unlock-card"><h2>Bản quyền đã bị khóa</h2><p id="license-lock-text">Thiết bị này đã bị quản trị viên khóa. Vui lòng liên hệ hỗ trợ để mở lại.</p><button id="license-lock-recheck" class="primary" type="button">Kiểm tra lại</button><small id="license-lock-note">Chỉ quản trị viên mở lại được · Zalo 039.599.5035</small></div>
+</div>
+<div id="license-expired" class="lock-screen" hidden>
+  <div class="unlock-card">
+    <h2 id="license-expired-title">Trial đã hết hạn</h2>
+    <p id="license-expired-text">Gửi thông tin để được cấp License Key, hoặc nhập key nếu bạn đã có.</p>
+    <p id="license-expired-meta">Gói — · hạn —</p>
+    <button id="license-expired-buy" class="primary" type="button">Mua bản quyền</button>
+    <button id="license-expired-key" class="link" type="button">Nhập License Key</button>
+    <small>Hỗ trợ · Zalo 039.599.5035</small>
+  </div>
+</div>
+<section class="support-widget" aria-label="Hỗ trợ khách hàng">
+  <button id="support-toggle" class="support-toggle" type="button" aria-expanded="false" aria-controls="support-panel">💬 Hỗ trợ<span id="support-badge" class="support-badge" hidden aria-hidden="true"></span></button>
+  <div id="support-panel" class="support-panel" hidden>
+    <header class="support-header"><div><strong>Hỗ trợ HoaDonNhẹ</strong><small id="support-mode">Chế độ local — sẵn sàng kết nối Gateway</small></div><button id="support-close" type="button" aria-label="Đóng hỗ trợ">×</button></header>
+    <div class="support-context"><span id="support-room"></span><span id="support-license"></span></div>
+    <div id="support-messages" class="support-messages" aria-live="polite"></div>
+    <form id="support-form" class="support-compose"><input id="support-input" maxlength="2000" autocomplete="off" placeholder="Nhập tin nhắn hỗ trợ…"><button id="support-send" class="primary" type="submit">Gửi</button></form>
+    <details class="support-license"><summary>Nhập License Key</summary><form id="support-license-form"><input id="support-key" maxlength="160" autocomplete="off" placeholder="XXXX-XXXX-XXXX"><button type="submit">Kích hoạt</button></form></details>
+    <p id="support-error" class="support-error" role="status"></p>
+  </div>
+</section>
+<script src="period.js"></script><script src="renderer.js"></script><script src="vendor/sound.js"></script><script src="chat-widget.js"></script><script src="app-settings.js"></script></body></html>

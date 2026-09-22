@@ -1,0 +1,40 @@
+{
+  "name": "hoadon-desktop",
+  "version": "0.1.0",
+  "description": "Ung dung nhe tai hoa don qua Chrome/Edge he thong",
+  "author": "HoaDon Desktop",
+  "private": true,
+  "main": "src/server.js",
+  "bin": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "node --test --test-isolation=none tests/core.test.js tests/tct-api.test.js tests/secrets.test.js tests/pace.test.js tests/folders.test.js tests/period.test.js tests/excel.test.js tests/app-lock.test.js tests/support-license.test.js tests/support-trial.test.js",
+    "test:browser": "node tests/browser-regression.js",
+    "build": "pkg . --compress GZip --targets node16-win-x64 --no-bytecode --public --public-packages \"*\" --output release/HoaDonNhe-v13.exe && node tools/hide-console.cjs release/HoaDonNhe-v13.exe",
+    "hide-console": "node tools/hide-console.cjs",
+    "smoke": "node src/server.js --smoke-test"
+  },
+  "dependencies": {
+    "jszip": "3.10.1",
+    "chrome-remote-interface": "0.33.3"
+  },
+  "devDependencies": { "pkg": "5.8.1" },
+  "pkg": {
+    "assets": [
+      "src/index.html",
+      "src/style.css",
+      "src/login.css",
+      "src/tax-login.js",
+      "src/renderer.js",
+      "src/chat-widget.js",
+      "src/app-settings.js",
+      "src/app-lock.js",
+      "src/support.js",
+      "src/period.js",
+      "src/template/*.jpg",
+      "src/template/*.mp3",
+      "src/vendor/*.js",
+      "resources/xlsx.cjs"
+    ]
+  }
+}

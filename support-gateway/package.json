@@ -1,0 +1,9 @@
+{
+  "name": "hoadon-support-gateway",
+  "version": "0.1.0",
+  "private": true,
+  "description": "License gateway for HoaDonNhẹ. Deploy separately from the desktop app.",
+  "main": "server.js",
+  "scripts": { "start": "node server.js", "check": "node --check server.js", "telegram:webhook": "node set-telegram-webhook.js" },
+  "engines": { "node": ">=18" }
+}

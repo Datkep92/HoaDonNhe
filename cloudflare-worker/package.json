@@ -1,0 +1,5 @@
+{
+  "name": "hoadon-support-gateway-worker",
+  "private": true,
+  "type": "module"
+}

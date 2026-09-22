@@ -1,0 +1,10 @@
+{
+  "name": "hoadon-support-gateway",
+  "main": "src/index.js",
+  "compatibility_date": "2026-09-19",
+  "vars": {
+    "GAS_URL": "https://script.google.com/macros/s/AKfycbwVRej5nII2JdE97jBPwFEGXKoSYADI0MaZ6jswcpS-ZgngNW7fiT__IYsaUiPnvrulmA/exec",
+    "FIREBASE_DATABASE_URL": "https://hddt-49af7-default-rtdb.firebaseio.com",
+    "TELEGRAM_CHAT_ID": "-1004449774852"
+  }
+}

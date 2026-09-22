@@ -1,0 +1,247 @@
+const { test } = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const JSZip = require('jszip');
+const { Engine, dates, safeName, invoiceHtml } = require('../src/core');
+const account = { key: '123|user', mst: '0123456789', label: 'user' };
+const params = { from: '2026-01-01', to: '2026-01-31', direction: 'sold', family: 'query', formats: ['xml'], status: '' };
+function setup(t, request) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hoadon-test-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const options = { store: path.join(dir, 'job.json'), identity: async () => account, request, emit: () => {}, pdf: async () => Buffer.from('%PDF'), excel: async () => Buffer.from('PK') };
+  return { dir, options, engine: new Engine(options) };
+}
+const invoice = n => ({ shdon: String(n), nbmst: '0123456789', khhdon: 'C26TAA', khmshdon: '1', tthai: 1 });
+test('calendar month split handles leap day and invalid dates', () => {
+  assert.deepEqual(dates('2024-02-28', '2024-03-02'), [['2024-02-28', '2024-02-29'], ['2024-03-01', '2024-03-02']]);
+  assert.throws(() => dates('2026-02-29', '2026-03-01'));
+  assert.throws(() => dates('2026-03-02', '2026-03-01'));
+});
+test('file names and HTML cannot introduce paths or active content', () => {
+  assert(!/[<>:"/\\|?*]/.test(safeName('../../x:y')));
+  assert.equal(safeName('CON'), '_CON');
+  const html = invoiceHtml({ shdon: '<script>alert(1)</script>' }, { hdhhdvu: [{ ten: '<img src=x onerror=alert(1)>' }] });
+  assert(!html.includes('<script>')); assert(!html.includes('<img'));
+  assert(html.includes('&lt;script&gt;alert(1)'), 'nội dung độc hại phải bị escape chứ không bị cắt');
+});
+test('file HTML dựng giống trang hóa đơn của cổng thuế (bản chuẩn, không phải bản tự chế)', () => {
+  const inv = { shdon: '123', khhdon: 'C26TAA', khmshdon: '1', nbmst: '0100100101', nbten: 'CONG TY A', tdlap: '2026-04-29', tgtttbso: 1100000 };
+  const detail = {
+    tdlap: '2026-04-29T10:00:00', hdon: '01', nbten: 'CONG TY A', nbmst: '0100100101', nbdchi: 'Ha Noi',
+    nmten: 'CONG TY B', nmmst: '4500677693', nmdchi: 'HN', khmshdon: '1', khhdon: 'C26TAA', shdon: '123',
+    mhdon: 'MCCQT-TEST-1', tgtcthue: 1000000, tgtthue: 100000, tgtttbso: 1100000, tgtttbchu: 'Một triệu đồng',
+    qrcode: 'TEST|0100100101|C26TAA|123|', htttoan: 2,
+    hdhhdvu: [{ ten: 'Hàng hóa A', dvtinh: 'cái', sluong: 2, dgia: 500000, thtien: 1000000, ltsuat: '10%', tchat: '1' }],
+    thttltsuat: [{ tsuat: '10%', thtien: 1000000, tthue: 100000 }],
+    nbcks: JSON.stringify({ SigningTime: '2026-04-29T10:05:00', Subject: 'CN=CONG TY A, O=Ha Noi' })
+  };
+  const html = invoiceHtml(inv, detail);
+  assert(html.includes('class="main-page"'), 'thiếu khung trang hóa đơn như trang thuế');
+  assert(html.includes('Times New Roman'), 'phải dùng font Times New Roman như trang thuế');
+  assert(html.includes('@page{size:A4'), 'phải khổ A4 khi in');
+  assert(html.includes('class="res-tb"'), 'thiếu bảng hàng hóa kiểu trang thuế');
+  assert(html.includes('data:image/jpeg;base64,'), 'ảnh nền/dấu chữ ký phải được nhúng vào file HTML');
+  // Khối chữ ký số hiện đúng như trang thuế: dấu "Signature Valid" + "Ký bởi <CN>", KHÔNG in cả
+  // chuỗi X509 Subject thô.
+  assert(html.includes('Signature Valid') && html.includes('>CONG TY A</span>'), 'thiếu khối chữ ký số');
+  assert(!html.includes('O=Ha Noi'), 'ô "Ký bởi" chỉ hiện tên đơn vị (CN), không in cả Subject');
+  assert(html.includes('K&yacute; ng&agrave;y:'), 'thiếu thời điểm ký của chữ ký số');
+  assert(html.includes('<svg'), 'thiếu mã QR');
+  assert(html.includes('MCCQT: MCCQT-TEST-1'), 'thiếu dòng MCCQT của hóa đơn có mã');
+  assert(html.includes('Hàng hóa A') && html.includes('Một triệu đồng'), 'thiếu dữ liệu hóa đơn');
+  assert(!html.includes('dựng từ dữ liệu API'), 'không được còn câu ghi chú của bản tự chế');
+  assert(!html.includes('<script'), 'file HTML không được chứa script');
+});
+test('hóa đơn thiếu dữ liệu vẫn ra một trang HTML hợp lệ', () => {
+  const html = invoiceHtml({ shdon: '', khhdon: '', khmshdon: '' }, {});
+  // Trang chuẩn của cổng thuế KHÔNG có doctype (cố ý): trình duyệt chạy quirks mode nên cỡ chữ
+  // trong bảng mới đúng 16px như bản gốc, nhờ đó .html và .pdf khớp nhau.
+  assert(/^<html>/i.test(html));
+  assert(html.trimEnd().endsWith('</html>'));
+  assert(!html.includes('undefined'), 'thiếu dữ liệu thì để trống, không in "undefined"');
+});
+test('XML gốc cấp MCCQT/NLap cho HTML khi trang thuế không trả trong detail', async t => {
+  // HĐ có mã: MCCQT nằm trong XML gốc; HĐ thiếu ngày lập trong detail thì lấy NLap của XML.
+  const xml = '<?xml version="1.0"?><HDon><DLHDon><TTChung><KHMSHDon>1</KHMSHDon><KHHDon>C26TAA</KHHDon>'
+    + '<SHDon>1</SHDon><NLap>2026-01-05</NLap><MCCQT>XML-MCCQT-9</MCCQT></TTChung><NDHDon><NMua>'
+    + '<Ten>CONG TY B</Ten><MST>0123456789</MST></NMua></NDHDon></DLHDon></HDon>';
+  const zip = new JSZip(); zip.file('invoice.xml', xml);
+  const bytes = await zip.generateAsync({ type: 'nodebuffer' });
+  const detail = { hdon: '01', nbmst: '0123456789', nbten: 'CONG TY A', nmten: 'CONG TY B', nmmst: '0123456789', khmshdon: '1', khhdon: 'C26TAA', shdon: '1', tgtcthue: 100, tgtthue: 10, tgtttbso: 110, thttltsuat: [{ tsuat: '10%', thtien: 100, tthue: 10 }], hdhhdvu: [] };
+  const { dir, engine } = setup(t, async route => {
+    if (route.includes('export-xml')) return bytes;
+    if (route.includes('detail')) return Buffer.from(JSON.stringify(detail));
+    return Buffer.from(JSON.stringify({ datas: [invoice(1)], total: 1 }));
+  });
+  await engine.search({ ...params, formats: ['xml', 'html'] }, dir);
+  await engine.resume(true);
+  const html = fs.readFileSync(engine.job.items[0].files.find(x => x.endsWith('.html')), 'utf8');
+  assert(html.includes('MCCQT: XML-MCCQT-9'), 'MCCQT phải lấy từ XML gốc như luồng API của extension');
+  assert(html.includes('Ng&agrave;y 05 th&aacute;ng 01 n&abreve;m 2026'), 'ngày lập phải lấy theo NLap của XML');
+  assert(html.includes('class="main-page"'), 'file HTML phải là trang chuẩn của cổng thuế');
+  // Chỉ chọn HTML (không chọn XML) thì không gọi thêm API XML — giống extension.
+  const onlyHtml = setup(t, async route => {
+    if (route.includes('detail')) return Buffer.from(JSON.stringify(detail));
+    if (route.includes('export-xml')) throw new Error('không được gọi export-xml khi chỉ chọn HTML');
+    return Buffer.from(JSON.stringify({ datas: [invoice(1)], total: 1 }));
+  });
+  await onlyHtml.engine.search({ ...params, formats: ['html'] }, onlyHtml.dir);
+  await onlyHtml.engine.resume(true);
+  const single = fs.readFileSync(onlyHtml.engine.job.items[0].files.find(x => x.endsWith('.html')), 'utf8');
+  assert(!single.includes('MCCQT:'), 'detail không có MCCQT thì không tự bịa dòng MCCQT');
+});
+test('pagination retrieves all pages, deduplicates invoices and preserves order', async t => {
+  let calls = 0;
+  const { dir, engine } = setup(t, async () => {
+    calls++;
+    return Buffer.from(JSON.stringify(calls === 1 ? { datas: Array.from({ length: 50 }, (_, i) => invoice(i)), total: 51, state: 'page2' } : { datas: [invoice(49), invoice(50)], total: 51, state: '' }));
+  });
+  await engine.search(params, dir);
+  assert.equal(calls, 2); assert.equal(engine.job.items.length, 51); assert.equal(engine.job.state, 'ready');
+});
+test('missing cursor is reported as incomplete rather than successful', async t => {
+  const { dir, engine } = setup(t, async () => Buffer.from(JSON.stringify({ datas: [invoice(1)], total: 100 })));
+  await engine.search(params, dir); assert.equal(engine.job.state, 'failed'); assert.equal(engine.job.tasks[0].done, false);
+});
+test('XML ZIP extraction, checkpoint restore, and existing file skip', async t => {
+  const zip = new JSZip(); zip.file('../../invoice.xml', '<?xml version="1.0"?><HDon/>');
+  const bytes = await zip.generateAsync({ type: 'nodebuffer' });
+  let downloads = 0;
+  const { dir, engine, options } = setup(t, async route => {
+    if (route.includes('export-xml')) { downloads++; return bytes; }
+    return Buffer.from(JSON.stringify({ datas: [invoice(1)], total: 1 }));
+  });
+  await engine.search(params, dir); await engine.resume(true);
+  assert.equal(engine.job.state, 'completed'); assert.equal(downloads, 1);
+  const file = engine.job.items[0].files[0]; assert(file.startsWith(dir + path.sep)); assert(fs.readFileSync(file, 'utf8').includes('<HDon/>'));
+  const restored = new Engine(options); await restored.resume(true); assert.equal(downloads, 1);
+  fs.unlinkSync(file); await restored.resume(true); assert.equal(downloads, 2);
+});
+test('downloaded files are grouped by MST, direction and format only', async t => {
+  const zip = new JSZip(); zip.file('invoice.xml', '<?xml version="1.0"?><HDon/>');
+  const bytes = await zip.generateAsync({ type: 'nodebuffer' });
+  const { dir, engine } = setup(t, async route => route.includes('export-xml') ? bytes : Buffer.from(JSON.stringify({ datas: [invoice(9)], total: 1 })));
+  await engine.search({ ...params, direction: 'sold', formats: ['xml', 'zip', 'xlsx'] }, dir);
+  await engine.resume(true);
+  const relative = engine.job.items[0].files.map(f => path.relative(dir, f).split(path.sep).join('/'));
+  // Cây đúng: MST-<MST>/<Mua_vao|Ban_ra>/<xml|pdf|html|zip>/<tên file>
+  assert(relative.every(x => /^MST-0123456789\/Ban_ra\/(xml|zip)\/[^/]+$/.test(x)), relative.join(', '));
+  assert(!relative.some(x => path.dirname(x).includes('C26TAA')), 'the invoice symbol must not become a folder (only part of the file name)');
+  const summaryDir = path.join(dir, 'MST-0123456789');
+  assert.deepEqual(fs.readdirSync(summaryDir).sort(), ['Ban_ra', 'bao-cao-' + engine.job.id + '.json'], 'only Mua_vao/Ban_ra below the MST folder');
+  const directionFiles = fs.readdirSync(path.join(summaryDir, 'Ban_ra')).sort();
+  const xlsx = directionFiles.filter(x => x.endsWith('.xlsx'));
+  assert.equal(xlsx.length, 1, 'bảng Excel nằm ngay trong Ban_ra');
+  assert(directionFiles.includes('xml') && directionFiles.includes('zip'), 'hóa đơn nằm trong thư mục con theo định dạng');
+  assert(fs.readdirSync(summaryDir).some(x => x.startsWith('bao-cao')), 'the run report stays at MST-.../');
+});
+test('files left flat in <Mua_vao|Ban_ra> by the earlier build are still recognised', async t => {
+  const zip = new JSZip(); zip.file('invoice.xml', '<?xml version="1.0"?><HDon/>');
+  const bytes = await zip.generateAsync({ type: 'nodebuffer' });
+  let downloads = 0;
+  const request = async route => { if (route.includes('export-xml')) { downloads++; return bytes; } return Buffer.from(JSON.stringify({ datas: [invoice(1)], total: 1 })); };
+  const first = setup(t, request);
+  await first.engine.search({ ...params, formats: ['xml', 'xlsx'] }, first.dir); await first.engine.resume(true);
+  assert.equal(downloads, 1);
+  // Mô phỏng bản trước: kéo file XML ra nằm thẳng trong thư mục nhánh (không có thư mục xml/).
+  const flat = first.engine.job.items[0].files.find(x => x.endsWith('.xml'));
+  const target = path.join(first.dir, 'MST-0123456789', 'Ban_ra', path.basename(flat));
+  fs.renameSync(flat, target); fs.rmdirSync(path.dirname(flat));
+  const second = setup(t, request);
+  await second.engine.search({ ...params, formats: ['xml', 'xlsx'] }, first.dir); await second.engine.resume(true);
+  assert.equal(downloads, 1, 'không tải lại file đã có (dù nằm phẳng trong Mua_vao)');
+  assert.equal(second.engine.job.items[0].files.find(x => x.endsWith('.xml')), target);
+});
+test('a fresh search does not re-download invoices whose files are already on disk', async t => {
+  const zip = new JSZip(); zip.file('invoice.xml', '<?xml version="1.0"?><HDon/>');
+  const bytes = await zip.generateAsync({ type: 'nodebuffer' });
+  let downloads = 0;
+  const request = async route => { if (route.includes('export-xml')) { downloads++; return bytes; } return Buffer.from(JSON.stringify({ datas: [invoice(1), invoice(2)], total: 2 })); };
+  const first = setup(t, request);
+  await first.engine.search({ ...params, formats: ['xml'] }, first.dir); await first.engine.resume(true);
+  assert.equal(downloads, 2);
+  assert.deepEqual([first.engine.job.stats.total, first.engine.job.stats.downloaded, first.engine.job.stats.skipped], [2, 2, 0]);
+  // Tra cứu LẠI cùng khoảng ngày: job mới không biết file nào đã có, nên phải quét thư mục đích.
+  const second = new Engine({ ...first.options, store: path.join(first.dir, 'job2.json'), request });
+  await second.search({ ...params, formats: ['xml'] }, first.dir); await second.resume(true);
+  assert.equal(downloads, 2, 'file đã có trên đĩa thì không request lại');
+  const stats = second.job.stats;
+  assert.deepEqual({ total: stats.total, existed: stats.existed, queued: stats.queued, downloaded: stats.downloaded, skipped: stats.skipped, failed: stats.failed }, { total: 2, existed: 2, queued: 0, downloaded: 0, skipped: 2, failed: 0 });
+  assert.deepEqual(second.job.items.map(x => x.state), ['skipped', 'skipped']);
+  assert.deepEqual(second.job.items[0].files, first.engine.job.items[0].files, 'dùng lại đúng file cũ, không tạo file trùng');
+  assert.equal(second.job.state, 'completed');
+  // Giao diện cần đường dẫn file từng dòng để bấm vào mở hóa đơn.
+  const snapshot = second.snapshot();
+  assert.equal(snapshot.items.length, 2);
+  assert(snapshot.items.every(x => x.files.length >= 1), 'mỗi dòng phải kèm đường dẫn file đã có');
+});
+test('pause stops a running search right away and keeps what was found', async t => {
+  // Trang đầu trả về ngay (đã có 1 hóa đơn), trang sau chậm — bấm tạm dừng trong lúc chờ trang sau.
+  let calls = 0;
+  const { dir, engine } = setup(t, async () => {
+    calls += 1;
+    if (calls > 1) await new Promise(resolve => setTimeout(resolve, 200));
+    return Buffer.from(JSON.stringify({ datas: [invoice(calls)], total: 500, state: `p${calls}` }));
+  });
+  const running = engine.search({ ...params, formats: ['xml'] }, dir);
+  setTimeout(() => engine.pause(), 80); // người dùng bấm “Tạm dừng tra cứu”
+  const snapshot = await running;
+  assert.equal(snapshot.state, 'paused');
+  assert.equal(engine.busy, false, 'engine phải rảnh ngay sau khi tạm dừng');
+  assert.match(snapshot.message, /tạm dừng/i);
+  assert.equal(snapshot.total, 1, 'không mất hóa đơn đã tìm được trước khi dừng');
+});
+test('pause also stops a running download mid-way', async t => {
+  const zip = new JSZip(); zip.file('invoice.xml', '<?xml version="1.0"?><HDon/>');
+  const bytes = await zip.generateAsync({ type: 'nodebuffer' });
+  const invoices = Array.from({ length: 5 }, (_, i) => invoice(i + 1));
+  const { dir, engine } = setup(t, async route => {
+    if (route.includes('export-xml')) { await new Promise(resolve => setTimeout(resolve, 80)); return bytes; }
+    return Buffer.from(JSON.stringify({ datas: invoices, total: invoices.length }));
+  });
+  await engine.search({ ...params, formats: ['xml'] }, dir);
+  const running = engine.resume(true);
+  setTimeout(() => engine.pause(), 120);
+  const snapshot = await running;
+  assert.equal(snapshot.state, 'paused');
+  assert.ok(snapshot.done >= 1 && snapshot.done < 5, `đã dừng giữa đường (done=${snapshot.done})`);
+});
+test('purchase invoices land in Mua_vao regardless of the issued-code state', async t => {
+  const zip = new JSZip(); zip.file('invoice.xml', '<?xml version="1.0"?><HDon/>');
+  const bytes = await zip.generateAsync({ type: 'nodebuffer' });
+  const { dir, engine } = setup(t, async route => route.includes('export-xml') ? bytes : Buffer.from(JSON.stringify({ datas: [{ ...invoice(3), ttxly: 6 }, { ...invoice(4), ttxly: 5 }], total: 2 })));
+  await engine.search({ ...params, direction: 'purchase', formats: ['xml'] }, dir);
+  await engine.resume(true);
+  const relative = engine.job.items.flatMap(x => x.files).map(f => path.relative(dir, f).split(path.sep).join('/'));
+  assert.equal(relative.length, 2);
+  assert(relative.every(x => /^MST-0123456789\/Mua_vao\/xml\/[^/]+\.xml$/.test(x)), relative.join(', '));
+});
+test('saving the job leaves no .part file behind and overwrites cleanly', async t => {
+  const zip = new JSZip(); zip.file('invoice.xml', '<?xml version="1.0"?><HDon/>');
+  const bytes = await zip.generateAsync({ type: 'nodebuffer' });
+  const { dir, engine } = setup(t, async route => route.includes('export-xml') ? bytes : Buffer.from(JSON.stringify({ datas: [invoice(1)], total: 1 })));
+  await engine.search({ ...params, formats: ['xml'] }, dir);
+  engine.job.message = 'ghi lại lần 2'; engine.save();
+  const store = path.join(dir, 'job.json');
+  assert.deepEqual(fs.readdirSync(dir).filter(x => x.endsWith('.part')), [], 'không còn file tạm .part (lỗi rename EPERM trên Windows)');
+  assert.equal(JSON.parse(fs.readFileSync(store, 'utf8')).message, 'ghi lại lần 2');
+});
+test('different account cannot resume a saved job', async t => {
+  let requests = 0;
+  const { dir, engine } = setup(t, async () => { requests++; return Buffer.from(JSON.stringify({ datas: [invoice(1)], total: 1 })); });
+  await engine.search(params, dir); engine.identity = async () => ({ key: 'other' }); await engine.resume(true);
+  assert.equal(engine.job.state, 'auth_required'); assert.equal(requests, 1);
+});
+test('pause does not checkpoint a partially completed response', async t => {
+  const { dir, engine } = setup(t, async () => { engine.pause(); return Buffer.from(JSON.stringify({ datas: [invoice(1)], total: 1 })); });
+  await engine.search(params, dir); assert.equal(engine.job.state, 'paused'); assert.equal(engine.job.tasks[0].done, false);
+  engine.request = async () => Buffer.from(JSON.stringify({ datas: [invoice(1)], total: 1 }));
+  await engine.resume(); assert.equal(engine.job.state, 'ready'); assert.equal(engine.job.items.length, 1);
+});
+test('invalid XML response is kept as per-invoice failure', async t => {
+  const { dir, engine } = setup(t, async route => Buffer.from(route.includes('export-xml') ? '{"message":"No XML"}' : JSON.stringify({ datas: [invoice(1)], total: 1 })));
+  await engine.search(params, dir); await engine.resume(true);
+  assert.equal(engine.job.state, 'partial'); assert.equal(engine.job.items[0].state, 'failed'); assert.equal(engine.job.items[0].files.length, 0);
+});

@@ -1,0 +1,21 @@
+'use strict';
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const { TaxBrowser } = require('../src/browser');
+const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hoadon-live-login-'));
+const browser = new TaxBrowser(root);
+(async () => {
+  console.log('Opening isolated tax browser');
+  await browser.open('0000000000', false);
+  console.log('Connected');
+  browser.process.on('exit', (code, signal) => console.log('Browser exit', code, signal));
+  const monitor = setInterval(async () => { try { console.log(await browser.eval('JSON.stringify({url:location.href,title:document.title,forms:document.forms.length,text:document.body?.innerText.slice(0,400)})')); } catch (e) { console.log('Monitor:', e.message); } }, 2000);
+  monitor.unref();
+  await browser.show();
+  console.log('Window shown');
+  const result = await browser.prepareLogin();
+  console.log(JSON.stringify({ ...result, captcha: result.captcha ? '[image length ' + result.captcha.length + ']' : '' }));
+  console.log(await browser.eval("JSON.stringify({url:location.href,title:document.title,forms:document.forms.length,inputs:[...document.querySelectorAll('input')].map(x=>({id:x.id,type:x.type,visible:!!x.getClientRects().length})),images:[...document.images].map(x=>({alt:x.alt,tag:x.tagName,width:x.naturalWidth,visible:!!x.getClientRects().length,source:x.src.slice(0,100)})),text:document.body.innerText.slice(0,2500)})"));
+  if (!result.ready) process.exitCode = 1;
+})().catch(error => { console.error(error.stack); process.exitCode = 1; }).finally(async () => { await browser.close(); });

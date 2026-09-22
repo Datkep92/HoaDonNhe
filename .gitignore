@@ -1,0 +1,27 @@
+node_modules/
+release/
+.npm-cache/
+du_lieu/
+support-gateway/.env
+
+# One-off setup instructions
+setup-github.md.txt
+
+# Stray empty text files (not source)
+cloudflare-.txt
+ctl3.txt
+
+# Build/archive artifacts
+*.zip
+
+# Test/data artifacts
+login-regression.png
+DANH SÁCH HÓA ĐƠN - 2026-09-19T140856.168.xlsx
+
+# Secrets - real credentials, never commit
+code.txt
+support-gateway/README.md
+
+# Tool runtime state (not source)
+.codewhale/
+.reasonix/

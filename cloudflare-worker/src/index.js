@@ -107,6 +107,40 @@ async function firebase(env, path, method = 'GET', value) {
   return response.json();
 }
 
+// Luồng realtime cho Support Chat. Gateway chuyển tiếp REST streaming của Firebase Realtime
+// Database: Firebase CHỈ đẩy sự kiện khi dữ liệu thay đổi, nên EXE không phải hỏi lại định kỳ.
+// Không có khoá Firebase nào đi xuống máy khách — chỉ có token phiên do Gateway tự ký.
+// (Kết nối có thể bị edge thu hồi; phía EXE tự nối lại với backoff, không polling.)
+async function chatStream(env, request, url) {
+  let token;
+  try { token = await claims(env, request); }
+  catch (error) { return reply({ ok: false, error: error.message || 'Invalid support session.' }, 401); }
+
+  const installationId = String(url.searchParams.get('installationId') || '');
+  const chatRoomId = String(url.searchParams.get('chatRoomId') || '');
+  if (token.installationId !== installationId || token.chatRoomId !== chatRoomId) {
+    return reply({ ok: false, error: 'Support session does not match this device.' }, 403);
+  }
+
+  const accessToken = await firebaseToken(env);
+  const target = env.FIREBASE_DATABASE_URL.replace(/\/$/, '') + '/chats/' + encodeURIComponent(chatRoomId) + '/messages.json';
+  const upstream = await fetch(target + '?access_token=' + encodeURIComponent(accessToken), {
+    headers: { Accept: 'text/event-stream', 'Cache-Control': 'no-cache', Authorization: 'Bearer ' + accessToken },
+  });
+  if (!upstream.ok || !upstream.body) return reply({ ok: false, error: 'Firebase stream unavailable (' + upstream.status + ').' }, 502);
+
+  // Chuyển nguyên các frame SSE của Firebase (event: put / patch / keep-alive / cancel) cho client.
+  return new Response(upstream.body, {
+    status: 200,
+    headers: {
+      'Content-Type': 'text/event-stream; charset=utf-8',
+      'Cache-Control': 'no-store',
+      'Connection': 'keep-alive',
+      'X-Accel-Buffering': 'no',
+    },
+  });
+}
+
 async function telegram(env, method, value) {
   const response = await fetch('https://api.telegram.org/bot' + env.TELEGRAM_BOT_TOKEN + '/' + method, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(value) });
   const data = await response.json();
@@ -195,6 +229,7 @@ export default {
     try {
       const url = new URL(request.url);
       if (request.method === 'GET' && url.pathname === '/healthz') return reply({ ok: true });
+      if (request.method === 'GET' && url.pathname === '/v1/chats/stream') return chatStream(env, request, url);
       if (request.method === 'POST' && url.pathname === '/v1/telegram/webhook') return webhook(env, request);
       if (request.method !== 'POST') return reply({ ok: false, error: 'Not found.' }, 404);
 

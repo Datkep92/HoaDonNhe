@@ -89,10 +89,12 @@
     if (lockState.locked) setTimeout(() => q('unlock-pin').focus(), 30);
   }
 
-  async function refreshSettings() {
-    try { renderLicense(await api('/api/support/status')); } catch {}
-    try { renderLock(await api('/api/app-lock/status')); } catch {}
-  }
+  // License và khoá PIN CHỈ được kiểm tra khi có yêu cầu (mở Cài đặt, mở app, mạng trở lại,
+  // sau khi kích hoạt…). KHÔNG còn timer polling: trước đây hàm này chạy mỗi 10 giây và kéo
+  // theo request kiểm tra License lên máy chủ liên tục.
+  async function refreshLicense() { try { renderLicense(await api('/api/support/license')); } catch {} }
+  async function refreshLockStatus() { try { renderLock(await api('/api/app-lock/status')); } catch {} }
+  async function refreshSettings() { await refreshLicense(); await refreshLockStatus(); }
 
   function showPane(name) {
     const license = name === 'license';
@@ -271,5 +273,4 @@
 
   refreshSettings().then(resetIdleTimer);
   loadBroadcastNotice();
-  setInterval(refreshSettings, 10000);
 })();

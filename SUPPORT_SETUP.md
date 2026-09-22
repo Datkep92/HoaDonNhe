@@ -81,7 +81,7 @@ Desktop chỉ gọi Gateway. Gateway dùng OAuth service account để ghi/đọ
 { "rules": { ".read": false, ".write": false } }
 ```
 
-Sau khi Firebase đã cấu hình, widget chat tự đồng bộ lại mỗi 2 giây qua Gateway. Tin nhắn có `sender`, `text`, `timestamp`, `source` và ID Firebase để Phase 4 map an toàn sang Telegram Topic.
+Sau khi Firebase đã cấu hình, widget chat **lắng nghe thay đổi** thay vì hỏi lại theo chu kỳ: app mở kết nối SSE tới `GET /v1/chats/stream` của Gateway, Gateway chuyển tiếp REST streaming của Firebase RTDB (`Accept: text/event-stream`) xuống app, nên Firebase chỉ đẩy dữ liệu khi có tin mới. Tin nhắn có `sender`, `text`, `timestamp`, `source` và ID Firebase để Phase 4 map an toàn sang Telegram Topic.
 
 ## 6. Telegram Topics bridge (Phase 4)
 
@@ -102,9 +102,33 @@ Khi khách gửi tin lần đầu, Gateway tạo Topic `Support · ROOM_WIN_…`
 >
 > Các lệnh quản trị trong Topic do Gateway nhận rồi chuyển sang Apps Script bằng action `admin_command` (`/check`, `/new [thang|nam] [số_máy]`, `/extend [số_ngày]`, `/reset`, `/lock`, `/unlock`); Apps Script chỉ đọc/ghi Google Sheet và trả nội dung trả lời, Gateway gửi nội dung đó lại vào Topic. Định vị thiết bị bằng `Chat Room ID` của Topic, nên lệnh chỉ chạy khi Topic đã gắn với một máy (khách đã mở app lần đầu). Lệnh không lọt vào cửa sổ chat của khách; chữ thường không bắt đầu bằng `/` vẫn được ghi vào chat như tin của admin.
 
+## 7. Luồng License và Chat (realtime, KHÔNG polling)
+
+**License — chỉ kiểm tra khi được gọi.** Không còn timer nào kiểm tra License định kỳ:
+
+- Một lần lúc mở app, khi mở **Cài đặt**, khi mạng trở lại, sau khi kích hoạt key.
+- Trước mỗi tác vụ thật (`/api/search`, `/api/download`, `/api/export-excel`) qua `enforceLicense()`.
+
+Mỗi lần kiểm tra = 1 request tới Gateway `/v1/licenses/status` → 1 lần chạy Apps Script. Endpoint cũ
+`/api/support/status` đã bị bỏ để Chat không còn kéo theo kiểm tra License.
+
+**Chat — lắng nghe thay đổi.** `GET /v1/chats/stream` (SSE) → Firebase RTDB REST streaming. App không hỏi
+lại định kỳ: khi Firebase đổi, sự kiện `put`/`patch` được đẩy xuống và UI cập nhật ngay. Nếu luồng chưa
+sẵn sàng (Gateway chưa deploy route này, hoặc mất mạng), UI tự chuyển sang đọc theo yêu cầu (mở panel /
+sau khi gửi) và **không** quay lại polling.
+
+Chi phí khi app mở mà không thao tác gì (License đã Active):
+
+- Cloudflare Worker: **1 request** cho kết nối stream (thêm vài request nếu edge ngắt kết nối — app tự nối lại với backoff 5s→300s), cộng 1 request đăng ký lúc mở app.
+- Google Apps Script: **0 lần chạy** (đăng ký và kiểm tra License chỉ xảy ra khi được gọi).
+- Firebase: **1 lượt đọc** cho ảnh chụp ban đầu của kết nối, sau đó chỉ phát khi dữ liệu thay đổi.
+
+Realtime chỉ bật sau khi deploy route stream lên Gateway (`wrangler deploy` trong `cloudflare-worker/`);
+trước khi deploy, app chạy ở chế độ đọc theo yêu cầu và vẫn dùng đủ chức năng.
+
 ## Bảo mật và vận hành
 
 - Không đưa `GAS_SHARED_SECRET`, `TOKEN_SECRET`, Telegram bot token hoặc Firebase service-account vào source/EXE/Google Sheet; token bot chỉ nằm trong secret của Gateway/Worker. Token cũ từng bị hardcode trong `code.gs.txt`, `code.txt` và `set-telegram-webhook.js` nên phải thu hồi (BotFather → `/revoke`) rồi cấp token mới trước khi phát hành.
 - Apps Script là CRM license, không nên làm Telegram bridge hoặc cấp Firebase Admin access.
-- Gateway đã giới hạn sơ bộ 8 lần kích hoạt/phút mỗi IP. Ở production nên dùng rate limit của nền tảng/WAF và log tập trung.
+- Gateway đã giới hạn sơ bộ 8 lần kích hoạt/phút mỗi IP, và 60 request/phút cho mỗi action còn lại (`status`, `register`, `chat`, `message`, `notice`). Ở production nên dùng rate limit của nền tảng/WAF và log tập trung.
 - Ngày hết hạn là dữ liệu máy chủ; app không được tự quyết định trạng thái Active.

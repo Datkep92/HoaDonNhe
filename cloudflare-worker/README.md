@@ -39,3 +39,9 @@ Verify the wiring without touching spreadsheet data: `POST /v1/licenses/status` 
 `installationId` (UUID) and `chatRoomId` (`ROOM_WIN_…`) is read-only and must answer
 `{"ok":true,"value":{"status":"Unactivated"}}`. Do **not** use `/v1/devices/register` for testing — it appends
 a row to the `Devices` sheet.
+
+Chat realtime (không polling): `GET /v1/chats/stream?installationId=<uuid>&chatRoomId=ROOM_WIN_…` kèm
+`Authorization: Bearer <sessionToken>` (token do `/v1/devices/register` hoặc `/v1/licenses/status` trả về)
+sẽ chuyển tiếp REST streaming của Firebase RTDB dưới dạng SSE (`event: put` / `patch`). Route này giúp app
+không phải hỏi tin nhắn định kỳ; **phải deploy lại Worker thì route mới có hiệu lực**, sau đó app tự nối lại
+khi mở lần sau (backoff 5s→300s).

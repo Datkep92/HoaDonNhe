@@ -75,6 +75,65 @@ function expired(expiryAt) {
   return date ? date.getTime() < Date.now() : false;
 }
 
+// ---------------------------------------------------------------------------
+// Chat realtime: giải mã luồng SSE của Firebase RTDB (REST streaming) mà Gateway
+// chuyển tiếp. Đây là logic thuần (không I/O) nên test được trực tiếp.
+// ---------------------------------------------------------------------------
+function parseSseFrame(frame) {
+  let name = '';
+  const data = [];
+  for (const line of String(frame).split('\n')) {
+    if (line.startsWith(':')) continue;               // comment / keep-alive của SSE
+    if (line.startsWith('event:')) name = line.slice(6).trim();
+    else if (line.startsWith('data:')) data.push(line.slice(5).replace(/^ /, ''));
+  }
+  return { name, data: data.join('\n') };
+}
+
+// Gộp một sự kiện Firebase vào map tin nhắn hiện có (đúng ngữ nghĩa REST streaming):
+//   name 'put'   : path '/' = ảnh chụp toàn bộ; path '/id' = đặt/xóa một bản ghi
+//   name 'patch' : gộp nông (shallow merge) theo path
+// Các sự kiện khác (keep-alive, cancel, auth_revoked) không đổi dữ liệu.
+function applyStreamEvent(state, name, payload) {
+  const path = String((payload && payload.path) || '/');
+  const data = payload ? payload.data : undefined;
+  const key = path.replace(/^\/+/, '');
+  if (name === 'put') {
+    if (!key) {
+      state.clear();
+      if (data && typeof data === 'object') for (const [id, value] of Object.entries(data)) state.set(id, value);
+    } else if (data === null || data === undefined) {
+      state.delete(key);
+    } else {
+      state.set(key, data);
+    }
+    return true;
+  }
+  if (name === 'patch') {
+    if (data === null || data === undefined) return true;
+    if (!key) {
+      for (const [id, value] of Object.entries(data)) {
+        if (value === null) { state.delete(id); continue; }
+        const current = state.get(id);
+        state.set(id, current && typeof current === 'object' && typeof value === 'object' ? { ...current, ...value } : value);
+      }
+      return true;
+    }
+    const current = state.get(key);
+    state.set(key, current && typeof current === 'object' && typeof data === 'object' ? { ...current, ...data } : data);
+    return true;
+  }
+  return false;
+}
+
+// Cùng thứ tự/định dạng với Gateway (/v1/chats/status): id + nội dung, sắp theo thời gian, 100 tin cuối.
+function sortedMessages(state, limit = 100) {
+  return [...state.entries()]
+    .map(([id, value]) => ({ id, ...value }))
+    .sort((a, b) => (Number(a.timestamp) || 0) - (Number(b.timestamp) || 0))
+    .slice(-limit);
+}
+
 class SupportStore {
   constructor(dataDir) {
     this.file = path.join(dataDir, 'support.json');
@@ -218,14 +277,99 @@ class SupportStore {
     return this.publicDevice();
   }
 
-  status() {
+  // Ảnh chụp LOCAL, KHÔNG gọi máy chủ — dùng để hiển thị tức thì (header chat, badge…).
+  snapshot() {
+    let mode = 'local-mock';
+    try { mode = this.gatewayUrl() ? 'gateway' : 'local-mock'; } catch { mode = 'local-mock'; }
+    return { device: { ...this.publicDevice(), mode }, license: this.publicLicense(), mode };
+  }
+
+  // ---- LICENSE: chỉ kiểm tra khi được gọi (không polling, không timer) ----
+  // Gọi Gateway đúng 1 lần cho /v1/licenses/status rồi cập nhật token phiên.
+  async checkLicense() {
     const remote = this.gateway('/v1/licenses/status', this.publicDevice());
-    if (remote) return remote.then(async value => {
-      this.data.license.sessionToken = value.sessionToken || this.data.license.sessionToken || ''; this.saveLicense(value);
-      const chat = await this.gateway('/v1/chats/status', this.publicDevice(), true);
-      return { device: { ...this.publicDevice(), mode: 'gateway' }, license: this.publicLicense(), messages: chat.messages || [] };
+    if (!remote) return { device: { ...this.publicDevice(), mode: 'local-mock' }, license: this.publicLicense(), mode: 'local-mock' };
+    const value = await remote;
+    this.data.license.sessionToken = value.sessionToken || this.data.license.sessionToken || '';
+    this.saveLicense(value);
+    return { device: { ...this.publicDevice(), mode: 'gateway' }, license: this.publicLicense(), mode: 'gateway' };
+  }
+
+  // ---- CHAT: đọc tin nhắn theo yêu cầu (KHÔNG kéo theo kiểm tra License) ----
+  async messages() {
+    const remote = this.gateway('/v1/chats/status', this.publicDevice(), true);
+    if (!remote) return { messages: this.data.messages };
+    const value = await remote;
+    return { messages: value.messages || [] };
+  }
+
+  // ---- CHAT REALTIME: lắng nghe thay đổi, KHÔNG hỏi định kỳ ----
+  // Trả về URL + token để mở luồng SSE tới Gateway (token không bao giờ rời khỏi tiến trình Node).
+  streamRequest() {
+    const base = this.gatewayUrl();
+    if (!base) return null;
+    const token = this.data.license.sessionToken;
+    if (!token) return null;
+    const target = new URL('/v1/chats/stream', base);
+    target.searchParams.set('installationId', this.data.device.installationId);
+    target.searchParams.set('chatRoomId', this.data.device.chatRoomId);
+    return { url: target, token };
+  }
+
+  // Mở luồng SSE tới Gateway. Gọi onOpen() khi đã nối được và onMessages(mảng) mỗi khi
+  // Firebase báo thay đổi. Promise kết thúc khi luồng đóng/lỗi (tầng gọi tự nối lại).
+  watchMessages(onMessages, options = {}) {
+    const { signal, onOpen } = options;
+    const request = this.streamRequest();
+    if (!request) return Promise.resolve({ ok: false, reason: 'no-gateway' });
+    if (signal && signal.aborted) return Promise.resolve({ ok: false, reason: 'aborted' });
+    return new Promise(resolve => {
+      const state = new Map();
+      let settled = false;
+      const done = value => { if (!settled) { settled = true; resolve(value); } };
+      // Gateway có thể là https (Cloudflare Worker) hoặc http khi trỏ về localhost (dev/test) —
+      // cùng quy tắc với gateway().
+      const transport = request.url.protocol === 'https:' ? https : http;
+      const req = transport.get(request.url, {
+        headers: { Authorization: 'Bearer ' + request.token, Accept: 'text/event-stream', 'Cache-Control': 'no-cache' },
+        // Không đặt timeout ngắn: luồng SSE im lặng là bình thường. Chỉ cắt khi socket
+        // thật sự không có byte nào trong 5 phút (keep-alive của Firebase tự gia hạn).
+        timeout: 300000,
+      }, res => {
+        if (res.statusCode !== 200) { res.resume(); return done({ ok: false, reason: `http-${res.statusCode}` }); }
+        if (onOpen) { try { onOpen(); } catch {} }
+        res.setEncoding('utf8');
+        let buffer = '';
+        res.on('data', chunk => {
+          buffer += chunk;
+          let index;
+          while ((index = buffer.indexOf('\n\n')) >= 0) {
+            const frame = buffer.slice(0, index);
+            buffer = buffer.slice(index + 2);
+            const { name, data } = parseSseFrame(frame);
+            if (!name) continue;
+            if (name === 'cancel' || name === 'auth_revoked') { req.destroy(); return done({ ok: false, reason: name }); }
+            if (name !== 'put' && name !== 'patch') continue;
+            let payload;
+            try { payload = JSON.parse(data); } catch { continue; }
+            if (applyStreamEvent(state, name, payload)) onMessages(sortedMessages(state));
+          }
+        });
+        res.on('end', () => done({ ok: true, reason: 'closed' }));
+        res.on('error', error => done({ ok: false, reason: error.message }));
+      });
+      req.on('timeout', () => req.destroy(new Error('stream-timeout')));
+      req.on('error', error => done({ ok: false, reason: error.message }));
+      if (signal) signal.addEventListener('abort', () => req.destroy(), { once: true });
     });
-    return { device: this.publicDevice(), license: this.publicLicense(), messages: this.data.messages };
+  }
+
+  // Giữ lại cho test/smoke: gộp License + Chat. Luồng app KHÔNG dùng hàm này nữa —
+  // license dùng checkLicense(), chat dùng messages()/watchMessages() để hai luồng độc lập.
+  async status() {
+    const license = await this.checkLicense();
+    const chat = await this.messages();
+    return { ...license, ...chat };
   }
 
   publicLicense() {
@@ -372,4 +516,4 @@ class SupportStore {
   }
 }
 
-module.exports = { SupportStore, parseDate, formatExpiry, expired };
+module.exports = { SupportStore, parseDate, formatExpiry, expired, parseSseFrame, applyStreamEvent, sortedMessages };

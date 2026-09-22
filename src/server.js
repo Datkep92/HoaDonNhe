@@ -47,7 +47,7 @@ process.on('uncaughtException', error => {
 // register() trả Promise khi đã cấu hình Gateway, nhưng trả object ngay khi chạy local mock
 // (chưa có du_lieu/support-gateway.json — xem SUPPORT_SETUP.md mục 4). Bọc Promise.resolve để
 // không chết ở bước khởi động như bản v12.
-Promise.resolve(support.register()).catch(() => {});
+Promise.resolve(support.register()).catch(() => {}).then(() => ensureSupportStream());
 // Kiểm tra bản mới trên GitHub Releases (CHỈ ĐỌC, không tự cập nhật). Chạy nền ngay khi khởi động
 // và im lặng nếu lỗi mạng; UI đọc kết quả qua /api/update. Tắt bằng HOADON_NO_UPDATE_CHECK=1.
 if (!testServer && process.env.HOADON_NO_UPDATE_CHECK !== '1') checkUpdate().catch(() => {});
@@ -206,6 +206,64 @@ async function closeBrowserWhenIdle(reason) {
   await browser.close();
   log(`Đã đóng cửa sổ Chrome tải hóa đơn của MST ${mst} (${reason}).`);
 }
+// ---- Support Chat realtime ------------------------------------------------------------------
+// Giao diện nối tới /api/support/events (SSE nội bộ). Server giữ MỘT kết nối tới Gateway
+// (/v1/chats/stream) và chỉ chuyển tiếp khi Firebase báo thay đổi — KHÔNG hỏi định kỳ.
+// Timer duy nhất ở đây là hẹn nối lại khi luồng đứt, backoff tăng dần 5s -> 300s.
+const supportClients = new Set();
+let supportStreamController = null;
+let supportStreamRetryTimer = null;
+let supportStreamRetryAt = 0;
+let supportStreamBackoff = 5000;
+let supportRealtimeReady = false;
+let lastSupportMessages = null;
+function supportEvent(payload) { return `data: ${JSON.stringify(payload)}\n\n`; }
+function broadcastSupport(payload) {
+  const frame = supportEvent(payload);
+  for (const res of supportClients) { try { res.write(frame); } catch { /* cửa sổ đã đóng */ } }
+}
+function setSupportRealtime(ready) {
+  if (supportRealtimeReady === ready) return;
+  supportRealtimeReady = ready;
+  broadcastSupport({ type: 'mode', realtime: ready });
+}
+function scheduleSupportStream() {
+  if (supportStreamRetryTimer || !supportClients.size) return;
+  const wait = Math.max(supportStreamRetryAt - Date.now(), 1000);
+  supportStreamRetryTimer = setTimeout(() => { supportStreamRetryTimer = null; ensureSupportStream(); }, wait);
+  if (supportStreamRetryTimer.unref) supportStreamRetryTimer.unref();
+}
+function ensureSupportStream() {
+  if (supportStreamController || !supportClients.size) return; // không có cửa sổ nào nghe thì không mở
+  if (Date.now() < supportStreamRetryAt) return scheduleSupportStream();
+  if (!support.streamRequest()) {
+    // Có Gateway nhưng chưa có token phiên (đang đăng ký) -> thử lại sau; không có Gateway thì đứng yên.
+    if (support.snapshot().mode === 'gateway') { supportStreamRetryAt = Date.now() + 15000; return scheduleSupportStream(); }
+    return;
+  }
+  const controller = new AbortController();
+  supportStreamController = controller;
+  support.watchMessages(
+    messages => { lastSupportMessages = messages; broadcastSupport({ type: 'messages', messages }); },
+    { signal: controller.signal, onOpen: () => { supportStreamBackoff = 5000; setSupportRealtime(true); log('Đã nối luồng chat realtime tới Gateway.'); } },
+  ).then(result => finishSupportStream(controller, result)).catch(error => finishSupportStream(controller, { ok: false, reason: error.message }));
+}
+function finishSupportStream(controller, result) {
+  if (supportStreamController !== controller) return; // đã có luồng mới thay thế
+  supportStreamController = null;
+  setSupportRealtime(false);
+  const clean = !!(result && result.ok);
+  const delay = clean ? 2000 : (supportStreamBackoff = Math.min(Math.max(supportStreamBackoff * 2, 5000), 300000));
+  supportStreamRetryAt = Date.now() + delay;
+  log(`Luồng chat dừng (${(result && result.reason) || 'không rõ'}) — thử lại sau ${Math.round(delay / 1000)}s.`);
+  scheduleSupportStream();
+}
+function stopSupportStream() {
+  if (supportStreamRetryTimer) { clearTimeout(supportStreamRetryTimer); supportStreamRetryTimer = null; }
+  const controller = supportStreamController;
+  supportStreamController = null;
+  if (controller) controller.abort();
+}
 function appState() {
   const snapshot = engine ? engine.snapshot() : { state: 'idle', busy: false, items: [], total: 0, done: 0, failed: 0, message: 'Chọn hoặc thêm MST để bắt đầu.' };
   return { ...snapshot, accounts: accounts.accounts.map(publicAccount), selected, output, remembered: !!selected && isRemembered(selected), browserReady: !!browser.client, browserVisible: !!browser.visible, authenticated: !!authAccount, authBusy };
@@ -335,8 +393,37 @@ async function endpoint(req, res, url) {
   lastUiPoll = Date.now(); // giao diện còn sống; dùng để tự thoát khi người dùng đóng cửa sổ
   try {
     if (req.method === 'GET' && url.pathname === '/api/state') return reply(res, 200, { ok: true, value: appState() });
-    if (req.method === 'GET' && url.pathname === '/api/support/status') return reply(res, 200, { ok: true, value: await support.status() });
     if (req.method === 'GET' && url.pathname === '/api/support/notice') return reply(res, 200, { ok: true, value: await support.notice() });
+    // ---- Support: License và Chat là HAI luồng độc lập, chỉ chạy khi được gọi ----
+    // /api/support/device : ảnh chụp local, KHÔNG gọi máy chủ (header chat, hiển thị tức thì)
+    // /api/support/license: kiểm tra License khi có luồng chức năng gọi tới (không polling)
+    // /api/support/chat   : đọc tin nhắn theo yêu cầu (không kéo theo License)
+    // /api/support/events : SSE realtime — server đẩy thay đổi từ Firebase qua Gateway xuống UI
+    if (url.pathname === '/api/support/device') return reply(res, 200, { ok: true, value: support.snapshot() });
+    if (url.pathname === '/api/support/license') {
+      const value = await support.checkLicense();
+      ensureSupportStream(); // token phiên có thể vừa xuất hiện -> mở luồng chat nếu chưa có
+      return reply(res, 200, { ok: true, value });
+    }
+    if (url.pathname === '/api/support/chat') return reply(res, 200, { ok: true, value: await support.messages() });
+    if (req.method === 'GET' && url.pathname === '/api/support/events') {
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream; charset=utf-8',
+        'Cache-Control': 'no-store',
+        Connection: 'keep-alive',
+        'X-Accel-Buffering': 'no',
+      });
+      res.write(supportEvent({ type: 'mode', realtime: supportRealtimeReady }));
+      if (lastSupportMessages) res.write(supportEvent({ type: 'messages', messages: lastSupportMessages }));
+      supportClients.add(res);
+      ensureSupportStream();
+      req.on('close', () => {
+        supportClients.delete(res);
+        // Không còn cửa sổ nào nghe thì đóng luôn kết nối tới Gateway (không giữ luồng "chết").
+        if (!supportClients.size) stopSupportStream();
+      });
+      return;
+    }
     if (req.method === 'GET' && url.pathname === '/api/app-lock/status') return reply(res, 200, { ok: true, value: appLock.status() });
   // Version hiện tại + kiểm tra bản mới (chỉ đọc GitHub Releases, không tự ghi đè EXE).
   if (url.pathname === '/api/version') return reply(res, 200, { ok: true, value: { name: VERSION.name, version: VERSION.version } });
@@ -508,5 +595,5 @@ server.listen(0, '127.0.0.1', async () => {
   else if (testServer) console.log(JSON.stringify({ testUrl: `http://127.0.0.1:${port}/?launch=${sessionSecret}`, packed }));
   else { log(`Khởi động HoaDon Desktop (${packed ? 'EXE' : 'node'}) · dữ liệu: ${dataDir} · cổng ${port}`); try { launchUi(port); } catch (error) { reportFatal(error.message); stop(); } }
 });
-async function stop() { if (engine?.busy) engine.pause(); await browser.close(); log('Đã thoát chương trình.'); server.close(() => process.exit(0)); }
+async function stop() { if (engine?.busy) engine.pause(); stopSupportStream(); await browser.close(); log('Đã thoát chương trình.'); server.close(() => process.exit(0)); }
 process.on('SIGINT', stop); process.on('SIGTERM', stop);

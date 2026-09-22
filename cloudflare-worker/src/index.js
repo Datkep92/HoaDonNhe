@@ -233,8 +233,7 @@ export default {
       if (request.method === 'POST' && url.pathname === '/v1/telegram/webhook') return webhook(env, request);
       if (request.method !== 'POST') return reply({ ok: false, error: 'Not found.' }, 404);
 
-      const input = await request.json();
-      const path = url.pathname;
+      const input = await request.json();      const path = url.pathname;
       const action = path.includes('notices') ? 'notice' : path.includes('activate') ? 'activate' : path.includes('messages') ? 'message' : path.includes('chats/status') ? 'chat' : path.includes('status') ? 'status' : path.includes('register') ? 'register' : '';
       if (!action) return reply({ ok: false, error: 'Not found.' }, 404);
       if (limited(request, action, action === 'activate' ? 8 : 60)) return reply({ ok: false, error: 'Too many requests.' }, 429);
@@ -249,7 +248,12 @@ export default {
           const info = contact(input);
           let value;
           try { value = await gas(env, { action: 'register_device', ...d, ...info }); }
-          catch { value = { status: 'Unactivated', registered: false, expiryAt: '' }; }
+          catch (error) {
+            // KHÔNG im lặng: lỗi GAS ở đây từng bị nuốt hoàn toàn nên phía khách "không thấy dữ liệu"
+            // mà không có dấu vết nào ở đâu. Log để thấy được bằng `wrangler tail`.
+            console.log('register_device GAS error: ' + (error && error.message ? error.message : String(error)));
+            value = { status: 'Unactivated', registered: false, expiryAt: '' };
+          }
           try { await announce(env, d, info, value); }
           catch (error) { console.log('Telegram topic pending: ' + error.message); }
           return reply({ ok: true, value: await sessionValue(env, d, value) });

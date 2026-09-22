@@ -24,7 +24,10 @@ const { version } = require('../src/version');
 
 const root = path.resolve(__dirname, '..');
 const releaseDir = path.join(root, 'release');
-const exe = path.join(releaseDir, `HoaDonNhe-v${version}.exe`);
+// Nhãn tuỳ chọn cho bản build thử, để không đè lên bản phát hành:
+//   HOADON_BUILD_LABEL=test-ui npm run build  ->  release/HoaDonNhe-v1.0.0-test-ui.exe
+const label = process.env.HOADON_BUILD_LABEL ? `-${process.env.HOADON_BUILD_LABEL}` : '';
+const exe = path.join(releaseDir, `HoaDonNhe-v${version}${label}.exe`);
 
 function run(command, args) {
   console.log(`\n> ${command} ${args.join(' ')}`);

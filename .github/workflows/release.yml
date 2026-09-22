@@ -2,10 +2,24 @@ name: Release
 
 # Phát hành khi push tag dạng vX.Y.Z (ví dụ v1.0.0).
 # Tên file phát hành duy nhất: HoaDonNhe-Setup-vX.Y.Z.exe
+#
+# Chạy tay (Actions > Release > Run workflow) để BUILD THỬ mà không phát hành:
+#   - nhập version (vd 1.0.0), để publish = false -> chỉ build + lưu artifact.
+#   - publish = true -> tạo luôn GitHub Release công khai.
 on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version để build thử (vd 1.0.0). Bắt buộc khi chạy tay.'
+        required: false
+        default: ''
+      publish:
+        description: 'Tạo GitHub Release công khai?'
+        type: boolean
+        default: false
 
 # Cần quyền tạo Release + upload asset.
 permissions:
@@ -18,7 +32,7 @@ concurrency:
 
 jobs:
   build-and-release:
-    # Bắt buộc chạy trên Windows vì cần pkg (target win-x64), makensis và PE header.
+    # Bắt buộc chạy trên Windows vì cần pkg (target win-x64), makensis và vá PE header.
     runs-on: windows-latest
 
     steps:
@@ -32,13 +46,16 @@ jobs:
           node-version: '22'
           cache: npm
 
-      - name: Lấy version từ tag
+      - name: Lấy version
         id: version
         shell: pwsh
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          REF_NAME: ${{ github.ref_name }}
         run: |
-          $version = $env:GITHUB_REF_NAME.TrimStart('v')
+          $version = if ($env:INPUT_VERSION) { $env:INPUT_VERSION.TrimStart('v') } else { $env:REF_NAME.TrimStart('v') }
           if ($version -notmatch '^\d+\.\d+\.\d+') {
-            throw "Tag '$env:GITHUB_REF_NAME' không hợp lệ. Dùng dạng vX.Y.Z (ví dụ v1.0.0)."
+            throw "Không xác định được version hợp lệ (nhận '$version'). Push tag dạng vX.Y.Z, hoặc nhập 'version' khi chạy tay."
           }
           "version=$version" >> $env:GITHUB_OUTPUT
           Write-Host "Version phát hành: $version"
@@ -58,7 +75,7 @@ jobs:
         with:
           node-version: '16'
 
-      - name: Build app EXE (pkg + ẩn console + icon/version)
+      - name: Build app EXE (pkg + ẩn console)
         run: npm run build
 
       - name: Cài NSIS
@@ -76,13 +93,14 @@ jobs:
             release/HoaDonNhe-Setup-v${{ steps.version.outputs.version }}.exe.sha256
 
       - name: Tạo GitHub Release và upload Setup EXE
+        if: ${{ github.event_name == 'push' || inputs.publish }}
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REF_NAME: ${{ github.ref_name }}
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
-          $version = "${{ steps.version.outputs.version }}"
-          $exe = "release/HoaDonNhe-Setup-v$version.exe"
+          $tag = if ($env:REF_NAME -like 'v*') { $env:REF_NAME } else { "v$($env:VERSION)" }
+          $exe = "release/HoaDonNhe-Setup-v$($env:VERSION).exe"
           $sha = "$exe.sha256"
-          gh release create "${{ github.ref_name }}" $exe $sha `
-            --title "HoaDonNhe v$version" `
-            --notes-file release/RELEASE_NOTES.md
+          gh release create $tag $exe $sha --title "HoaDonNhe v$($env:VERSION)" --notes-file release/RELEASE_NOTES.md

@@ -39,11 +39,13 @@ jobs:
       - name: Checkout source
         uses: actions/checkout@v4
 
-      # Test dùng node --test với --test-isolation=none nên cần Node >= 22.
-      - name: Setup Node.js (cho test)
+      # Một mình Node 24 cho cả test lẫn build:
+      #   - test dùng `--test-isolation=none`, flag chỉ có từ Node 24 (Node 22 báo "bad option").
+      #   - pkg 5.8.1 chạy tốt trên Node 24 với `--no-bytecode --public` (đã kiểm chứng ở máy).
+      - name: Setup Node.js 24
         uses: actions/setup-node@v4
         with:
-          node-version: '22'
+          node-version: '24'
           cache: npm
 
       - name: Lấy version
@@ -68,12 +70,6 @@ jobs:
 
       - name: Chạy test
         run: npm test
-
-      # pkg 5.8.1 chạy tốt nhất trên Node 16 (đúng target node16-win-x64 của project).
-      - name: Setup Node.js 16 (cho pkg)
-        uses: actions/setup-node@v4
-        with:
-          node-version: '16'
 
       - name: Build app EXE (pkg + ẩn console)
         run: npm run build

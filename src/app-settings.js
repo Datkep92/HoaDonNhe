@@ -1,6 +1,13 @@
 'use strict';
 (() => {
   const q = id => document.getElementById(id);
+  // Phản hồi tức thì cho nút có gọi máy chủ hoặc giải mã bí mật (vài trăm ms tới vài giây): khoá nút
+  // và đổi nhãn ngay lúc bấm. Khi xong, mở khoá và chỉ trả lại nhãn cũ nếu nơi gọi chưa đặt nhãn mới.
+  function busyButton(button, label) {
+    const original = button.textContent;
+    button.disabled = true; button.textContent = label;
+    return () => { button.disabled = false; if (button.textContent === label) button.textContent = original; };
+  }
   const api = async (url, body) => {
     const response = await fetch(url, {
       method: url.endsWith('/status') || url.endsWith('/notice') ? 'GET' : 'POST',
@@ -155,44 +162,46 @@
     const phone = phoneDigits(q('payment-phone').value);
     if (name.length < 2) { setPaymentMessage('Nhập họ tên khách hàng (ít nhất 2 ký tự).'); q('payment-name').focus(); return; }
     if (!/^\+?\d{9,15}$/.test(phone)) { setPaymentMessage('Số điện thoại chưa đúng — nhập 9 đến 15 chữ số, ví dụ 0912345678.'); q('payment-phone').focus(); return; }
-    const button = q('payment-info-form').querySelector('button');
-    button.disabled = true;
+    const restore = busyButton(q('payment-info-form').querySelector('button'), 'Đang gửi…');
     try {
       await api('/api/support/info', { name, phone, plan: currentPlan });
       q('payment-phone').value = phone;
       setPaymentMessage(`Đã gửi thông tin đăng ký gói ${currentPlan}. Bộ phận hỗ trợ sẽ liên hệ qua SĐT này để cấp License Key.`, true);
       await refreshSettings();
     } catch (error) { setPaymentMessage(error.message); }
-    finally { button.disabled = false; }
+    finally { restore(); }
   }
 
   async function activateLicense(event) {
     event.preventDefault();
     const key = q('settings-license-key').value.trim();
     if (!key) { setMessage('settings-license-message', 'Nhập License Key trước khi kích hoạt.'); return; }
-    q('settings-license-form').querySelector('button').disabled = true;
+    const restore = busyButton(q('settings-license-form').querySelector('button'), 'Đang kích hoạt…');
     try {
       const value = await api('/api/support/activate', { key });
       setMessage('settings-license-message', String(value.status || '').toLowerCase() === 'active' ? 'Kích hoạt thành công.' : 'Đã gửi key lên máy chủ. Trạng thái sẽ cập nhật sau khi xác thực.');
       q('settings-license-key').value = '';
       await refreshSettings();
     } catch (error) { setMessage('settings-license-message', error.message); }
-    finally { q('settings-license-form').querySelector('button').disabled = false; }
+    finally { restore(); }
   }
 
   async function setPin(event) {
     event.preventDefault();
     const pin = q('pin-new').value.trim();
+    const restore = busyButton(q('pin-form').querySelector('button'), 'Đang lưu…');
     try {
       renderLock(await api('/api/app-lock/set-pin', { pin }));
       q('pin-new').value = '';
       setMessage('pin-message', 'Đã lưu mã PIN trên máy này.');
       resetIdleTimer();
     } catch (error) { setMessage('pin-message', error.message); }
+    finally { restore(); }
   }
 
   async function resetPin(event) {
     event.preventDefault();
+    const restore = busyButton(q('pin-reset-form').querySelector('button'), 'Đang đặt lại…');
     try {
       renderLock(await api('/api/app-lock/reset', { licenseKey: q('pin-reset-license').value.trim(), pin: q('pin-reset-new').value.trim() }));
       q('pin-reset-license').value = '';
@@ -200,6 +209,7 @@
       setMessage('pin-message', 'Đã đặt lại mã PIN.');
       resetIdleTimer();
     } catch (error) { setMessage('pin-message', error.message); }
+    finally { restore(); }
   }
 
   async function lockNow() {
@@ -209,12 +219,14 @@
 
   async function unlock(event) {
     event.preventDefault();
+    const restore = busyButton(q('unlock-form').querySelector('button'), 'Đang mở khóa…');
     try {
       renderLock(await api('/api/app-lock/unlock', { pin: q('unlock-pin').value.trim() }));
       q('unlock-pin').value = '';
       q('unlock-error').textContent = '';
       resetIdleTimer();
     } catch (error) { q('unlock-error').textContent = error.message; q('unlock-pin').select(); }
+    finally { restore(); }
   }
 
   // Quên PIN ở màn hình khoá: mã khôi phục chính là License Key đã kích hoạt trên máy này,
@@ -261,7 +273,11 @@
   q('pin-form').onsubmit = setPin;
   q('pin-reset-form').onsubmit = resetPin;
   q('app-lock-button').onclick = lockNow;
-  q('license-lock-recheck').onclick = () => { void refreshSettings(); };
+  q('license-lock-recheck').onclick = () => {
+    // Kiểm tra lại bản quyền đi qua máy chủ: đổi nhãn nút ngay để cú bấm có phản hồi tức thì.
+    const restore = busyButton(q('license-lock-recheck'), 'Đang kiểm tra…');
+    void refreshSettings().finally(() => restore());
+  };
   q('license-expired-buy').onclick = () => openPayment();
   q('license-expired-key').onclick = () => openSettings('license');
   q('unlock-form').onsubmit = unlock;

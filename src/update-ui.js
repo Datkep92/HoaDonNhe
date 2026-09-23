@@ -73,6 +73,8 @@
     if (busy) return;
     busy = true;
     showError('');
+    // Khoá nút và hiện trạng thái ngay, không phải chờ vòng poll 1,5 giây mới thấy phản hồi.
+    if (lastState && lastState.update) paint(lastState.update);
     try { await api('/api/update/start'); }
     catch (error) { showError(`Không thể cập nhật.\nPhiên bản hiện tại vẫn được giữ nguyên.\n(${error.message})`); }
     finally { busy = false; onState(lastState); }

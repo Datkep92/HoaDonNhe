@@ -5,6 +5,13 @@
 // (mở panel / sau khi gửi) — không theo chu kỳ.
 (() => {
   const $ = id => document.getElementById(id);
+  // Phản hồi tức thì cho nút có gọi máy chủ (Gateway → Firebase/Telegram mất vài giây): khoá nút và
+  // đổi nhãn ngay lúc bấm. Khi xong, mở khoá và chỉ trả lại nhãn cũ nếu nơi gọi chưa tự đặt nhãn mới.
+  function busyButton(button, label) {
+    const original = button.textContent;
+    button.disabled = true; button.textContent = label;
+    return () => { button.disabled = false; if (button.textContent === label) button.textContent = original; };
+  }
   let isOpen = false;
   let lastSignature = '';
   // Thông báo tin mới: badge số tin chưa đọc trên nút 💬 Hỗ trợ + âm thanh (xem vendor/sound.js).
@@ -104,7 +111,7 @@
   $('support-close').onclick = () => $('support-toggle').click();
   $('support-form').onsubmit = async event => {
     event.preventDefault(); const input = $('support-input'); const text = input.value.trim(); if (!text) return;
-    $('support-send').disabled = true;
+    const restore = busyButton($('support-send'), 'Đang gửi…');
     try {
       await call('/api/support/message', { text });
       input.value = '';
@@ -112,10 +119,11 @@
       if (!realtime) await loadMessages();
     }
     catch (error) { $('support-error').textContent = error.message; }
-    finally { $('support-send').disabled = false; }
+    finally { restore(); }
   };
   $('support-license-form').onsubmit = async event => {
     event.preventDefault(); const key = $('support-key').value.trim(); if (!key) return;
+    const restore = busyButton($('support-license-form').querySelector('button'), 'Đang kích hoạt…');
     try {
       const value = await call('/api/support/activate', { key });
       $('support-key').value = '';
@@ -123,6 +131,7 @@
       await loadHeader(); // trạng thái local vừa đổi sau khi kích hoạt
     }
     catch (error) { $('support-error').textContent = error.message; }
+    finally { restore(); }
   };
   loadHeader();
   connect();

@@ -45,6 +45,13 @@ const displayName = account => account.name || account.label || account.mst;
 // Tạo một lần rồi dùng lại: new Intl.NumberFormat cho từng dòng là chi phí thuần tuý (bảng có thể
 // tới 1.000 dòng) mà kết quả định dạng không đổi.
 const amountFormat = new Intl.NumberFormat('vi-VN');
+// Phản hồi tức thì cho nút phải chờ máy chủ (mở cửa sổ Chrome mất vài giây): khoá nút và đổi nhãn
+// ngay lúc bấm. Khi xong, mở khoá và chỉ trả lại nhãn cũ nếu handler chưa tự đặt nhãn mới.
+function busyButton(button, label) {
+  const original = button.textContent;
+  button.disabled = true; button.textContent = label;
+  return () => { button.disabled = false; if (button.textContent === label) button.textContent = original; };
+}
 let editingMst = '';
 function closeRowMenus() { document.querySelectorAll('.row-menu-panel').forEach(x => x.remove()); }
 // One ⋯ menu per row: log in for that MST, edit it, forget its password, or drop it from the list.
@@ -296,6 +303,7 @@ $('login-refresh').onclick = async () => {
   finally { loginBusy(false); }
 };
 $('login-show-page').onclick = async () => {
+  const restore = busyButton($('login-show-page'), 'Đang mở Chrome…');
   try {
     const wantVisible = !current.browserVisible;
     if (!current.browserReady) await call('/api/account/show', { mst: $('login-mst').value.trim() });
@@ -305,6 +313,7 @@ $('login-show-page').onclick = async () => {
     await refresh();
   }
   catch (error) { loginError(error.message); }
+  finally { restore(); }
 };
 $('browser-toggle').onclick = async () => {
   // Chưa có cửa sổ (Chrome đã tự đóng sau lượt tải trước) thì mở lại và hiện lên, đúng như nút

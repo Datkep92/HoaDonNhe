@@ -182,6 +182,18 @@ test('resume() chỉ chạy lại tháng lỗi, tiếp từ cursor đã lưu, kh
   assert.equal(engine.job.phase, 'download', 'xong hết mới chuyển sang download');
   assert.equal(engine.job.state, 'ready');
 });
+test('chạy song song nhiều tháng vẫn giữ items đúng thứ tự như chạy tuần tự', async t => {
+  // Tháng 01 trả chậm hơn tháng 02 để hai task thật sự chồng lấn; items phải vẫn xếp 01 rồi 02.
+  const { dir, engine } = setup(t, async route => {
+    if (route.includes('01/01/2026')) { await new Promise(resolve => setTimeout(resolve, 60)); return Buffer.from(JSON.stringify({ datas: [invoice(1), invoice(2)], total: 2 })); }
+    return Buffer.from(JSON.stringify({ datas: [invoice(9)], total: 1 }));
+  });
+  await engine.search({ ...params, to: '2026-02-28' }, dir);
+  assert.equal(engine.job.tasks.length, 2);
+  assert.deepEqual(engine.job.items.map(x => String(x.invoice.shdon)), ['1', '2', '9'], 'tháng 01 phải đứng trước tháng 02 dù chạy song song');
+  assert.equal(engine.job.state, 'ready');
+  assert.equal(engine.job.phase, 'download');
+});
 test('XML ZIP extraction, checkpoint restore, and existing file skip', async t => {
   const zip = new JSZip(); zip.file('../../invoice.xml', '<?xml version="1.0"?><HDon/>');
   const bytes = await zip.generateAsync({ type: 'nodebuffer' });

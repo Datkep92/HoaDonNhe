@@ -34,10 +34,19 @@ function note(status, text = '', retryAfter = '') {
   restReason = status === 429 ? 'HTTP 429 – quá nhiều yêu cầu' : 'HTTP 403 – bị chặn vì hành vi không hợp lệ';
   return wait;
 }
+// Một nhịp = MIN_GAP + jitter (giữ nguyên như trước).
+function nextGap() { return MIN_GAP + (JITTER ? Math.floor(Math.random() * JITTER) : 0); }
+// wait() vừa chờ vừa GIỮ CHỖ: mỗi lần gọi chiếm một mốc riêng, nên nhiều task chạy song song vẫn
+// không thể bắn request cùng lúc. (Trước đây mark() chỉ đặt mốc lúc NHẬN response, nên N task cùng
+// chờ sẽ thức dậy ở cùng một mốc và bắn gần như đồng thời — đúng thứ nhịp này sinh ra để tránh.)
 async function wait() {
   guard();
-  const gap = gapMs();
-  if (gap > 0) await new Promise(resolve => setTimeout(resolve, gap));
+  const slot = Math.max(Date.now(), nextAt);
+  nextAt = slot + nextGap(); // đẩy mốc kế tiếp ngay; đồng bộ nên không lần gọi nào chen vào giữa
+  const delay = slot - Date.now();
+  if (delay > 0) await new Promise(resolve => setTimeout(resolve, delay));
 }
-function mark() { nextAt = Date.now() + MIN_GAP + (JITTER ? Math.floor(Math.random() * JITTER) : 0); }
+// Sau mỗi response vẫn giãn thêm một nhịp như cũ; chỉ đẩy mốc đi xa hơn (monotonic), không kéo về
+// gần, để khoảng cách tối thiểu luôn đúng dù có bao nhiêu task chạy song song.
+function mark() { nextAt = Math.max(nextAt, Date.now() + nextGap()); }
 module.exports = { wait, mark, note, guard, blocked, restRemaining, resetRest, gapMs, MIN_GAP };

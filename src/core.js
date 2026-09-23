@@ -108,11 +108,17 @@ class Engine {
   async scan() {
     const j = this.job; j.state = 'searching';
     const keys = new Set(j.items.map(x => invoiceKey(x.invoice)));
-    for (const task of j.tasks) {
-      if (task.done) continue;
+    // GIAI ĐOẠN 1 — chạy song song vài task để che độ trễ cổng thuế. Nhịp gửi KHÔNG tăng:
+    // pace.wait() đặt chỗ trước khi bắn nên dù nhiều task cùng bay, request vẫn cách nhau >= MIN_GAP.
+    const concurrency = Math.max(1, Math.min(4, Number(process.env.HOADON_SCAN_CONCURRENCY) || 2));
+    const startIndex = j.items.length; // item cũ giữ nguyên chỗ; chỉ sắp lại phần thêm trong lượt này
+    const order = new Map();           // invoiceKey -> [thứ tự task, thứ tự trong task]
+    const queue = j.tasks.map((task, index) => ({ task, index })).filter(x => !x.task.done);
+    const runTask = async ({ task, index }) => {
       // Chạy lại task còn dở: xoá chẩn đoán của lần trước để retry thành công không còn báo lỗi cũ.
       // cursor/count/pages/seen giữ nguyên nên vẫn tiếp đúng chỗ đã dừng.
       task.error = ''; task.warning = '';
+      let seq = 0;
       try {
         while (!task.done) {
           await this.checkAccount();
@@ -126,7 +132,7 @@ class Engine {
           for (const invoice of data.datas) {
             const inv = { ...invoice, family: task.family, direction: j.params.direction };
             const key = invoiceKey(inv);
-            if (!keys.has(key) && (!j.params.status || String(inv.tthai) === j.params.status)) { keys.add(key); j.items.push({ invoice: inv, state: 'queued', files: [] }); }
+            if (!keys.has(key) && (!j.params.status || String(inv.tthai) === j.params.status)) { keys.add(key); j.items.push({ invoice: inv, state: 'queued', files: [] }); order.set(key, [index, seq]); seq += 1; }
           }
           const count = task.count + data.datas.length;
           const cursor = data.state === undefined || data.state === null ? '' : String(data.state);
@@ -158,6 +164,21 @@ class Engine {
         j.message = `Tháng ${task.from} → ${task.to} gặp lỗi: ${task.error}`;
         this.save();
       }
+    };
+    let next = 0;
+    // Giành index TRƯỚC khi await (tăng đồng bộ) — nếu tăng sau await thì hai worker sẽ cùng lấy
+    // một task và bỏ qua task khác.
+    const worker = async () => { for (;;) { const i = next; next += 1; if (i >= queue.length) return; await runTask(queue[i]); } };
+    // allSettled: một task ném lỗi (tạm dừng / hết phiên) cũng không để worker khác treo lơ lửng.
+    const settled = await Promise.allSettled(Array.from({ length: Math.min(concurrency, queue.length) }, () => worker()));
+    const fatal = settled.find(r => r.status === 'rejected');
+    if (fatal) throw fatal.reason;
+    // Sắp lại item thêm trong lượt này theo thứ tự task => items/Excel giống hệt khi chạy tuần tự.
+    const tail = j.items.slice(startIndex);
+    if (tail.length > 1) {
+      const slotOf = invoice => order.get(invoiceKey(invoice.invoice)) || [Number.MAX_SAFE_INTEGER, 0];
+      tail.sort((a, b) => { const x = slotOf(a); const y = slotOf(b); return x[0] - y[0] || x[1] - y[1]; });
+      j.items = j.items.slice(0, startIndex).concat(tail);
     }
     j.stats = { total: j.items.length, existed: 0, queued: 0, downloaded: 0, skipped: 0, failed: 0 };
     const unfinished = j.tasks.filter(t => !t.done);

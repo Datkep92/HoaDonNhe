@@ -3,18 +3,30 @@ const assert = require('node:assert/strict');
 const pace = require('../src/pace');
 const WAF = JSON.stringify({ status: 403, message: 'Hệ thống phát hiện hành vi không hợp lệ. Yêu cầu đã bị chặn.' });
 
-test('two portal calls are spaced by a minimum gap', async t => {
+test('wait() giữ chỗ: hai lần gọi cổng liên tiếp vẫn cách nhau tối thiểu MIN_GAP', async t => {
   t.after(() => pace.resetRest());
   pace.resetRest();
-  const startedAt = Date.now();
-  pace.mark();
-  assert.ok(pace.gapMs() > 0, 'the next call must wait before firing again');
+  // Đo khoảng cách giữa các lần HOÀN TẤT: lần đầu có thể tới lượt ngay (0ms) là đúng, còn hai lần
+  // sau phải cách nhau >= MIN_GAP vì mỗi lần wait() đã giữ chỗ một mốc riêng.
   await pace.wait();
-  const elapsed = Date.now() - startedAt;
-  assert.ok(elapsed >= pace.MIN_GAP, `chỉ chờ ${elapsed}ms, phải >= ${pace.MIN_GAP}ms`);
-  // Timer của Node có thể lệch ~1ms so với đồng hồ tường, nên chỉ đòi hết khoảng cách
-  // trong sai số nhỏ — assert gapMs() === 0 tuyệt đối từng làm CI đỏ oan.
-  assert.ok(pace.gapMs() <= 2, `vẫn còn phải chờ ${pace.gapMs()}ms`);
+  const first = Date.now();
+  await pace.wait();
+  const second = Date.now();
+  await pace.wait();
+  const third = Date.now();
+  // Timer của Node có thể lệch ~1ms, nên cho sai số 15ms.
+  assert.ok(second - first >= pace.MIN_GAP - 15, `lần 1→2 chỉ cách ${second - first}ms, phải >= ${pace.MIN_GAP}ms`);
+  assert.ok(third - second >= pace.MIN_GAP - 15, `lần 2→3 chỉ cách ${third - second}ms, phải >= ${pace.MIN_GAP}ms`);
+});
+test('nhiều task chờ song song vẫn không bắn cùng lúc (không nhân tốc độ gửi)', async t => {
+  t.after(() => pace.resetRest());
+  pace.resetRest();
+  const times = [];
+  await Promise.all([0, 1, 2].map(async () => { await pace.wait(); times.push(Date.now()); }));
+  times.sort((a, b) => a - b);
+  assert.equal(times.length, 3);
+  assert.ok(times[1] - times[0] >= pace.MIN_GAP - 15, `hai lần bắn đầu cách nhau ${times[1] - times[0]}ms`);
+  assert.ok(times[2] - times[1] >= pace.MIN_GAP - 15, `hai lần bắn sau cách nhau ${times[2] - times[1]}ms`);
 });
 test('429 rests with exponential backoff and honours the portal Retry-After', t => {
   t.after(() => pace.resetRest());

@@ -101,9 +101,51 @@ test('pagination retrieves all pages, deduplicates invoices and preserves order'
   await engine.search(params, dir);
   assert.equal(calls, 2); assert.equal(engine.job.items.length, 51); assert.equal(engine.job.state, 'ready');
 });
-test('missing cursor is reported as incomplete rather than successful', async t => {
+test('hết cursor là hết dữ liệu của tháng: task hoàn tất và có cảnh báo khi count != total', async t => {
+  // Cổng trả 1 dòng, không trả cursor, nhưng total nói 100 -> KHÔNG được báo "đã đủ", chỉ ghi cảnh báo
+  // và để task hoàn tất (trước đây trường hợp này làm cả lượt tra cứu thất bại).
   const { dir, engine } = setup(t, async () => Buffer.from(JSON.stringify({ datas: [invoice(1)], total: 100 })));
-  await engine.search(params, dir); assert.equal(engine.job.state, 'failed'); assert.equal(engine.job.tasks[0].done, false);
+  await engine.search(params, dir);
+  const task = engine.job.tasks[0];
+  assert.equal(task.done, true);
+  assert.equal(task.count, 1);
+  assert.equal(task.total, 100);
+  assert.equal(task.pages, 1);
+  assert.match(task.warning || '', /không nhất quán/);
+  assert.equal(engine.job.state, 'ready');
+  assert.match(engine.job.message, /CHƯA XÁC NHẬN ĐỦ/);
+});
+test('cursor lặp lại thì dừng đúng task đó, không lặp vô hạn', async t => {
+  let calls = 0;
+  const { dir, engine } = setup(t, async () => {
+    calls += 1;
+    return Buffer.from(JSON.stringify({ datas: Array.from({ length: 50 }, (_, i) => invoice(calls * 100 + i)), total: 5000, state: 'same-cursor' }));
+  });
+  await engine.search(params, dir);
+  const task = engine.job.tasks[0];
+  assert.equal(calls, 2, 'trang 1 nhận cursor, trang 2 trả lại chính cursor đó thì phải dừng');
+  assert.equal(task.done, false);
+  assert.match(task.error, /cursor đã dùng/);
+  assert.equal(engine.job.state, 'ready');
+  assert.match(engine.job.message, /CHƯA XÁC NHẬN ĐỦ/);
+});
+test('trang rỗng mà vẫn còn cursor thì dừng task đó và ghi lỗi', async t => {
+  const { dir, engine } = setup(t, async () => Buffer.from(JSON.stringify({ datas: [], total: 10, state: 'next' })));
+  await engine.search(params, dir);
+  assert.equal(engine.job.tasks[0].done, false);
+  assert.match(engine.job.tasks[0].error, /trang rỗng/);
+});
+test('một tháng lỗi không làm dừng các tháng còn lại', async t => {
+  const { dir, engine } = setup(t, async route => {
+    if (route.includes('01/01/2026')) return Buffer.from(JSON.stringify({ datas: Array.from({ length: 50 }, (_, i) => invoice(i)), total: 999, state: 'loop' }));
+    return Buffer.from(JSON.stringify({ datas: [invoice(500)], total: 1 }));
+  });
+  await engine.search({ ...params, to: '2026-02-28' }, dir);
+  assert.equal(engine.job.tasks.length, 2);
+  assert.ok(engine.job.tasks[0].error, 'tháng 01 phải ghi lỗi');
+  assert.equal(engine.job.tasks[1].done, true, 'tháng 02 vẫn phải chạy xong');
+  assert.equal(engine.job.items.length, 51);
+  assert.equal(engine.job.state, 'ready');
 });
 test('XML ZIP extraction, checkpoint restore, and existing file skip', async t => {
   const zip = new JSZip(); zip.file('../../invoice.xml', '<?xml version="1.0"?><HDon/>');

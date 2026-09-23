@@ -62,6 +62,9 @@ function tasksFor(p) {
 // HTML hóa đơn: dùng bộ dựng giống trang tra cứu của cổng thuế (port từ luồng API của dự án
 // extension) để file .html và .pdf khớp bản chuẩn — xem src/invoice-html.js.
 const { invoiceHtml, withXmlFields } = require('./invoice-html');
+// Chặn an toàn: nếu cổng trả cursor MỚI mãi không dừng thì dừng task đó lại thay vì lặp vô hạn.
+// 400 trang × 50 dòng = 20.000 hóa đơn/tháng, cao hơn mọi tháng thực tế đã gặp.
+const MAX_PAGES_PER_TASK = 400;
 class Engine {
   constructor({ store, request, identity, emit, pdf, excel }) {
     Object.assign(this, { store, request, identity, emit, pdf, excel });
@@ -106,32 +109,64 @@ class Engine {
     const j = this.job; j.state = 'searching';
     const keys = new Set(j.items.map(x => invoiceKey(x.invoice)));
     for (const task of j.tasks) {
-      while (!task.done) {
-        await this.checkAccount();
-        const query = `/${task.family}/invoices/${j.params.direction}?sort=tdlap:desc&size=50&search=${searchExpression(task.from, task.to, task.variant)}${task.cursor ? '&state=' + encodeURIComponent(task.cursor) : ''}`;
-        const action = `Tìm kiếm (hóa đơn ${task.family === 'sco-query' ? 'máy tính tiền ' : ''}${j.params.direction === 'sold' ? 'bán ra' : 'mua vào'})`;
-        const response = await this.request(query, action, () => this.check());
-        this.check();
-        const data = JSON.parse(response.toString('utf8'));
-        if (!Array.isArray(data.datas)) throw new Error('API trả danh sách không hợp lệ; giữ tiến độ để thử lại.');
-        for (const invoice of data.datas) {
-          const inv = { ...invoice, family: task.family, direction: j.params.direction };
-          const key = invoiceKey(inv);
-          if (!keys.has(key) && (!j.params.status || String(inv.tthai) === j.params.status)) { keys.add(key); j.items.push({ invoice: inv, state: 'queued', files: [] }); }
+      if (task.done) continue;
+      try {
+        while (!task.done) {
+          await this.checkAccount();
+          const query = `/${task.family}/invoices/${j.params.direction}?sort=tdlap:desc&size=50&search=${searchExpression(task.from, task.to, task.variant)}${task.cursor ? '&state=' + encodeURIComponent(task.cursor) : ''}`;
+          const action = `Tìm kiếm (hóa đơn ${task.family === 'sco-query' ? 'máy tính tiền ' : ''}${j.params.direction === 'sold' ? 'bán ra' : 'mua vào'})`;
+          const response = await this.request(query, action, () => this.check());
+          this.check();
+          const data = JSON.parse(response.toString('utf8'));
+          if (!data || typeof data !== 'object' || !Array.isArray(data.datas)) throw new Error('API trả danh sách không hợp lệ; giữ tiến độ để thử lại.');
+          const before = j.items.length;
+          for (const invoice of data.datas) {
+            const inv = { ...invoice, family: task.family, direction: j.params.direction };
+            const key = invoiceKey(inv);
+            if (!keys.has(key) && (!j.params.status || String(inv.tthai) === j.params.status)) { keys.add(key); j.items.push({ invoice: inv, state: 'queued', files: [] }); }
+          }
+          const count = task.count + data.datas.length;
+          const cursor = data.state === undefined || data.state === null ? '' : String(data.state);
+          // Cổng thuế trả `total` KHÔNG nhất quán (đo thực tế: 295 vs 287 cho cùng một tháng;
+          // 1377/1332 trong khi chỉ có 1368 bản ghi), nên KHÔNG dùng `total` để quyết định còn trang.
+          // Cursor mới là dấu hiệu thật: còn cursor -> còn trang; hết cursor -> hết dữ liệu của task.
+          if (cursor && (cursor === task.cursor || task.seen.includes(cursor))) throw new Error(`Cổng trả lại cursor đã dùng cho ${task.from} → ${task.to}; giữ tiến độ để thử lại.`);
+          if (cursor && data.datas.length === 0) throw new Error(`Cổng trả trang rỗng nhưng vẫn còn cursor cho ${task.from} → ${task.to}; giữ tiến độ để thử lại.`);
+          if (cursor && (task.pages || 0) >= MAX_PAGES_PER_TASK) throw new Error(`Quá nhiều trang cho ${task.from} → ${task.to} (đã ${task.pages} trang); giữ tiến độ để thử lại.`);
+          task.count = count;
+          task.pages = (task.pages || 0) + 1;
+          task.added = (task.added || 0) + (j.items.length - before);
+          const total = Number(data.total);
+          if (Number.isFinite(total)) { task.total = total; task.totals = [...new Set([...(task.totals || []), total])].slice(-10); }
+          if (task.cursor) task.seen.push(task.cursor);
+          task.cursor = cursor; task.done = !cursor;
+          // Hết cursor nghĩa là cổng không còn dữ liệu để đưa. Nếu số nhận được khác `total` thì
+          // ghi lại cảnh báo (kèm số liệu trong chính task) để còn kiểm tra lại, không hứa "đã đủ".
+          if (task.done && Number.isFinite(total) && count !== total) task.warning = `Cổng báo tổng ${total} nhưng nhận được ${count} bản ghi (API trả tổng không nhất quán).`;
+          j.message = `Đã tìm ${j.items.length} hóa đơn · ${task.from} → ${task.to}`;
+          this.save();
         }
-        const count = task.count + data.datas.length;
-        const more = count < Number(data.total) || (data.datas.length === 50 && !!data.state);
-        if (more && (!data.state || task.seen.includes(data.state) || data.state === task.cursor || !data.datas.length)) throw new Error('Phân trang không tiến triển; chưa thể xác nhận đủ hóa đơn.');
-        task.count = count;
-        if (task.cursor) task.seen.push(task.cursor);
-        task.cursor = more ? data.state : ''; task.done = !more;
-        j.message = `Đã tìm ${j.items.length} hóa đơn · ${task.from} → ${task.to}`;
+      } catch (error) {
+        // Tạm dừng / cần đăng nhập vẫn phải dừng cả lượt như trước.
+        if (error && (error.paused || error.auth)) throw error;
+        // Một tháng lỗi KHÔNG được làm chết các tháng còn lại: ghi lỗi vào task rồi đi tiếp.
+        task.done = false;
+        task.error = error && error.message ? error.message : String(error);
+        j.message = `Tháng ${task.from} → ${task.to} gặp lỗi: ${task.error}`;
         this.save();
       }
     }
     j.phase = 'download'; j.state = 'ready';
     j.stats = { total: j.items.length, existed: 0, queued: 0, downloaded: 0, skipped: 0, failed: 0 };
-    j.message = `Tra cứu xong: ${j.items.length} hóa đơn. Bấm Tải hóa đơn.`; this.save();
+    const failed = j.tasks.filter(t => t.error);
+    const warned = j.tasks.filter(t => t.warning);
+    const notes = [];
+    if (failed.length) notes.push(`${failed.length} tháng lỗi (${failed.map(t => t.from.slice(0, 7)).join(', ')})`);
+    if (warned.length) notes.push(`${warned.length} tháng cổng báo tổng không nhất quán (${warned.map(t => t.from.slice(0, 7)).join(', ')})`);
+    j.message = `Tra cứu xong theo cursor: ${j.items.length} hóa đơn.`
+      + (notes.length ? ` CHƯA XÁC NHẬN ĐỦ: ${notes.join('; ')} — xem chi tiết trong file job (mục tasks).` : '')
+      + ' Bấm Tải hóa đơn.';
+    this.save();
   }
   async resume(download = false) {
     if (!this.job) throw new Error('Chưa có lượt tải để tiếp tục.');

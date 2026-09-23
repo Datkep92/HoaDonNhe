@@ -194,6 +194,37 @@ test('chạy song song nhiều tháng vẫn giữ items đúng thứ tự như c
   assert.equal(engine.job.state, 'ready');
   assert.equal(engine.job.phase, 'download');
 });
+test('tự chạy tiếp lượt bị ngắt (trên đĩa là searching) khi mở lại app', async t => {
+  let calls = 0;
+  const { dir, options } = setup(t, async () => { calls += 1; return Buffer.from(JSON.stringify({ datas: [invoice(1)], total: 1 })); });
+  // Giả lập app bị tắt giữa lượt: trên đĩa vẫn là `searching` và còn task chưa xong.
+  fs.writeFileSync(path.join(dir, 'job.json'), JSON.stringify({
+    version: 1, id: 'interrupted-1', account, output: dir, params,
+    tasks: [{ family: 'query', from: '2026-01-01', to: '2026-01-31', variant: null, cursor: '', count: 0, done: false, seen: [] }],
+    items: [], phase: 'search', state: 'searching', message: 'Đang tra cứu...',
+  }));
+  const restarted = new Engine(options);
+  assert.equal(restarted.interrupted, true, 'phải nhận ra lượt bị ngắt');
+  assert.equal(restarted.job.state, 'paused', 'vẫn hiện là tạm dừng để UI bật nút Tải tiếp');
+  const snapshot = await restarted.autoResume();
+  assert.equal(calls, 1, 'phải tự gọi lại cổng một lần');
+  assert.equal(snapshot.state, 'ready', 'chạy tiếp xong thì về ready');
+  assert.equal(restarted.job.items.length, 1);
+});
+test('KHÔNG tự chạy tiếp khi người dùng đã bấm Tạm dừng (trên đĩa là paused)', async t => {
+  let calls = 0;
+  const { dir, options } = setup(t, async () => { calls += 1; return Buffer.from(JSON.stringify({ datas: [invoice(1)], total: 1 })); });
+  fs.writeFileSync(path.join(dir, 'job.json'), JSON.stringify({
+    version: 1, id: 'paused-1', account, output: dir, params,
+    tasks: [{ family: 'query', from: '2026-01-01', to: '2026-01-31', variant: null, cursor: '', count: 0, done: false, seen: [] }],
+    items: [], phase: 'search', state: 'paused', message: 'Đã tạm dừng. Có thể tải tiếp.',
+  }));
+  const restarted = new Engine(options);
+  assert.equal(restarted.interrupted, false);
+  assert.equal(await restarted.autoResume(), null);
+  assert.equal(calls, 0, 'không được gọi cổng khi người dùng đã chủ động tạm dừng');
+  assert.equal(restarted.job.state, 'paused');
+});
 test('XML ZIP extraction, checkpoint restore, and existing file skip', async t => {
   const zip = new JSZip(); zip.file('../../invoice.xml', '<?xml version="1.0"?><HDon/>');
   const bytes = await zip.generateAsync({ type: 'nodebuffer' });

@@ -69,10 +69,21 @@ class Engine {
   constructor({ store, request, identity, emit, pdf, excel }) {
     Object.assign(this, { store, request, identity, emit, pdf, excel });
     this.busy = false; this.cancelled = false; this.job = null;
+    // Lượt chạy bị NGẮT (app bị tắt/crash giữa đường) để lại đúng `searching`/`downloading` trên đĩa;
+    // còn khi người dùng bấm "Tạm dừng" thì app đã ghi hẳn `paused`. Ghi nhớ để lát nữa tự chạy tiếp.
+    this.interrupted = false;
     if (fs.existsSync(store)) {
       this.job = JSON.parse(fs.readFileSync(store, 'utf8'));
-      if (['searching', 'downloading'].includes(this.job.state)) this.job.state = 'paused';
+      if (['searching', 'downloading'].includes(this.job.state)) { this.job.state = 'paused'; this.interrupted = true; }
     }
+  }
+  // Tự chạy tiếp lượt bị ngắt — chỉ gọi khi app vừa mở lại và đã có phiên đăng nhập. Chạy lại `scan()`
+  // (bỏ qua task đã xong, tiếp từ cursor) hoặc `download()` tuỳ theo phase. Không làm gì nếu không có
+  // gì bị ngắt, hoặc nếu lần trước người dùng chủ động bấm "Tạm dừng" (trên đĩa là `paused`).
+  async autoResume() {
+    if (!this.interrupted || this.busy || !this.job) return null;
+    this.interrupted = false;
+    return this.job.phase === 'search' ? this.resume() : this.resume(true);
   }
   save() { if (this.job) atomicWrite(this.store, JSON.stringify(this.job)); this.emit(this.snapshot()); }
   snapshot() {

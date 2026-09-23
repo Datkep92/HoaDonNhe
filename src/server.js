@@ -114,6 +114,8 @@ function accountFor(mst) { return accounts.accounts.find(x => x.mst === mst) || 
 // only. This is what makes the next run "already logged in" like VNIT instead of asking for the
 // CAPTCHA again. The password is only read when the login form leaves it empty.
 const remembered = new Map();
+// Đã tự chạy tiếp cho lượt nào rồi (khoá theo MST + id lượt) — tránh chạy lặp khi chọn lại MST.
+const autoResumed = new Set();
 function isRemembered(mst) {
   if (!remembered.has(mst)) remembered.set(mst, !!secrets.read(mst, ['password']).password);
   return remembered.get(mst);
@@ -127,6 +129,7 @@ function restoreSession(mst) {
   if (!account.mst && /^(\d{10}(?:-\d{3})?|\d{13})$/.test(account.label)) account.mst = account.label;
   if (account.mst && account.mst !== mst) { secrets.clear(mst, ['token']); return false; }
   directTokens.set(mst, stored.token); authAccount = account;
+  autoResumeIfNeeded(mst);
   return true;
 }
 function storeSession(mst, token, password, keep) {
@@ -199,6 +202,16 @@ function saveAccount(input) {
   accounts.selected = selected; saveAccounts();
   return publicAccount(accountFor(mst));
 }
+// Tự chạy tiếp lượt tra cứu/tải bị NGẮT khi app được mở lại — chỉ khi đã có phiên đăng nhập thẳng
+// (không mở cửa sổ Chrome ngoài ý muốn) và mỗi lượt chỉ tự chạy một lần.
+function autoResumeIfNeeded(mst) {
+  if (!engine || !engine.interrupted || engine.mst !== mst) return;
+  const key = `${mst}|${(engine.job && engine.job.id) || ''}`;
+  if (!directTokens.has(mst) || autoResumed.has(key)) return;
+  autoResumed.add(key);
+  log(`Tự chạy tiếp lượt ${engine.job.phase === 'search' ? 'tra cứu' : 'tải'} còn dở của MST ${mst}…`);
+  engine.autoResume().catch(error => log('Không tự chạy tiếp được: ' + (error && error.message ? error.message : error)));
+}
 function createEngine(mst) {
   engine = new Engine({
     store: jobStore(mst),
@@ -219,6 +232,8 @@ function createEngine(mst) {
     excel: makeExcel,
     emit: () => {}
   });
+  engine.mst = mst;
+  autoResumeIfNeeded(mst);
   // "Thư mục lưu" là một thiết lập chung cho mọi MST: không đổi theo lượt tải của từng MST.
 }
 // Mọi lượt tải ghi vào thư mục lưu chung. Chỉ khi người dùng chưa chọn thư mục chung thì mới dùng
@@ -368,6 +383,7 @@ async function submitLogin(input) {
       const identity = jwtAccount(token);
       if (identity?.mst && identity.mst !== selected) throw new Error(`Tài khoản này thuộc MST ${identity.mst}, không khớp MST đã chọn.`);
       directTokens.set(selected, token); authAccount = identity || { mst: selected, label: input.username.trim() };
+      autoResumeIfNeeded(selected);
       storeSession(selected, token, password, keep);
       const account = await checkLogin(); return { authenticated: true, account, mst: selected, remembered: keep && !!password };
     } catch (error) {

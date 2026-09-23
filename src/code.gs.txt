@@ -205,7 +205,7 @@ function registerDevice_(input) {
       const previous = String(data.values[byHash][hardwareCol] || '').trim();
       sheet.getRange(byHash + 2, hardwareCol + 1).setValue(installId);
       data.values[byHash][hardwareCol] = installId;
-      if (previous && previous !== installId) rebindDevice_(previous, installId);
+      if (previous && previous !== installId) rebindDevice_(previous, installId, roomId);
       found = byHash;
     }
   }
@@ -253,7 +253,7 @@ function registerDevice_(input) {
 }
 
 // Đổi chủ liên kết khi mã máy cục bộ thay đổi nhưng vẫn là máy cũ.
-function rebindDevice_(previousId, installId) {
+function rebindDevice_(previousId, installId, roomId) {
   const licenses = licenseSheet_();
   const data = rows_(licenses);
   const hardwareCol = cell_(data.header, 'Hardware ID');
@@ -266,7 +266,14 @@ function rebindDevice_(previousId, installId) {
   const bindingIndex = find_(bindingData.values, bindingHardwareCol, previousId);
   if (bindingIndex >= 0) {
     bindings.getRange(bindingIndex + 2, bindingHardwareCol + 1).setValue(installId);
-    bindings.getRange(bindingIndex + 2, cell_(bindingData.header, 'Chat Room ID') + 1).setValue(roomId);
+    // Phòng chat chỉ ghi khi dòng liên kết còn trống — cùng quy tắc với verifyKey_.
+    // Trước đây chỗ này dùng biến `roomId` không tồn tại trong hàm, nên khi Sheet có
+    // tab Bindings thì rebind ném ReferenceError và register_device thất bại âm thầm.
+    const bindingRoomCol = optional_(bindingData.header, 'Chat Room ID');
+    const currentRoom = bindingRoomCol >= 0 ? String(bindingData.values[bindingIndex][bindingRoomCol] || '').trim() : '';
+    if (roomId && bindingRoomCol >= 0 && !currentRoom) {
+      bindings.getRange(bindingIndex + 2, bindingRoomCol + 1).setValue(roomId);
+    }
   }
 }
 

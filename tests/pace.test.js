@@ -6,10 +6,15 @@ const WAF = JSON.stringify({ status: 403, message: 'Hệ thống phát hiện h�
 test('two portal calls are spaced by a minimum gap', async t => {
   t.after(() => pace.resetRest());
   pace.resetRest();
+  const startedAt = Date.now();
   pace.mark();
   assert.ok(pace.gapMs() > 0, 'the next call must wait before firing again');
   await pace.wait();
-  assert.equal(pace.gapMs(), 0);
+  const elapsed = Date.now() - startedAt;
+  assert.ok(elapsed >= pace.MIN_GAP, `chỉ chờ ${elapsed}ms, phải >= ${pace.MIN_GAP}ms`);
+  // Timer của Node có thể lệch ~1ms so với đồng hồ tường, nên chỉ đòi hết khoảng cách
+  // trong sai số nhỏ — assert gapMs() === 0 tuyệt đối từng làm CI đỏ oan.
+  assert.ok(pace.gapMs() <= 2, `vẫn còn phải chờ ${pace.gapMs()}ms`);
 });
 test('429 rests with exponential backoff and honours the portal Retry-After', t => {
   t.after(() => pace.resetRest());

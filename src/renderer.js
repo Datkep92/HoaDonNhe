@@ -42,6 +42,9 @@ function notice(text, actions) {
 window.notice = notice;
 const SESSION_LABEL = { live: 'Đang dùng phiên đăng nhập của phiên làm việc này', saved: 'Còn phiên đã lưu — bấm để vào tra cứu', none: 'Chưa đăng nhập — bấm để đăng nhập' };
 const displayName = account => account.name || account.label || account.mst;
+// Tạo một lần rồi dùng lại: new Intl.NumberFormat cho từng dòng là chi phí thuần tuý (bảng có thể
+// tới 1.000 dòng) mà kết quả định dạng không đổi.
+const amountFormat = new Intl.NumberFormat('vi-VN');
 let editingMst = '';
 function closeRowMenus() { document.querySelectorAll('.row-menu-panel').forEach(x => x.remove()); }
 // One ⋯ menu per row: log in for that MST, edit it, forget its password, or drop it from the list.
@@ -129,11 +132,23 @@ function renderAccounts(state) {
     list.append(row);
   }
 }
+let lastRenderedState = null;
 function render(state) {
-  current = state; renderAccounts(state);
+  // Bảng có thể tới 1.000 dòng nên dựng lại toàn bộ DOM mỗi 1,5 giây là nguồn giật chính khi app
+  // đứng yên. Chuỗi JSON của state là chữ ký đầy đủ (state đến từ JSON của server) nên chỉ bỏ qua
+  // phần dựng DOM khi mọi thứ y hệt lần trước — nội dung và thứ tự render không đổi.
+  // Chữ ký gồm cả `pending` (work() gọi render(current) để khoá nút trong lúc chạy) và trạng thái
+  // mở của hộp thoại đăng nhập — đó là hai đầu vào DOM không nằm trong state, thiếu chúng thì nút
+  // hoặc nhãn trong hộp thoại sẽ không được cập nhật như trước.
+  let signature = null;
+  try { signature = JSON.stringify([pending, $('login-dialog').open ? 1 : 0, state]); } catch { signature = null; }
+  const changed = signature === null || signature !== lastRenderedState;
+  current = state;
+  if (changed) { lastRenderedState = signature; renderAccounts(state); }
   // Cho các module khác (hộp thoại cập nhật) bám theo trạng thái mới nhất mà không cần poll riêng.
   window.HD_LAST_STATE = state;
   try { window.dispatchEvent(new CustomEvent('hd:state', { detail: state })); } catch {}
+  if (!changed) return;
   const browserText = state.browserVisible ? 'Ẩn Chrome đăng nhập' : 'Hiện Chrome đăng nhập';
   // Chrome tự đóng sau khi tải xong, nên nút này không còn phụ thuộc browserReady: chưa có cửa sổ
   // thì bấm vào sẽ mở lại (xem onclick), giống nút trong bảng đăng nhập.
@@ -157,13 +172,14 @@ function render(state) {
   // Không ghi đè lên đường dẫn người dùng đang gõ; chỉ cập nhật khi nơi lưu đổi thật.
   const field = $('output');
   if (document.activeElement !== field && field.value !== (state.output || '')) field.value = state.output || '';
-  $('rows').replaceChildren();
+  const table = $('rows');
+  const tableRows = document.createDocumentFragment();
   for (const [index, inv] of (state.items || []).entries()) {
     const row = document.createElement('tr');
     row.className = inv.state || ''; // dòng đang tải được tô nổi bật (xem style.css)
     const cell = (text, small) => { const td = document.createElement('td'); td.textContent = text ?? ''; if (small) { const sub = document.createElement('small'); sub.textContent = small; td.append(sub); } row.append(td); return td; };
     const stt = cell(String(index + 1)); stt.className = 'stt';
-    cell(inv.number, inv.symbol); cell(inv.name || inv.seller, inv.seller); cell(inv.amount == null ? '—' : new Intl.NumberFormat('vi-VN').format(inv.amount));
+    cell(inv.number, inv.symbol); cell(inv.name || inv.seller, inv.seller); cell(inv.amount == null ? '—' : amountFormat.format(inv.amount));
     const result = cell(labels[inv.state] || inv.state, inv.error); result.className = inv.state;
     // Dòng đã có file: bấm vào để mở hóa đơn bằng ứng dụng mặc định của Windows.
     if ((inv.files || []).length) {
@@ -172,8 +188,10 @@ function render(state) {
       row.onclick = open;
       row.onkeydown = event => { if (event.key === 'Enter') { event.preventDefault(); open(); } };
     }
-    $('rows').append(row);
+    tableRows.append(row);
   }
+  // Gắn một lần thay vì 1.000 lần: cùng cây DOM, cùng thứ tự, chỉ bớt mỗi dòng một lần layout.
+  table.replaceChildren(tableRows);
   $('empty').hidden = !!state.total; $('limit').textContent = state.total > 1000 ? 'Hiển thị 1.000 dòng đầu; engine vẫn xử lý toàn bộ.' : '';
   const busy = state.busy || state.authBusy || pending;
   ['choose', 'add-mst', 'mst-login', 'account-login'].forEach(id => { $(id).disabled = busy; });

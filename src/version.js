@@ -12,7 +12,7 @@
 // ---------------------------------------------------------------------------
 module.exports = {
   name: 'HoaDonNhe',
-  version: '1.0.3',
+  version: '1.0.4',
   repository: 'Datkep92/HoaDonNhe',
   releasesUrl: 'https://github.com/Datkep92/HoaDonNhe/releases',
 };

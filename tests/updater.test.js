@@ -48,7 +48,7 @@ function assetsServer({ failBinary = false, shaBody = `${NEW_SHA}  ${appNameFor(
 function makeUpdater(port, options = {}) {
   return new Updater({
     version: '1.0.1',
-    execPath: options.execPath || path.join(tempDir('hd-self-'), 'HoaDonNhe.exe'),
+    execPath: options.execPath || path.join(tempDir('hd-self-'), 'CN-Tax-Tools.exe'),
     tempDir: options.tempDir || tempDir('hd-selftmp-'),
     allowHttp: true,
     checkUpdate: options.checkUpdate || (async () => ({ ok: true, current: '1.0.1', latest: '1.0.2', updateAvailable: true, assets: releaseFor('1.0.2').assets })),
@@ -75,11 +75,11 @@ function useLocalPlan(updater, port) {
 // Dựng một "thư mục ứng dụng" để thử thay binary thật.
 function makeAppDir(options = {}) {
   const dir = tempDir('hd-appdir-');
-  const exe = path.join(dir, 'HoaDonNhe.exe');
+  const exe = path.join(dir, 'CN-Tax-Tools.exe');
   fs.writeFileSync(exe, OLD_BYTES);
   if (options.installed) {
     fs.writeFileSync(path.join(dir, 'Uninstall.exe'), 'uninstaller');
-    fs.writeFileSync(path.join(dir, 'HoaDonNhe.ico'), 'icon');
+    fs.writeFileSync(path.join(dir, 'CN-Tax-Tools.ico'), 'icon');
   }
   fs.mkdirSync(path.join(dir, 'du_lieu'), { recursive: true });
   fs.writeFileSync(path.join(dir, 'du_lieu', 'support.json'), '{"device":"giu-nguyen"}');
@@ -106,15 +106,15 @@ test('phát hiện bản mới: current < latest', () => {
   const plan = planUpdate(releaseFor('1.0.2'), '1.0.1');
   assert.equal(plan.ok, true);
   assert.equal(plan.version, '1.0.2');
-  assert.equal(plan.binary.name, 'HoaDonNhe-v1.0.2.exe');
-  assert.equal(plan.sha.name, 'HoaDonNhe-v1.0.2.exe.sha256');
+  assert.equal(plan.binary.name, 'CN-Tax-Tools-v1.0.2.exe');
+  assert.equal(plan.sha.name, 'CN-Tax-Tools-v1.0.2.exe.sha256');
   assert.equal(compareVersions('1.0.2', '1.0.10'), -1);
 });
 
 test('KHÔNG hạ cấp: bản phát hành cũ hơn thì bỏ qua', () => {
   assert.equal(planUpdate(releaseFor('1.0.0'), '1.0.1').ok, false);
   assert.equal(compareVersions('1.0.0', '1.0.1'), -1);
-  const updater = new Updater({ version: '1.0.1', execPath: 'C:\\x\\HoaDonNhe.exe', checkUpdate: async () => ({ ok: true, current: '1.0.1', latest: '1.0.0', updateAvailable: false, assets: releaseFor('1.0.0').assets }) });
+  const updater = new Updater({ version: '1.0.1', execPath: 'C:\\x\\CN-Tax-Tools.exe', checkUpdate: async () => ({ ok: true, current: '1.0.1', latest: '1.0.0', updateAvailable: false, assets: releaseFor('1.0.0').assets }) });
   return updater.check().then(() => assert.equal(updater.status().updateAvailable, false));
 });
 
@@ -123,9 +123,9 @@ test('payload phải đúng repo/HTTPS/tên quy ước, và phải có .sha256',
   assert.equal(trustedAssetUrl(`http://github.com/Datkep92/HoaDonNhe/releases/download/v1.0.2/${appNameFor('1.0.2')}`, appNameFor('1.0.2')), '');
   assert.equal(trustedAssetUrl(`https://evil.example/${appNameFor('1.0.2')}`, appNameFor('1.0.2')), '');
   assert.equal(planUpdate(releaseFor('1.0.2', { withSha: false }), '1.0.1').ok, false, 'thiếu .sha256 thì không cập nhật');
-  assert.equal(planUpdate(releaseFor('1.0.2', { binaryUrl: 'https://evil.example/HoaDonNhe-v1.0.2.exe' }), '1.0.1').ok, false);
+  assert.equal(planUpdate(releaseFor('1.0.2', { binaryUrl: 'https://evil.example/CN-Tax-Tools-v1.0.2.exe' }), '1.0.1').ok, false);
   assert.equal(planUpdate(releaseFor('1.0.2', { draft: true }), '1.0.1').ok, false);
-  assert.equal(planUpdate(releaseFor('1.0.2', { binaryUrl: `${REL}HoaDonNhe-Setup-v1.0.2.exe` }), '1.0.1').ok, false, 'không nhận Setup làm payload self-update');
+  assert.equal(planUpdate(releaseFor('1.0.2', { binaryUrl: `${REL}CN-Tax-Tools-Setup-v1.0.2.exe` }), '1.0.1').ok, false, 'không nhận Setup làm payload self-update');
 });
 
 test('parseSha256 đọc đúng và từ chối tên khác', () => {
@@ -219,7 +219,7 @@ test('thư mục không cho ghi -> báo rõ, không tải, không phá bản hi�
 });
 
 test('mất mạng: im lặng, không làm phiền', async () => {
-  const updater = new Updater({ version: '1.0.1', execPath: 'C:\\x\\HoaDonNhe.exe', checkUpdate: async () => ({ ok: false, current: '1.0.1', latest: '', updateAvailable: false, error: 'Hết thời gian chờ GitHub.' }) });
+  const updater = new Updater({ version: '1.0.1', execPath: 'C:\\x\\CN-Tax-Tools.exe', checkUpdate: async () => ({ ok: false, current: '1.0.1', latest: '', updateAvailable: false, error: 'Hết thời gian chờ GitHub.' }) });
   await updater.check();
   assert.equal(updater.status().error, '');
   assert.equal(updater.status().updateAvailable, false);
@@ -227,8 +227,8 @@ test('mất mạng: im lặng, không làm phiền', async () => {
 
 // ---------------------------------------------------------------- helper thay binary
 test('parseApplyArgs đọc đúng tham số helper', () => {
-  const args = parseApplyArgs(['--apply-update', '--target', 'C:\\a\\HoaDonNhe.exe', '--next', 'C:\\t\\new.exe', '--pid', '1234', '--no-launch']);
-  assert.equal(args.target, 'C:\\a\\HoaDonNhe.exe');
+  const args = parseApplyArgs(['--apply-update', '--target', 'C:\\a\\CN-Tax-Tools.exe', '--next', 'C:\\t\\new.exe', '--pid', '1234', '--no-launch']);
+  assert.equal(args.target, 'C:\\a\\CN-Tax-Tools.exe');
   assert.equal(args.next, 'C:\\t\\new.exe');
   assert.equal(args.pid, 1234);
   assert.equal(args.noLaunch, true);
@@ -261,7 +261,7 @@ test('thay binary: backup -> thay -> kiểm tra -> dọn backup, dữ liệu ng�
   assert.deepEqual(fs.readdirSync(path.join(app.dir, 'du_lieu')).sort(), before, 'du_lieu không đổi');
   assert.equal(fs.readFileSync(path.join(app.dir, 'du_lieu', 'support.json'), 'utf8'), '{"device":"giu-nguyen"}');
   assert.equal(fs.existsSync(path.join(app.dir, 'Uninstall.exe')), true, 'uninstall entry/file vẫn còn');
-  assert.equal(fs.existsSync(path.join(app.dir, 'HoaDonNhe.ico')), true, 'icon vẫn còn');
+  assert.equal(fs.existsSync(path.join(app.dir, 'CN-Tax-Tools.ico')), true, 'icon vẫn còn');
 });
 
 test('Portable: thay tại chỗ, KHÔNG tạo file/thư mục mới ngoài binary', async () => {
@@ -332,11 +332,30 @@ test('canWriteDir phản ánh đúng khả năng ghi và không để lại file
 
 test('không update loop: sau khi lên bản mới thì không còn bản mới', async () => {
   const assets = releaseFor('1.0.2').assets;
-  const before = new Updater({ version: '1.0.1', execPath: 'C:\\x\\HoaDonNhe.exe', canWrite: () => true, checkUpdate: async () => ({ ok: true, current: '1.0.1', latest: '1.0.2', updateAvailable: true, assets }) });
+  const before = new Updater({ version: '1.0.1', execPath: 'C:\\x\\CN-Tax-Tools.exe', canWrite: () => true, checkUpdate: async () => ({ ok: true, current: '1.0.1', latest: '1.0.2', updateAvailable: true, assets }) });
   await before.check();
   assert.equal(before.status().updateAvailable, true);
-  const after = new Updater({ version: '1.0.2', execPath: 'C:\\x\\HoaDonNhe.exe', canWrite: () => true, checkUpdate: async () => ({ ok: true, current: '1.0.2', latest: '1.0.2', updateAvailable: false, assets }) });
+  const after = new Updater({ version: '1.0.2', execPath: 'C:\\x\\CN-Tax-Tools.exe', canWrite: () => true, checkUpdate: async () => ({ ok: true, current: '1.0.2', latest: '1.0.2', updateAvailable: false, assets }) });
   await after.check();
   assert.equal(after.status().updateAvailable, false);
   assert.equal(after.status().stage, 'idle');
+});
+
+test('tag có tiền tố thương hiệu (cntax-v1.0.2): nhận đúng và chọn asset CN-Tax-Tools', () => {
+  const assets = releaseFor('1.0.2').assets;
+  const plan = planUpdate({ tag_name: 'cntax-v1.0.2', draft: false, prerelease: false, assets }, '1.0.1');
+  assert.equal(plan.ok, true, 'tag cntax-v1.0.2 phải được chấp nhận');
+  assert.equal(plan.version, '1.0.2');
+  assert.equal(plan.binary.name, 'CN-Tax-Tools-v1.0.2.exe');
+  assert.equal(plan.sha.name, 'CN-Tax-Tools-v1.0.2.exe.sha256');
+  // Không phá tương thích: tag cũ v1.0.2 vẫn chạy như trước.
+  assert.equal(planUpdate(releaseFor('1.0.2'), '1.0.1').ok, true);
+  // Asset HoaDonNhe cũ KHÔNG được nhận.
+  const legacy = { tag_name: 'cntax-v1.0.2', draft: false, prerelease: false, assets: [{ name: 'HoaDonNhe-v1.0.2.exe', size: 1, browser_download_url: `${REL}HoaDonNhe-v1.0.2.exe` }] };
+  assert.equal(planUpdate(legacy, '1.0.1').ok, false, 'không nhận asset HoaDonNhe');
+  // Tag có tiền tố lạ vẫn bị từ chối.
+  assert.equal(planUpdate({ tag_name: 'other-v1.0.2', draft: false, prerelease: false, assets }, '1.0.1').ok, false);
+  // Setup không bao giờ được dùng làm payload self-update.
+  const setupOnly = { tag_name: 'cntax-v1.0.2', draft: false, prerelease: false, assets: [{ name: 'CN-Tax-Tools-Setup-v1.0.2.exe', size: 1, browser_download_url: `${REL}CN-Tax-Tools-Setup-v1.0.2.exe` }] };
+  assert.equal(planUpdate(setupOnly, '1.0.1').ok, false, 'không dùng Setup cho self-update');
 });

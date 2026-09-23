@@ -2,7 +2,7 @@
 // Ẩn cửa sổ terminal khi mở EXE: pkg đóng gói trên nền node.exe (ứng dụng console) nên sau khi
 // build phải vá 2 byte trong PE header — subsystem 3 (console) -> 2 (GUI). EXE vẫn chạy y hệt,
 // chỉ không còn cửa sổ đen. Mọi thông báo khởi động/lỗi được ghi vào du_lieu/nhat-ky.log.
-// Dùng: node tools/hide-console.cjs release/HoaDonNhe-v8.exe
+// Dùng: node tools/hide-console.cjs release/CN-Tax-Tools-v1.0.0.exe
 const fs = require('node:fs');
 const file = process.argv[2];
 if (!file) { console.error('Dùng: node tools/hide-console.cjs <đường dẫn exe>'); process.exit(1); }

@@ -1,7 +1,7 @@
 name: Release
 
 # Phát hành khi push tag dạng vX.Y.Z (ví dụ v1.0.0).
-# Tên file phát hành duy nhất: HoaDonNhe-Setup-vX.Y.Z.exe
+# Tên file phát hành duy nhất: CN-Tax-Tools-Setup-vX.Y.Z.exe
 #
 # Chạy tay (Actions > Release > Run workflow) để BUILD THỬ mà không phát hành:
 #   - nhập version (vd 1.0.0), để publish = false -> chỉ build + lưu artifact.
@@ -10,6 +10,7 @@ on:
   push:
     tags:
       - 'v*'
+      - 'cntax-v*'
   workflow_dispatch:
     inputs:
       version:
@@ -55,9 +56,11 @@ jobs:
           INPUT_VERSION: ${{ inputs.version }}
           REF_NAME: ${{ github.ref_name }}
         run: |
-          $version = if ($env:INPUT_VERSION) { $env:INPUT_VERSION.TrimStart('v') } else { $env:REF_NAME.TrimStart('v') }
+          # Tag CN Tax Tools có tiền tố thương hiệu: `cntax-v1.0.0` ⇒ app/build dùng version thuần `1.0.0`.
+          $raw = if ($env:INPUT_VERSION) { $env:INPUT_VERSION } else { $env:REF_NAME }
+          $version = $raw.Trim() -replace '^cntax-v', '' -replace '^v', ''
           if ($version -notmatch '^\d+\.\d+\.\d+') {
-            throw "Không xác định được version hợp lệ (nhận '$version'). Push tag dạng vX.Y.Z, hoặc nhập 'version' khi chạy tay."
+            throw "Không xác định được version hợp lệ (nhận '$version'). Push tag dạng vX.Y.Z hoặc cntax-vX.Y.Z, hoặc nhập 'version' khi chạy tay."
           }
           "version=$version" >> $env:GITHUB_OUTPUT
           Write-Host "Version phát hành: $version"
@@ -80,10 +83,10 @@ jobs:
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
-          $binary = "release/HoaDonNhe-v$($env:VERSION).exe"
+          $binary = "release/CN-Tax-Tools-v$($env:VERSION).exe"
           if (-not (Test-Path $binary)) { throw "Thiếu $binary" }
           $hash = (Get-FileHash $binary -Algorithm SHA256).Hash.ToLower()
-          "$hash  HoaDonNhe-v$($env:VERSION).exe" | Set-Content -Path "$binary.sha256" -Encoding ascii
+          "$hash  CN-Tax-Tools-v$($env:VERSION).exe" | Set-Content -Path "$binary.sha256" -Encoding ascii
           Write-Host "self-update payload: $binary -> $hash"
 
       - name: Cài NSIS
@@ -95,12 +98,12 @@ jobs:
       - name: Upload artifact dự phòng (nếu Release lỗi vẫn có file để tải)
         uses: actions/upload-artifact@v4
         with:
-          name: HoaDonNhe-v${{ steps.version.outputs.version }}
+          name: CN-Tax-Tools-v${{ steps.version.outputs.version }}
           path: |
-            release/HoaDonNhe-Setup-v${{ steps.version.outputs.version }}.exe
-            release/HoaDonNhe-Setup-v${{ steps.version.outputs.version }}.exe.sha256
-            release/HoaDonNhe-v${{ steps.version.outputs.version }}.exe
-            release/HoaDonNhe-v${{ steps.version.outputs.version }}.exe.sha256
+            release/CN-Tax-Tools-Setup-v${{ steps.version.outputs.version }}.exe
+            release/CN-Tax-Tools-Setup-v${{ steps.version.outputs.version }}.exe.sha256
+            release/CN-Tax-Tools-v${{ steps.version.outputs.version }}.exe
+            release/CN-Tax-Tools-v${{ steps.version.outputs.version }}.exe.sha256
 
       - name: Tạo GitHub Release và upload (Setup + self-update)
         if: ${{ github.event_name == 'push' || inputs.publish }}
@@ -110,11 +113,12 @@ jobs:
           REF_NAME: ${{ github.ref_name }}
           VERSION: ${{ steps.version.outputs.version }}
         run: |
-          $tag = if ($env:REF_NAME -like 'v*') { $env:REF_NAME } else { "v$($env:VERSION)" }
-          $setup = "release/HoaDonNhe-Setup-v$($env:VERSION).exe"
-          $binary = "release/HoaDonNhe-v$($env:VERSION).exe"
+          # Giữ nguyên tag đã push (vX.Y.Z hoặc cntax-vX.Y.Z); chỉ tự đặt tag khi chạy tay.
+          $tag = if ($env:REF_NAME -match '^(cntax-)?v\d') { $env:REF_NAME } else { "v$($env:VERSION)" }
+          $setup = "release/CN-Tax-Tools-Setup-v$($env:VERSION).exe"
+          $binary = "release/CN-Tax-Tools-v$($env:VERSION).exe"
           gh release create $tag `
             $setup "$setup.sha256" `
             $binary "$binary.sha256" `
-            --title "HoaDonNhe v$($env:VERSION)" `
+            --title "CN Tax Tools v$($env:VERSION)" `
             --notes-file release/RELEASE_NOTES.md

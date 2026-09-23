@@ -37,10 +37,13 @@ function getJson(url, timeoutMs) {
   });
 }
 
-// So sánh 2 version dạng "1.2.3" (bỏ tiền tố v). Trả -1 / 0 / 1.
+// Tách version thuần từ tag_name: chấp nhận `v1.2.3` và tag có tiền tố thương hiệu `cntax-v1.2.3`.
+function latestFromTag(tag) { return String(tag || '').replace(/^(?:cntax-)?v/i, ''); }
+
+// So sánh 2 version dạng "1.2.3" (bỏ tiền tố v / cntax-v). Trả -1 / 0 / 1.
 function compareVersions(a, b) {
-  const pa = String(a || '').replace(/^v/i, '').split('.').map(n => parseInt(n, 10) || 0);
-  const pb = String(b || '').replace(/^v/i, '').split('.').map(n => parseInt(n, 10) || 0);
+  const pa = latestFromTag(a).split('.').map(n => parseInt(n, 10) || 0);
+  const pb = latestFromTag(b).split('.').map(n => parseInt(n, 10) || 0);
   const len = Math.max(pa.length, pb.length);
   for (let i = 0; i < len; i += 1) {
     const x = pa[i] || 0;
@@ -55,7 +58,7 @@ async function checkUpdate(force) {
   const current = String(version);
   try {
     const data = await getJson(RELEASES_API, TIMEOUT_MS);
-    const latest = String(data.tag_name || '').replace(/^v/i, '');
+    const latest = latestFromTag(data.tag_name);
     cache = {
       ok: true,
       current,
@@ -76,4 +79,4 @@ async function checkUpdate(force) {
   return cache;
 }
 
-module.exports = { checkUpdate, compareVersions, getJson };
+module.exports = { checkUpdate, compareVersions, getJson, latestFromTag };

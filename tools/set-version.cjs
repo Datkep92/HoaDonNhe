@@ -50,7 +50,7 @@ writeJson(path.join(root, 'package-lock.json'), lock => {
 
 const versionSource = `'use strict';
 // ---------------------------------------------------------------------------
-// NGUỒN VERSION DUY NHẤT của HoaDonNhe.
+// NGUỒN VERSION DUY NHẤT của CN Tax Tools.
 //
 // - Bản phát hành dùng tag git dạng vX.Y.Z (ví dụ v1.0.0) làm nguồn chính.
 // - Giữ file này, package.json và package-lock.json khớp nhau bằng lệnh:
@@ -61,7 +61,7 @@ const versionSource = `'use strict';
 //   version qua endpoint /api/version.
 // ---------------------------------------------------------------------------
 module.exports = {
-  name: 'HoaDonNhe',
+  name: 'CN Tax Tools',
   version: '${version}',
   repository: 'Datkep92/HoaDonNhe',
   releasesUrl: 'https://github.com/Datkep92/HoaDonNhe/releases',

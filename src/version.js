@@ -1,6 +1,6 @@
 'use strict';
 // ---------------------------------------------------------------------------
-// NGUỒN VERSION DUY NHẤT của HoaDonNhe.
+// NGUỒN VERSION DUY NHẤT của CN Tax Tools.
 //
 // - Bản phát hành dùng tag git dạng vX.Y.Z (ví dụ v1.0.0) làm nguồn chính.
 // - Giữ file này, package.json và package-lock.json khớp nhau bằng lệnh:
@@ -11,8 +11,8 @@
 //   version qua endpoint /api/version.
 // ---------------------------------------------------------------------------
 module.exports = {
-  name: 'HoaDonNhe',
-  version: '1.0.4',
+  name: 'CN Tax Tools',
+  version: '1.0.0',
   repository: 'Datkep92/HoaDonNhe',
   releasesUrl: 'https://github.com/Datkep92/HoaDonNhe/releases',
 };

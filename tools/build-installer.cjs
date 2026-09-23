@@ -1,14 +1,14 @@
 'use strict';
 // ---------------------------------------------------------------------------
-// Đóng gói HoaDonNhe-Setup-v<version>.exe bằng NSIS (makensis):
-//   1) lấy payload release/HoaDonNhe-v<version>.exe (do `npm run build` tạo ra)
-//   2) copy vào release/installer/payload/HoaDonNhe.exe  (tên cố định để nhúng)
+// Đóng gói CN-Tax-Tools-Setup-v<version>.exe bằng NSIS (makensis):
+//   1) lấy payload release/CN-Tax-Tools-v<version>.exe (do `npm run build` tạo ra)
+//   2) copy vào release/installer/payload/CN-Tax-Tools.exe  (tên cố định để nhúng)
 //   3) makensis nhúng payload + icon vào MỘT file Setup duy nhất
 //   4) tính SHA-256, ghi file .sha256 và RELEASE_NOTES.md
 //
 // Chạy: npm run installer      (cần makensis: "choco install nsis -y" hoặc đặt MAKENSIS)
 //
-// File phát hành duy nhất: release/HoaDonNhe-Setup-v<version>.exe
+// File phát hành duy nhất: release/CN-Tax-Tools-Setup-v<version>.exe
 //
 // Đường dẫn payload/icon/output nằm ngay trong packaging/installer.nsi (tính theo
 // ${__FILEDIR__}), nên ở đây chỉ truyền các define không chứa khoảng trắng.
@@ -22,10 +22,10 @@ const { version, repository } = require('../src/version');
 
 const root = path.resolve(__dirname, '..');
 const releaseDir = path.join(root, 'release');
-const appExe = path.join(releaseDir, `HoaDonNhe-v${version}.exe`);
+const appExe = path.join(releaseDir, `CN-Tax-Tools-v${version}.exe`);
 const payloadDir = path.join(releaseDir, 'installer', 'payload');
-const payloadExe = path.join(payloadDir, 'HoaDonNhe.exe');
-const setupExe = path.join(releaseDir, `HoaDonNhe-Setup-v${version}.exe`);
+const payloadExe = path.join(payloadDir, 'CN-Tax-Tools.exe');
+const setupExe = path.join(releaseDir, `CN-Tax-Tools-Setup-v${version}.exe`);
 const nsi = path.join(root, 'packaging', 'installer.nsi');
 const icon = path.join(root, 'resources', 'icon.ico');
 
@@ -70,8 +70,8 @@ function fourPart(v) {
   const args = [
     `-DVERSION=${version}`,
     `-DVI_VERSION=${fourPart(version)}`,
-    '-DAPP_EXE=HoaDonNhe.exe',
-    '-DAPP_BASENAME=HoaDonNhe',
+    '-DAPP_EXE=CN-Tax-Tools.exe',
+    '-DAPP_BASENAME=CN-Tax-Tools',
     `-DREPO=${repository}`,
     nsi,
   ];
@@ -87,7 +87,7 @@ function fourPart(v) {
   fs.writeFileSync(`${setupExe}.sha256`, `${hash}  ${setupName}${os.EOL}`);
 
   const notes = [
-    `# HoaDonNhe v${version}`,
+    `# CN Tax Tools v${version}`,
     '',
     '## Cài lần đầu',
     '',
@@ -96,7 +96,7 @@ function fourPart(v) {
     '',
     '## Cập nhật cho máy đã cài',
     '',
-    '**Đang dùng v1.0.2 trở lên**: bạn không cần tải gì — mở HoaDonNhe, app báo có bản mới rồi tự tải,',
+    '**Đang dùng v1.0.2 trở lên**: bạn không cần tải gì — mở CN Tax Tools, app báo có bản mới rồi tự tải,',
     'tự xác minh SHA-256, thay chương trình và khởi động lại. Setup chỉ dùng cho lần cài đầu tiên',
     '(hoặc repair/gỡ cài đặt).',
     '',
@@ -104,19 +104,19 @@ function fourPart(v) {
     `**${setupName}** và chạy một lần — dữ liệu trong \`du_lieu\` (danh sách MST, phiên đăng nhập, hóa đơn)`,
     'được giữ nguyên. Từ bản này trở đi, mọi lần cập nhật sau đều tự động trong app.',
     '',
-    `Nếu muốn tải tay cho bản self-update: **HoaDonNhe-v${version}.exe** (kèm \`.sha256\`).`,
+    `Nếu muốn tải tay cho bản self-update: **CN-Tax-Tools-v${version}.exe** (kèm \`.sha256\`).`,
     '',
     'Khi chạy, trình cài đặt cho chọn 1 trong 2 chế độ:',
     '',
     '- **CÀI ĐẶT VÀO WINDOWS**: cài vào hồ sơ người dùng, tạo shortcut Desktop + Start Menu,',
     '  có mục gỡ cài đặt trong Windows, có tuỳ chọn chạy ngay sau khi cài.',
-    '- **PORTABLE**: chỉ giải nén vào thư mục bạn chọn để chạy `HoaDonNhe.exe` trực tiếp,',
+    '- **PORTABLE**: chỉ giải nén vào thư mục bạn chọn để chạy `CN-Tax-Tools.exe` trực tiếp,',
     '  không ghi vào Windows, không có gỡ cài đặt.',
     '',
     'Yêu cầu: **Windows 64-bit (x64)**, có sẵn **Google Chrome** hoặc **Microsoft Edge**',
     '(Edge có sẵn trong Windows 10/11). Không cần Node.js/Python/Chromium. Không cần quyền Administrator.',
     '',
-    'Cả hai chế độ lưu dữ liệu trong thư mục `du_lieu` nằm cạnh `HoaDonNhe.exe`,',
+    'Cả hai chế độ lưu dữ liệu trong thư mục `du_lieu` nằm cạnh `CN-Tax-Tools.exe`,',
     'nên bản Portable có thể copy cả thư mục sang máy khác.',
     '',
     '## SHA-256',

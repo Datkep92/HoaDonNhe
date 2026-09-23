@@ -1,10 +1,12 @@
 'use strict';
 // ---------------------------------------------------------------------------
 // Build app EXE (payload):
-//   1) pkg đóng gói toàn bộ app thành 1 file EXE (nhúng assets trong package.json > pkg.assets)
+//   1) @yao-pkg/pkg (bản pkg được duy trì) đóng gói app thành 1 file EXE (nhúng assets trong
+//      package.json > pkg.assets). Target mặc định node24-win-x64 vì từ PHASE 1 tầng dữ liệu
+//      dùng node:sqlite — module built-in của Node 22+ (xem SOURCE_ANALYSIS.md §4).
 //   2) vá PE header để không hiện cửa sổ terminal (tools/hide-console.cjs)
 //
-// Chạy: npm run build     ->     release/HoaDonNhe-v<version>.exe
+// Chạy: npm run build     ->     release/CN-Tax-Tools-v<version>.exe
 //
 // Version lấy từ src/version.js (nguồn duy nhất — xem tools/set-version.cjs).
 //
@@ -25,9 +27,11 @@ const { version } = require('../src/version');
 const root = path.resolve(__dirname, '..');
 const releaseDir = path.join(root, 'release');
 // Nhãn tuỳ chọn cho bản build thử, để không đè lên bản phát hành:
-//   HOADON_BUILD_LABEL=test-ui npm run build  ->  release/HoaDonNhe-v1.0.0-test-ui.exe
+//   HOADON_BUILD_LABEL=test-ui npm run build  ->  release/CN-Tax-Tools-v1.0.0-test-ui.exe
 const label = process.env.HOADON_BUILD_LABEL ? `-${process.env.HOADON_BUILD_LABEL}` : '';
-const exe = path.join(releaseDir, `HoaDonNhe-v${version}${label}.exe`);
+const exe = path.join(releaseDir, `CN-Tax-Tools-v${version}${label}.exe`);
+// Runtime nhúng trong EXE. Đổi target thì BẮT BUỘC build lại và smoke test EXE trước khi phát hành.
+const PKG_TARGET = process.env.HOADON_PKG_TARGET || 'node24-win-x64';
 
 function run(command, args) {
   console.log(`\n> ${command} ${args.join(' ')}`);
@@ -39,13 +43,13 @@ function run(command, args) {
 try {
   fs.mkdirSync(releaseDir, { recursive: true });
 
-  const pkgBin = path.join(root, 'node_modules', 'pkg', 'lib-es5', 'bin.js');
-  if (!fs.existsSync(pkgBin)) throw new Error('Chưa có pkg. Chạy "npm install" trước.');
+  const pkgBin = path.join(root, 'node_modules', '@yao-pkg', 'pkg', 'lib-es5', 'bin.js');
+  if (!fs.existsSync(pkgBin)) throw new Error('Chưa có @yao-pkg/pkg. Chạy "npm install" trước.');
 
   run(process.execPath, [
     pkgBin, '.',
     '--compress', 'GZip',
-    '--targets', 'node16-win-x64',
+    '--targets', PKG_TARGET,
     '--no-bytecode',
     '--public',
     '--public-packages', '*',
@@ -53,6 +57,15 @@ try {
   ]);
 
   run(process.execPath, [path.join(root, 'tools', 'hide-console.cjs'), exe]);
+
+  // Icon cạnh EXE: helper System Tray (PowerShell) chỉ đọc được file THẬT trên đĩa, nên bản portable
+  // cần resources/icon.ico nằm ngay cạnh EXE (xem trayIconPath trong src/server.js).
+  const icon = path.join(root, 'resources', 'icon.ico');
+  if (fs.existsSync(icon)) {
+    const iconOut = path.join(releaseDir, 'icon.ico');
+    fs.copyFileSync(icon, iconOut);
+    console.log(`Icon khay: ${path.relative(root, iconOut)}`);
+  }
 
   const size = fs.statSync(exe).size;
   console.log(`\nXong: ${path.relative(root, exe)} (${(size / 1048576).toFixed(1)} MB)`);

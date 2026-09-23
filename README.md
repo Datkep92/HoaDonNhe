@@ -1,10 +1,10 @@
-# HoaDonNhe
+# CN Tax Tools
 
-`release/HoaDonNhe-v6.exe` là bản Windows x64 chạy bằng Chrome hoặc Microsoft Edge đã có trên máy. EXE không kèm Electron, Chromium hay extension.
+`release/CN-Tax-Tools-v1.0.0.exe` là bản Windows x64 chạy bằng Chrome hoặc Microsoft Edge đã có trên máy. EXE không kèm Electron, Chromium hay extension.
 
 ## Dùng ứng dụng
 
-1. Mở `HoaDonNhe-v8.exe`. Giao diện mở trong cửa sổ app của Chrome/Edge.
+1. Mở `CN-Tax-Tools-v1.0.0.exe`. Giao diện mở trong cửa sổ app của Chrome/Edge.
 2. Cột trái là **danh sách MST** (có ô tìm kiếm theo tên hoặc MST) và 2 nút **＋ Thêm MST** / **Đăng nhập**. Nút **Thêm MST** mở form nhập **Tên khách hàng – MST – Mật khẩu** rồi lưu vào danh sách (`du_lieu/accounts.json`); lưu xong ứng dụng tự mở bước lấy CAPTCHA để đăng nhập. Menu **⋯** trên mỗi dòng có **Đăng nhập / nhập CAPTCHA**, **Sửa MST** (đổi tên khách, đổi MST — đổi luôn thư mục profile và tiến độ — hoặc đổi mật khẩu), **Xoá mật khẩu đã lưu** và **Bỏ khỏi danh sách**. Chấm màu mỗi dòng: xanh = đang có phiên, vàng = có phiên đã lưu, xám = chưa đăng nhập.
 3. **Bấm vào một dòng**: nếu còn phiên thì vào thẳng giao diện chính để tra cứu ngay; nếu hết phiên thì ứng dụng mở form đăng nhập (tên đăng nhập điền sẵn, mật khẩu đã lưu thì chỉ cần gõ mã CAPTCHA).
 4. Khi ảnh CAPTCHA xuất hiện, nhập tên đăng nhập, mật khẩu và mã xác nhận rồi bấm **Đăng nhập** (có thể để trống mật khẩu nếu MST đó đã lưu mật khẩu). Nút **Xoá mật khẩu đã lưu** bỏ mật khẩu đã nhớ nhưng vẫn giữ phiên đang đăng nhập. Có nút **Hiện Chrome đăng nhập / Ẩn Chrome đăng nhập** khi cần đăng nhập dự phòng trong trình duyệt.
@@ -68,7 +68,7 @@ Cookie và JWT vẫn có thể hết hạn theo cổng thuế. Khi đó chọn M
 - Request Node tới cổng thuế (`src/tct-api.js`) phải mang bộ header giống Chrome: `User-Agent` + `sec-ch-ua`, `sec-ch-ua-mobile`, `sec-ch-ua-platform` + `sec-fetch-site/mode/dest` + `Origin`/`Referer` + `request-id`. Đo ngày 18/09/2026: POST thiếu bộ này bị WAF trả HTTP 403 `Hệ thống phát hiện hành vi không hợp lệ. Yêu cầu đã bị chặn.`; chỉ thêm `User-Agent` hoặc chỉ thêm client hints vẫn bị chặn, phải đủ cả bộ mới tới được ứng dụng.
 - `src/pace.js` giữ **nhịp** giữa hai request tới cổng thuế (mặc định 900ms + jitter 300ms, đổi bằng `HOADON_NHIP_MS` / `HOADON_NHIP_JITTER_MS`) và **tự nghỉ** khi cổng trả 429 hoặc 403: 429 nghỉ theo `Retry-After` của cổng, không có thì tăng dần 20s → 40s → 80s… (tối đa 10 phút); 403 đúng thông báo chặn thì nghỉ 10 phút. Cả đường tải qua Node (`src/tct-api.js`) và qua trang cổng thuế (`src/browser.js`) đều dùng chung nhịp này. Cổng thuế trả 429 là **quá nhiều yêu cầu** — VNIT không bị vì nó cũng có "nhịp" và tự nghỉ (`NHIP`, `PHUT_NGHI_MIN/MAX`, chế độ an toàn); bản này trước đây gọi tra cứu/tải liên tiếp không chờ nên bị chặn.
 - Không lấy hay thay đổi cookie trong profile Chrome/Edge cá nhân của người dùng.
-- Icon/version: **file Setup** mang icon + thông tin version; khi cài, installer đặt thêm `HoaDonNhe.ico` cạnh app và trỏ shortcut Desktop/Start Menu + mục gỡ cài đặt vào icon đó. Không gán icon trực tiếp vào app EXE vì `rcedit` ghi lại PE resource làm hỏng snapshot nhúng của `pkg` (EXE báo `Pkg: Error reading from file`).
+- Icon/version: **file Setup** mang icon + thông tin version; khi cài, installer đặt thêm `CN-Tax-Tools.ico` cạnh app và trỏ shortcut Desktop/Start Menu + mục gỡ cài đặt vào icon đó. Không gán icon trực tiếp vào app EXE vì `rcedit` ghi lại PE resource làm hỏng snapshot nhúng của `pkg` (EXE báo `Pkg: Error reading from file`).
 
 ## Build
 
@@ -76,10 +76,10 @@ Cookie và JWT vẫn có thể hết hạn theo cổng thuế. Khi đó chọn M
 npm install
 npm test
 npm run smoke
-npm run build          # -> release/HoaDonNhe-v<version>.exe  (payload, đã ẩn console)
-npm run installer      # -> release/HoaDonNhe-Setup-v<version>.exe (+ .sha256, RELEASE_NOTES.md)
+npm run build          # -> release/CN-Tax-Tools-v<version>.exe  (payload, đã ẩn console)
+npm run installer      # -> release/CN-Tax-Tools-Setup-v<version>.exe (+ .sha256, RELEASE_NOTES.md)
 npm run test:browser   # cần Chrome thật: kiểm tra CSP/đăng nhập/CAPTCHA
-node tests/browser-regression.js release/HoaDonNhe-v1.0.0.exe
+node tests/browser-regression.js release/CN-Tax-Tools-v1.0.0.exe
 ```
 
 `npm run smoke` kiểm tra server và việc tìm Chrome/Edge. `npm test` kiểm tra phân trang, XML ZIP, resume, chống trùng, tạm dừng và cách ly tài khoản. Cần đăng nhập thật để kiểm chứng API GDT cho từng MST.
@@ -90,17 +90,17 @@ Bản v6 đóng popup chào mừng của TCT trước khi bấm Đăng nhập, �
 
 ## Phát hành (Release)
 
-Chỉ phát hành **một file duy nhất**: `HoaDonNhe-Setup-vX.Y.Z.exe`. Người dùng tải đúng file đó, chạy và chọn một trong hai chế độ:
+Chỉ phát hành **một file duy nhất**: `CN-Tax-Tools-Setup-vX.Y.Z.exe`. Người dùng tải đúng file đó, chạy và chọn một trong hai chế độ:
 
-- **CÀI ĐẶT VÀO WINDOWS** — cài vào `%LOCALAPPDATA%\Programs\HoaDonNhe` (không cần Administrator), tạo shortcut Desktop + Start Menu, có mục gỡ cài đặt trong Windows, có tuỳ chọn chạy ngay sau khi cài.
-- **PORTABLE** — chỉ giải nén `HoaDonNhe.exe` vào thư mục người dùng chọn để chạy trực tiếp; không ghi vào Windows, không có gỡ cài đặt.
+- **CÀI ĐẶT VÀO WINDOWS** — cài vào `%LOCALAPPDATA%\Programs\CN Tax Tools` (không cần Administrator), tạo shortcut Desktop + Start Menu, có mục gỡ cài đặt trong Windows, có tuỳ chọn chạy ngay sau khi cài.
+- **PORTABLE** — chỉ giải nén `CN-Tax-Tools.exe` vào thư mục người dùng chọn để chạy trực tiếp; không ghi vào Windows, không có gỡ cài đặt.
 
-Cả hai chế độ lưu dữ liệu vào thư mục `du_lieu` **nằm cạnh `HoaDonNhe.exe`**, nên bản Portable mang cả thư mục sang máy khác là dùng được. Cả hai đều KHÔNG cần Node.js/Python/Chromium/dependency ngoài: app dùng **Google Chrome hoặc Microsoft Edge** có sẵn trên máy (Edge có sẵn trong Windows 10/11); installer kiểm tra và nhắc nếu máy thiếu cả hai. Bản build hiện tại là **Windows 64-bit (x64)** (pkg target `node16-win-x64`).
+Cả hai chế độ lưu dữ liệu vào thư mục `du_lieu` **nằm cạnh `CN-Tax-Tools.exe`**, nên bản Portable mang cả thư mục sang máy khác là dùng được. Cả hai đều KHÔNG cần Node.js/Python/Chromium/dependency ngoài: app dùng **Google Chrome hoặc Microsoft Edge** có sẵn trên máy (Edge có sẵn trong Windows 10/11); installer kiểm tra và nhắc nếu máy thiếu cả hai. Bản build hiện tại là **Windows 64-bit (x64)** (pkg target `node16-win-x64`).
 
 Chạy im lặng (tuỳ chọn, cho triển khai script):
 
 ```powershell
-HoaDonNhe-Setup-vX.Y.Z.exe /S /PORTABLE /D="C:\ThuMuc\HoaDonNhe"   # giải nén, không shortcut/gỡ cài đặt
+CN-Tax-Tools-Setup-vX.Y.Z.exe /S /PORTABLE /D="C:\ThuMuc\CN Tax Tools"   # giải nén, không shortcut/gỡ cài đặt
 ```
 
 ### Phát hành bằng GitHub Actions
@@ -117,7 +117,7 @@ git push origin main
 git push origin v1.0.1
 ```
 
-Workflow tự làm: checkout → cài dependency → **đồng bộ version theo tag** → chạy test → build app EXE (`npm run build`) → tính SHA-256 cho payload self-update → cài NSIS → đóng gói Setup (`npm run installer`) → tạo GitHub Release và upload **cả 4 file** (`HoaDonNhe-Setup-vX.Y.Z.exe` + `.sha256`, `HoaDonNhe-vX.Y.Z.exe` + `.sha256`). Không cần build tay trên máy cá nhân.
+Workflow tự làm: checkout → cài dependency → **đồng bộ version theo tag** → chạy test → build app EXE (`npm run build`) → tính SHA-256 cho payload self-update → cài NSIS → đóng gói Setup (`npm run installer`) → tạo GitHub Release và upload **cả 4 file** (`CN-Tax-Tools-Setup-vX.Y.Z.exe` + `.sha256`, `CN-Tax-Tools-vX.Y.Z.exe` + `.sha256`). Không cần build tay trên máy cá nhân.
 
 ### Version
 
@@ -133,7 +133,7 @@ Có phiên bản mới vX.Y.Z
 ```
 
 - **Để sau**: không tải gì, app chạy tiếp bình thường.
-- **Cập nhật ngay**: tải `HoaDonNhe-vX.Y.Z.exe` vào `%TEMP%\HoaDonNhe-update\` (có tiến trình), tải file `.sha256` và so **SHA-256**; chỉ khi khớp mới tiếp tục. Sau đó app tự thay **chính file đang chạy** (backup → thay → kiểm tra → mở lại) rồi tự khởi động lại bản mới. **Không chạy lại Setup.**
+- **Cập nhật ngay**: tải `CN-Tax-Tools-vX.Y.Z.exe` vào `%TEMP%\CN Tax Tools-update\` (có tiến trình), tải file `.sha256` và so **SHA-256**; chỉ khi khớp mới tiếp tục. Sau đó app tự thay **chính file đang chạy** (backup → thay → kiểm tra → mở lại) rồi tự khởi động lại bản mới. **Không chạy lại Setup.**
 
 Điểm an toàn: app đang chạy **không tự ghi đè chính nó** — nó khởi động bản mới (đã tải + đã xác minh) với cờ `--apply-update` để bản mới làm việc thay thế, rồi thoát. Sai SHA-256, tải lỗi, hay không mở lại được bản mới ⇒ **giữ nguyên bản cũ** (khôi phục từ backup). Chỉ nâng cấp, không hạ cấp. Không đụng tới `du_lieu`, license/device identity, secrets hay dữ liệu hóa đơn. Tắt kiểm tra bằng `HOADON_NO_UPDATE_CHECK=1`; đặt `HOADON_FORCE_UPDATE_CHECK=1` để bật cả khi chạy `--test-server`.
 
@@ -142,8 +142,8 @@ Nếu thư mục ứng dụng không cho ghi, app báo rõ là không thể tự
 Setup EXE chỉ dùng cho **lần cài đầu tiên** (hoặc repair/uninstall). Mỗi Release phát hành 4 file:
 
 ```
-HoaDonNhe-Setup-vX.Y.Z.exe           <- cài mới / repair
-HoaDonNhe-Setup-vX.Y.Z.exe.sha256
-HoaDonNhe-vX.Y.Z.exe                 <- payload cho self-update
-HoaDonNhe-vX.Y.Z.exe.sha256
+CN-Tax-Tools-Setup-vX.Y.Z.exe           <- cài mới / repair
+CN-Tax-Tools-Setup-vX.Y.Z.exe.sha256
+CN-Tax-Tools-vX.Y.Z.exe                 <- payload cho self-update
+CN-Tax-Tools-vX.Y.Z.exe.sha256
 ```

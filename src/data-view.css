@@ -1,0 +1,128 @@
+/* ============================================================================
+   Kho dữ liệu hoá đơn — giao diện (PHASE 3/5).
+   TÔNG MÀU / CHỮ / NÚT: dùng ĐÚNG bảng màu và phong cách của tab Tra cứu
+   (src/style.css): nền #f3f6fa, card trắng viền #e0e7ef, nhấn #087f70,
+   chữ #20324a, phụ #76869a, bảng #f8fafc. KHÔNG tự đặt màu tối.
+   File này CHỈ khai báo bố cục + vài thành phần riêng của tab dữ liệu;
+   nút/ô nhập/bảng dùng lại style chung của app.
+   CSP: mọi thứ khai báo ở đây, KHÔNG dùng style="..." trong HTML.
+   ========================================================================== */
+
+/* ---- Nút chuyển tab Tra cứu & tải | Kho dữ liệu (giữ nguyên vị trí ở header) ---- */
+.view-switch { display: flex; gap: 8px; margin-top: 0; }
+.view-switch button { font-size: 12px; padding: 9px 14px; }
+.view-switch button.active { background: #087f70; border-color: #087f70; color: #fff; }
+
+/* ---- Khung chung của tab: giữ nguyên thứ tự vị trí như trước ---- */
+#pane-data { display: grid; grid-template-columns: minmax(0, 1fr); grid-auto-rows: min-content; gap: 14px; min-width: 0; }
+#pane-data .hint { font-size: 11px; }
+
+/* ---- Khối thông tin trên cùng: KHÔNG viền, 1 dòng, chữ nhỏ gọn có màu theo nhóm ---- */
+.data-overview { padding: 2px 0 0; }
+.data-tiles { display: flex; flex-wrap: nowrap; align-items: baseline; gap: 20px; overflow-x: auto; }
+.data-tile { display: inline-flex; align-items: baseline; gap: 7px; white-space: nowrap; }
+.data-tile span { font-size: 11px; letter-spacing: .3px; text-transform: uppercase; font-weight: 700; color: #8392a4; }
+.data-tile strong { font-size: 14px; font-variant-numeric: tabular-nums; color: #20324a; }
+.data-tile.range strong { font-weight: 600; }
+.data-tile.buy strong { color: #29415d; }
+.data-tile.sell strong { color: #087f70; }
+.data-tile.tax strong { color: #be853a; }
+.data-tile.time strong { font-size: 12.5px; font-weight: 600; color: #76869a; }
+.data-new {
+  background: #087f70; color: #fff; border-radius: 999px; padding: 4px 11px;
+  font-size: 11px; font-weight: 700; margin-left: auto; align-self: center; white-space: nowrap;
+}
+.data-new[hidden] { display: none; }
+
+/* ---- Bộ lọc: MỘT dòng, không nhãn chữ, dùng lại style ô nhập của app ---- */
+.data-filters { margin-top: 13px; padding-top: 12px; border-top: 1px solid #e6ecf3; }
+.data-filter-row { display: flex; flex-wrap: nowrap; align-items: center; gap: 10px; overflow-x: auto; padding-bottom: 2px; }
+.data-field { display: flex; flex: 0 0 auto; }
+.data-field input, .data-field select { margin-top: 0; width: auto; }
+.data-field.search input { width: 270px; }
+.data-field select { height: 38px; }
+.icon-button {
+  display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto;
+  width: 38px; height: 38px; padding: 0;
+}
+.icon-button svg { display: block; }
+
+/* Nút chọn nhanh khoảng ngày: từng nút riêng, có khe hở — không dính vào nhau */
+.data-chips { display: flex; flex-wrap: nowrap; gap: 6px; flex: 0 0 auto; }
+.data-chips button { font-size: 11.5px; padding: 8px 12px; border-radius: 999px; background: #fff; }
+.data-chips button:hover { border-color: #087f70; color: #087f70; }
+.data-chips button.active { background: #087f70; border-color: #087f70; color: #fff; }
+
+/* ---- Thanh hành động ---- */
+.data-toolbar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; padding: 13px 15px; }
+.data-job { flex: 1 1 280px; display: flex; align-items: center; gap: 10px; min-width: 220px; }
+.data-job .hint { margin: 0; }
+#data-import-bar { width: 100%; height: 8px; accent-color: #087f70; }
+
+/* ---- Nội dung: tab con + nút chiều riêng từng bảng ---- */
+.data-content { padding: 15px; }
+.data-tabs { display: flex; gap: 8px; margin-bottom: 13px; flex-wrap: wrap; }
+.data-tabs button { font-size: 12px; padding: 9px 14px; }
+.data-tabs button.active { background: #087f70; border-color: #087f70; color: #fff; }
+
+.data-subbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; flex-wrap: wrap; }
+.data-subbar-right { display: flex; align-items: center; gap: 12px; }
+
+/* Nút chuyển chiều (Tất cả / Mua vào / Bán ra): các nút TÁCH RỜI, cách nhau 6px.
+   Trước đây chúng nằm trong một khung liền kề nhau nên trông dính và khó bấm. */
+.data-seg { display: inline-flex; flex-wrap: wrap; gap: 6px; }
+.data-seg button { font-size: 12px; padding: 8px 13px; border-radius: 8px; background: #fff; }
+.data-seg button:hover { border-color: #087f70; color: #087f70; }
+.data-seg button.active { background: #087f70; border-color: #087f70; color: #fff; }
+
+/* ---- Bảng: dùng lại style bảng chung của app, chỉ mở cao hơn ---- */
+.data-table-scroll { max-height: 58vh; overflow: auto; }
+.data-content table { font-size: 12px; }
+.data-content th { white-space: nowrap; }
+.data-content tbody tr.clickable { cursor: pointer; }
+.data-content tbody tr.clickable:hover td { background: #f6fbfa; }
+.data-content tbody tr.selected td { background: #e9f6f3; }
+.data-content th.num, .data-content td.num { text-align: right; font-variant-numeric: tabular-nums; }
+.data-content td.stt, .data-content th.stt { width: 52px; text-align: right; color: #97a3b3; }
+.invoice-link { background: transparent; border-color: transparent; color: #187e73; font-size: 12px; font-weight: 700; padding: 0; }
+.invoice-link:hover { text-decoration: underline; }
+
+.data-pager { display: flex; align-items: center; gap: 12px; margin-top: 13px; flex-wrap: wrap; }
+.data-pager span { font-size: 11.5px; color: #76869a; }
+.data-pager .hint { margin: 0; }
+
+/* ---- Hộp thoại: cùng kiểu card trắng của app; khung xem A4 rộng, cao để vừa tờ giấy ---- */
+#invoice-dialog.invoice-dialog {
+  width: min(96vw, 1200px); max-width: 96vw; max-height: 96vh; padding: 16px 18px 18px;
+  background: #fff; border: 1px solid #dfe7ef; border-radius: 13px; overflow: hidden;
+}
+.invoice-dialog-head { display: flex; align-items: flex-start; gap: 12px; margin-bottom: 11px; }
+.invoice-dialog-head h2 { margin: 0 0 2px; font-size: 17px; color: #20324a; }
+.invoice-dialog-head p { margin: 0; font-size: 11.5px; color: #76869a; }
+.invoice-dialog-head button {
+  margin-left: auto; border: 0; background: transparent; color: #76869a;
+  font-size: 22px; line-height: 1; cursor: pointer; padding: 0 4px;
+}
+.invoice-dialog-head button:hover { color: #20324a; }
+.invoice-frame-wrap { height: calc(96vh - 152px); min-height: 320px; border: 1px solid #e0e7ef; border-radius: 10px; overflow: hidden; background: #eef1f4; }
+.invoice-frame-wrap iframe { display: block; width: 100%; height: 100%; border: 0; background: #eef1f4; }
+.invoice-dialog-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 11px; }
+
+/* ---- Hộp thoại Auto Sync / Tải lịch sử ---- */
+#autosync-dialog, #backfill-dialog {
+  width: min(94vw, 660px); max-width: 660px; padding: 18px;
+  background: #fff; border: 1px solid #dfe7ef; border-radius: 13px;
+}
+#autosync-dialog .data-actions, #backfill-dialog .data-actions { display: flex; flex-wrap: wrap; gap: 12px 18px; align-items: flex-end; margin: 12px 0; }
+#autosync-dialog .data-field.inline, #backfill-dialog .data-field.inline { flex-direction: row; align-items: center; gap: 8px; }
+#autosync-dialog .data-field.inline input, #backfill-dialog .data-field.inline input { width: 92px; }
+#autosync-dialog .login-actions, #backfill-dialog .login-actions { display: flex; gap: 10px; flex-wrap: wrap; }
+#backfill-bar { width: 100%; height: 8px; margin-top: 10px; accent-color: #087f70; }
+
+@media (max-width: 980px) {
+  .data-filter-row { flex-wrap: wrap; }
+  .data-field.search input { width: 100%; }
+  .data-tiles { gap: 8px 16px; }
+  #invoice-dialog.invoice-dialog { width: 98vw; max-width: 98vw; }
+  .invoice-frame-wrap { height: calc(96vh - 160px); }
+}

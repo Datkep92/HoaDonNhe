@@ -31,7 +31,7 @@
   const packageName = license => {
     const pkg = license?.packageType || license?.package || '';
     const status = String(license?.status || '').toLowerCase();
-    if (status === 'active') return pkg || 'Bản quyền';
+    if (status === 'active') return pkg || 'Activate';
     if (status === 'trial') return 'Trial';
     if (status === 'locked') return 'Bị khóa';
     if (status === 'expired') return 'Hết hạn';

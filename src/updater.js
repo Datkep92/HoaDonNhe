@@ -1,9 +1,9 @@
 'use strict';
 // ---------------------------------------------------------------------------
-// SELF-UPDATE (cập nhật tại chỗ) cho HoaDonNhe.
+// SELF-UPDATE (cập nhật tại chỗ) cho CN Tax Tools.
 //
-// CÀI LẦN ĐẦU : Setup EXE -> HoaDonNhe.exe  (Setup cũng dùng để repair/uninstall)
-// CÁC LẦN SAU : app tự tải `HoaDonNhe-v<version>.exe` -> xác minh SHA-256 -> chạy helper
+// CÀI LẦN ĐẦU : Setup EXE -> CN-Tax-Tools.exe  (Setup cũng dùng để repair/uninstall)
+// CÁC LẦN SAU : app tự tải `CN-Tax-Tools-v<version>.exe` -> xác minh SHA-256 -> chạy helper
 //               để thay chính file đang chạy -> mở lại bản mới. KHÔNG chạy Setup lại.
 //
 // Vì sao an toàn:
@@ -26,21 +26,21 @@ const { spawn } = require('node:child_process');
 const REPO = 'Datkep92/HoaDonNhe';
 const RELEASE_HOST = 'github.com';
 const ALLOWED_REDIRECT_HOSTS = new Set([RELEASE_HOST, 'objects.githubusercontent.com', 'release-assets.githubusercontent.com', 'github-releases.githubusercontent.com']);
-const USER_AGENT = 'HoaDonNhe-Updater';
-const UPDATE_DIR_NAME = 'HoaDonNhe-update';
-const NEW_BINARY_NAME = 'HoaDonNhe-new.exe';
+const USER_AGENT = 'CN-Tax-Tools-Updater';
+const UPDATE_DIR_NAME = 'CN-Tax-Tools-update';
+const NEW_BINARY_NAME = 'CN-Tax-Tools-new.exe';
 const BACKUP_SUFFIX = '.old';
 
 // Tên asset cho self-update (binary) và cho cài mới (Setup).
-const appNameFor = version => `HoaDonNhe-v${version}.exe`;
-const appShaNameFor = version => `HoaDonNhe-v${version}.exe.sha256`;
-const setupNameFor = version => `HoaDonNhe-Setup-v${version}.exe`;
+const appNameFor = version => `CN-Tax-Tools-v${version}.exe`;
+const appShaNameFor = version => `CN-Tax-Tools-v${version}.exe.sha256`;
+const setupNameFor = version => `CN-Tax-Tools-Setup-v${version}.exe`;
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 function compareVersions(a, b) {
-  const pa = String(a || '').replace(/^v/i, '').split('.').map(n => parseInt(n, 10) || 0);
-  const pb = String(b || '').replace(/^v/i, '').split('.').map(n => parseInt(n, 10) || 0);
+  const pa = String(a || '').replace(/^(?:cntax-)?v/i, '').split('.').map(n => parseInt(n, 10) || 0);
+  const pb = String(b || '').replace(/^(?:cntax-)?v/i, '').split('.').map(n => parseInt(n, 10) || 0);
   for (let i = 0; i < Math.max(pa.length, pb.length); i += 1) {
     const x = pa[i] || 0;
     const y = pb[i] || 0;
@@ -62,7 +62,8 @@ function trustedAssetUrl(rawUrl, expectedName) {
 
 // Từ JSON release -> kế hoạch self-update (payload là BINARY, không phải Setup). Thuần, không I/O.
 function planUpdate(release, currentVersion) {
-  const tag = String((release && release.tag_name) || '').trim().replace(/^v/i, '');
+  // Chấp nhận tag có tiền tố thương hiệu (cntax-v1.0.1) lẫn tag cũ (v1.0.1) — version dùng trong app luôn thuần.
+  const tag = String((release && release.tag_name) || '').trim().replace(/^(?:cntax-)?v/i, '');
   if (!/^\d+\.\d+\.\d+/.test(tag)) return { ok: false, error: 'Bản phát hành không có tag hợp lệ.' };
   if (release.draft || release.prerelease) return { ok: false, error: 'Bản phát hành không hợp lệ (draft/prerelease).', latest: tag };
   if (compareVersions(tag, currentVersion) <= 0) return { ok: false, error: 'Không có bản mới.', latest: tag };

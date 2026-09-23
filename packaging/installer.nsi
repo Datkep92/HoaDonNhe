@@ -1,12 +1,12 @@
 ﻿; ===========================================================================
-;  HoaDonNhe - Trình cài đặt (Installed / Portable)  --  file NSIS
+;  CN Tax Tools - Trình cài đặt (Installed / Portable)  --  file NSIS
 ;
 ;  Build bằng makensis với các define (xem tools/build-installer.cjs):
 ;     -DVERSION -DVI_VERSION -DAPP_EXE -DAPP_BASENAME -DPAYLOAD
 ;     -DOUT_FILE -DICON -DREPO
 ;
 ;  Đặc điểm:
-;   * Một file Setup duy nhất, payload HoaDonNhe.exe được NHÚNG bên trong.
+;   * Một file Setup duy nhất, payload CN-Tax-Tools.exe được NHÚNG bên trong.
 ;   * Chọn chế độ CÀI ĐẶT (shortcut + gỡ cài đặt) hoặc PORTABLE (chạy trực tiếp).
 ;   * Không cần quyền Administrator (RequestExecutionLevel user).
 ;   * Cài vào hồ sơ người dùng -> thư mục dữ liệu du_lieu cạnh EXE ghi được bình thường.
@@ -30,22 +30,22 @@ Unicode true
   !define VI_VERSION "${VERSION}.0"
 !endif
 !ifndef PRODUCT_NAME
-  !define PRODUCT_NAME "HoaDonNhe"
+  !define PRODUCT_NAME "CN Tax Tools"
 !endif
 !ifndef APP_EXE
-  !define APP_EXE "HoaDonNhe.exe"
+  !define APP_EXE "CN-Tax-Tools.exe"
 !endif
 !ifndef APP_BASENAME
-  !define APP_BASENAME "HoaDonNhe"
+  !define APP_BASENAME "CN-Tax-Tools"
 !endif
 ; Gốc project = thư mục cha của thư mục chứa file .nsi này (…/packaging/..).
 ; Dùng ${__FILEDIR__} để đường dẫn không phụ thuộc thư mục làm việc của makensis.
 !define ROOT "${__FILEDIR__}\.."
 !ifndef PAYLOAD
-  !define PAYLOAD "${ROOT}\release\installer\payload\HoaDonNhe.exe"
+  !define PAYLOAD "${ROOT}\release\installer\payload\CN-Tax-Tools.exe"
 !endif
 !ifndef OUT_FILE
-  !define OUT_FILE "${ROOT}\release\HoaDonNhe-Setup-v${VERSION}.exe"
+  !define OUT_FILE "${ROOT}\release\CN-Tax-Tools-Setup-v${VERSION}.exe"
 !endif
 !ifndef ICON
   !define ICON "${ROOT}\resources\icon.ico"
@@ -271,20 +271,20 @@ Section "Cài đặt ${PRODUCT_NAME}" SecMain
 
   ${If} $Portable == 0
     ; Icon dùng cho shortcut + mục gỡ cài đặt (app EXE không tự gán được icon vì rcedit phá pkg).
-    File /oname=HoaDonNhe.ico "${ICON}"
+    File /oname=CN-Tax-Tools.ico "${ICON}"
     WriteUninstaller "$INSTDIR\Uninstall.exe"
 
     CreateDirectory "$SMPROGRAMS\${PRODUCT_NAME}"
-    CreateShortcut "$SMPROGRAMS\${PRODUCT_NAME}\${PRODUCT_NAME}.lnk" "$INSTDIR\${APP_EXE}" "" "$INSTDIR\HoaDonNhe.ico" 0 SW_SHOWNORMAL "" "${PRODUCT_NAME} - tải hóa đơn điện tử"
-    CreateShortcut "$SMPROGRAMS\${PRODUCT_NAME}\Gỡ cài đặt ${PRODUCT_NAME}.lnk" "$INSTDIR\Uninstall.exe" "" "$INSTDIR\HoaDonNhe.ico" 0 SW_SHOWNORMAL "" "Gỡ cài đặt ${PRODUCT_NAME}"
-    CreateShortcut "$DESKTOP\${PRODUCT_NAME}.lnk" "$INSTDIR\${APP_EXE}" "" "$INSTDIR\HoaDonNhe.ico" 0 SW_SHOWNORMAL "" "${PRODUCT_NAME} - tải hóa đơn điện tử"
+    CreateShortcut "$SMPROGRAMS\${PRODUCT_NAME}\${PRODUCT_NAME}.lnk" "$INSTDIR\${APP_EXE}" "" "$INSTDIR\CN-Tax-Tools.ico" 0 SW_SHOWNORMAL "" "${PRODUCT_NAME} - tải hóa đơn điện tử"
+    CreateShortcut "$SMPROGRAMS\${PRODUCT_NAME}\Gỡ cài đặt ${PRODUCT_NAME}.lnk" "$INSTDIR\Uninstall.exe" "" "$INSTDIR\CN-Tax-Tools.ico" 0 SW_SHOWNORMAL "" "Gỡ cài đặt ${PRODUCT_NAME}"
+    CreateShortcut "$DESKTOP\${PRODUCT_NAME}.lnk" "$INSTDIR\${APP_EXE}" "" "$INSTDIR\CN-Tax-Tools.ico" 0 SW_SHOWNORMAL "" "${PRODUCT_NAME} - tải hóa đơn điện tử"
 
     WriteRegStr HKCU "Software\${PRODUCT_NAME}" "InstallDir" "$INSTDIR"
     WriteRegStr HKCU "Software\${PRODUCT_NAME}" "Version" "${VERSION}"
     WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_NAME}" "DisplayName" "${PRODUCT_NAME}"
     WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_NAME}" "DisplayVersion" "${VERSION}"
     WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_NAME}" "Publisher" "${PRODUCT_NAME}"
-    WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_NAME}" "DisplayIcon" "$INSTDIR\HoaDonNhe.ico"
+    WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_NAME}" "DisplayIcon" "$INSTDIR\CN-Tax-Tools.ico"
     WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_NAME}" "InstallLocation" "$INSTDIR"
     WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_NAME}" "UninstallString" '"$INSTDIR\Uninstall.exe"'
     WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_NAME}" "QuietUninstallString" '"$INSTDIR\Uninstall.exe" /S'
@@ -310,7 +310,7 @@ Section "Uninstall"
   Call un.CheckAppRunning
 
   Delete "$INSTDIR\${APP_EXE}"
-  Delete "$INSTDIR\HoaDonNhe.ico"
+  Delete "$INSTDIR\CN-Tax-Tools.ico"
   Delete "$INSTDIR\Uninstall.exe"
   DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_NAME}"
   DeleteRegKey HKCU "Software\${PRODUCT_NAME}"

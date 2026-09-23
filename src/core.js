@@ -66,8 +66,8 @@ const { invoiceHtml, withXmlFields } = require('./invoice-html');
 // 400 trang × 50 dòng = 20.000 hóa đơn/tháng, cao hơn mọi tháng thực tế đã gặp.
 const MAX_PAGES_PER_TASK = 400;
 class Engine {
-  constructor({ store, request, identity, emit, pdf, excel }) {
-    Object.assign(this, { store, request, identity, emit, pdf, excel });
+  constructor({ store, request, identity, emit, pdf, excel, shouldSkip }) {
+    Object.assign(this, { store, request, identity, emit, pdf, excel, shouldSkip });
     this.busy = false; this.cancelled = false; this.job = null;
     // Lượt chạy bị NGẮT (app bị tắt/crash giữa đường) để lại đúng `searching`/`downloading` trên đĩa;
     // còn khi người dùng bấm "Tạm dừng" thì app đã ghi hẳn `paused`. Ghi nhớ để lát nữa tự chạy tiếp.
@@ -268,6 +268,19 @@ class Engine {
       const suffix = crypto.createHash('sha256').update(invoiceKey(inv)).digest('hex').slice(0, 10);
       const base = `${safeName(inv.nbmst)}_${safeName(inv.khmshdon)}_${safeName(inv.khhdon)}_${safeName(inv.shdon)}_${suffix}`;
       const direction = inv.direction === 'sold' ? 'Ban_ra' : 'Mua_vao';
+      // Móc tuỳ chọn — chỉ Auto Sync truyền vào: hoá đơn đã có trong SQLite thì bỏ qua NGAY, không
+      // request tới cổng thuế (PROJECT_ARCHITECTURE mục 19 lớp 1, §86.7 “SQLite là duplicate index chính”).
+      // Luồng thủ công KHÔNG truyền shouldSkip nên hành vi tải giữ nguyên hoàn toàn (mục 12).
+      if (typeof this.shouldSkip === 'function') {
+        let known = false;
+        try { known = !!(await this.shouldSkip(inv)); } catch { known = false; }
+        if (known) {
+          item.state = 'skipped'; item.error = '';
+          j.stats.existed += 1; j.stats.skipped += 1;
+          j.message = `${j.stats.existed}/${j.items.length} hóa đơn đã có trong dữ liệu · đã tải ${j.stats.downloaded} · lỗi ${j.stats.failed}`;
+          this.save(); continue;
+        }
+      }
       // Bước 2+3 – file đã tồn tại thì bỏ qua ngay trước khi tải: không request, không ghi đè, không đổi tên.
       const perFile = j.params.formats.filter(x => ['xml', 'zip', 'html', 'pdf'].includes(x));
       if (perFile.length) {

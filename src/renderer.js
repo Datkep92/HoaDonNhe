@@ -14,12 +14,16 @@ function downloadPlan(state) {
 async function call(url, body) {
   let response;
   try { response = await fetch(url, { method: url === '/api/state' ? 'GET' : 'POST', headers: { 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) }); }
-  catch { throw new Error('Không kết nối được ứng dụng. Hãy mở lại HoaDonNhe-v4.exe.'); }
+  catch { throw new Error('Không kết nối được ứng dụng. Hãy mở lại CN-Tax-Tools.exe.'); }
   const result = await response.json(); if (!result.ok) throw new Error(result.error); return result.value;
 }
 // Thông báo ở góc phải; có thể kèm nút hành động bấm được (ví dụ “Mở file”, “Mở thư mục”).
-function notice(text, actions) {
+function notice(text, actions, kind) {
   const box = $('notice');
+  // Toast lỗi = đỏ, mọi thông báo khác = xanh (xem style.css).
+  const isError = kind === 'error';
+  box.classList.toggle('notice-error', isError);
+  box.classList.toggle('notice-ok', !isError);
   box.replaceChildren();
   const span = document.createElement('span'); span.textContent = text; box.append(span);
   for (const action of actions || []) {
@@ -27,7 +31,7 @@ function notice(text, actions) {
     button.type = 'button'; button.className = 'link'; button.textContent = action.label;
     button.onclick = async () => {
       try { await call(action.url, action.body || {}); if (action.keep !== true) box.hidden = true; }
-      catch (error) { notice(error.message); }
+      catch (error) { noticeFail(error.message); }
     };
     box.append(button);
   }
@@ -40,6 +44,8 @@ function notice(text, actions) {
   notice.timer = setTimeout(() => { box.hidden = true; }, actions?.length ? 18000 : 12000);
 }
 window.notice = notice;
+// Báo lỗi: dùng đúng màu đỏ. Mọi thông báo khác đi qua notice() sẽ là màu xanh.
+window.noticeFail = (text, actions) => notice(text, actions, 'error');
 const SESSION_LABEL = { live: 'Đang dùng phiên đăng nhập của phiên làm việc này', saved: 'Còn phiên đã lưu — bấm để vào tra cứu', none: 'Chưa đăng nhập — bấm để đăng nhập' };
 const displayName = account => account.name || account.label || account.mst;
 // Tạo một lần rồi dùng lại: new Intl.NumberFormat cho từng dòng là chi phí thuần tuý (bảng có thể
@@ -67,6 +73,19 @@ function openRowMenu(row, account) {
   };
   panel.append(
     item('Đăng nhập / nhập CAPTCHA', () => openLogin(account.mst)),
+    // Auto Sync theo từng MST: chọn đúng MST này rồi mở hộp thoại trong tab Kho dữ liệu.
+    item('Auto Sync (dò hoá đơn mới)…', async () => {
+      try {
+        if (account.mst !== current.selected) {
+          initialized = false;
+          await work('/api/account/select', { mst: account.mst });
+        }
+        const view = window.HD_DATA_VIEW;
+        if (!view) { notice('Phần Kho dữ liệu chưa sẵn sàng.'); return; }
+        view.show('data');
+        await view.openAutoSync();
+      } catch (error) { noticeFail(error.message); }
+    }),
     item('Sửa MST', () => openMstForm(account)),
     item('Xoá mật khẩu đã lưu', () => forgetPassword(account)),
     item('Bỏ khỏi danh sách', () => removeMst(account), true)
@@ -90,7 +109,7 @@ async function forgetPassword(account) {
     if (account.mst !== current.selected) await work('/api/account/select', { mst: account.mst });
     await call('/api/account/forget', {});
     notice(`Đã xoá mật khẩu đã lưu của MST ${account.mst}.`); await refresh();
-  } catch (error) { notice(error.message); }
+  } catch (error) { noticeFail(error.message); }
 }
 async function removeMst(account) {
   if (!confirm(`Bỏ MST ${account.mst} khỏi danh sách? Profile Chrome và tiến độ vẫn giữ trong du_lieu, nhưng phiên + mật khẩu đã lưu của MST này sẽ bị xoá.`)) return;
@@ -163,7 +182,28 @@ function render(state) {
   if ($('login-dialog').open) $('login-show-page').textContent = browserText;
   const selected = state.selected || '';
   const account = (state.accounts || []).find(x => x.mst === selected);
-  $('account').textContent = selected ? `${displayName(account || { mst: selected })} · ${selected}` : 'Chưa chọn MST';
+  // Dòng tài khoản: MST trước (dạng nhãn), sau đó tên công ty/HKD in đậm cho dễ thấy.
+  // Không lặp lại MST hai lần khi chưa biết tên công ty.
+  const companyName = String(state.companyName || '').trim();
+  const label = companyName || displayName(account || { mst: selected });
+  const name = selected && label && label !== selected ? label : '';
+  const box = $('account');
+  box.title = [selected, name].filter(Boolean).join(' · ');
+  box.replaceChildren();
+  if (!selected) {
+    box.textContent = 'Chưa chọn MST';
+  } else {
+    const mstSpan = document.createElement('span');
+    mstSpan.className = 'account-mst';
+    mstSpan.textContent = selected;
+    box.append(mstSpan);
+    if (name) {
+      const nameSpan = document.createElement('span');
+      nameSpan.className = 'account-name';
+      nameSpan.textContent = name;
+      box.append(nameSpan);
+    }
+  }
   $('account-hint').textContent = selected ? (state.authenticated ? 'Đang dùng phiên còn hiệu lực — sẵn sàng tra cứu.' : (account?.session === 'saved' ? 'Có phiên đã lưu nhưng đã hết hạn — bấm để đăng nhập lại.' : 'Chưa đăng nhập — bấm “Đăng nhập MST này”.')) : 'Chọn một MST trong danh sách bên trái.';
   $('auth-dot').classList.toggle('active', !!state.authenticated);
   $('total').textContent = state.total || 0; $('done').textContent = state.done || 0; $('failed').textContent = state.failed || 0;
@@ -191,7 +231,7 @@ function render(state) {
     // Dòng đã có file: bấm vào để mở hóa đơn bằng ứng dụng mặc định của Windows.
     if ((inv.files || []).length) {
       row.classList.add('clickable'); row.tabIndex = 0; row.title = 'Bấm để mở hóa đơn đã tải';
-      const open = () => call('/api/open-file', { path: inv.files[0] }).catch(error => notice(error.message));
+      const open = () => call('/api/open-file', { path: inv.files[0] }).catch(error => noticeFail(error.message));
       row.onclick = open;
       row.onkeydown = event => { if (event.key === 'Enter') { event.preventDefault(); open(); } };
     }
@@ -220,8 +260,8 @@ function render(state) {
   $('download').disabled = plan.disabled; $('download').title = plan.reason || 'Tải toàn bộ hóa đơn của lượt tra cứu này';
   $('resume').disabled = busy || !['paused', 'failed', 'partial', 'auth_required'].includes(state.state);
 }
-async function refresh() { if (polling) return; polling = true; try { render(await call('/api/state')); } catch (error) { notice(error.message); } finally { polling = false; } }
-async function work(url, data) { pending = true; render(current); try { return await call(url, data); } catch (error) { notice(error.message); return null; } finally { pending = false; await refresh(); } }
+async function refresh() { if (polling) return; polling = true; try { render(await call('/api/state')); } catch (error) { noticeFail(error.message); } finally { polling = false; } }
+async function work(url, data) { pending = true; render(current); try { return await call(url, data); } catch (error) { noticeFail(error.message); return null; } finally { pending = false; await refresh(); } }
 function loginError(text) { $('login-error').textContent = text || ''; $('login-error').hidden = !text; }
 function invalidateChallenge() {
   loginId = ''; preparedMst = ''; $('login-captcha').value = '';
@@ -351,7 +391,7 @@ $('choose').onclick = async () => {
     $('output').value = folder || ''; current.output = folder || '';
     if (folder && folder !== before) notice(`Thư mục lưu: ${folder}`);
     else if (!folder) notice('Chưa chọn thư mục lưu — chọn lại, hoặc gõ đường dẫn vào ô “Thư mục lưu”.');
-  } catch (error) { notice(error.message); }
+  } catch (error) { noticeFail(error.message); }
 };
 $('output').onchange = async () => {
   const typed = $('output').value.trim();
@@ -359,7 +399,7 @@ $('output').onchange = async () => {
   try {
     const folder = await call('/api/folder', { path: typed });
     $('output').value = folder; current.output = folder; notice(`Đã đặt thư mục lưu: ${folder}`); await refresh();
-  } catch (error) { notice(error.message); $('output').value = current.output || ''; }
+  } catch (error) { noticeFail(error.message); $('output').value = current.output || ''; }
 };
 $('search').onclick = async () => {
   if (pending) return;
@@ -378,7 +418,7 @@ $('search').onclick = async () => {
   // Người dùng có thể gõ/dán đường dẫn rồi bấm Tra cứu ngay: lưu lại trước khi chạy.
   if (folder !== (current.output || '')) {
     try { const saved = await call('/api/folder', { path: folder }); $('output').value = saved; current.output = saved; }
-    catch (error) { notice(error.message); $('output').focus(); return; }
+    catch (error) { noticeFail(error.message); $('output').focus(); return; }
   }
   // Không hiện toast sau khi tra cứu: kết quả đã nằm trong bảng + dòng trạng thái/tiến độ.
   await work('/api/search', { from: $('from').value, to: $('to').value, direction: $('direction').value, family: $('family').value, status: $('status').value, formats: [...document.querySelectorAll('.formats input:checked')].map(x => x.value), output: folder });
@@ -432,7 +472,7 @@ function applyPeriod() {
     const range = Period.rangeFor(mode, $('period-year').value, unit);
     $('from').value = range.from; $('to').value = range.to;
     notice(`${range.label}: từ ${range.from} đến ${range.to}`);
-  } catch (error) { notice(error.message); }
+  } catch (error) { noticeFail(error.message); }
 }
 ['period-mode', 'period-year', 'period-month', 'period-quarter'].forEach(id => { $(id).onchange = applyPeriod; });
 syncPeriodOptions();

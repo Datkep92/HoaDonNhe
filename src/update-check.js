@@ -64,6 +64,10 @@ async function checkUpdate(force) {
       name: data.name || data.tag_name || latest,
       url: data.html_url || `${releasesUrl}/latest`,
       publishedAt: data.published_at || '',
+      draft: !!data.draft,
+      prerelease: !!data.prerelease,
+      // Danh sách asset để bộ cập nhật chọn đúng file Setup + .sha256 (xem src/updater.js).
+      assets: Array.isArray(data.assets) ? data.assets.map(item => ({ name: item.name, size: item.size, browser_download_url: item.browser_download_url })) : [],
     };
   } catch (error) {
     cache = { ok: false, current, latest: '', updateAvailable: false, url: '', error: error && error.message ? error.message : String(error) };

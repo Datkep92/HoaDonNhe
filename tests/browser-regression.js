@@ -35,7 +35,9 @@ function get(url, headers = {}) { return new Promise((resolve, reject) => { http
   const cookies = await client.Network.getCookies({ urls: [origin] });
   const cookie = cookies.cookies.map(c => `${c.name}=${c.value}`).join('; ');
   assert.equal(await get(origin + '/api/state', { Cookie: cookie, Origin: 'https://untrusted.example' }), 403);
-  await evaluate(client, "document.getElementById('login').click()");
+  // Nút mở form đăng nhập (#account-login) chỉ chạy khi đã chọn MST; test này kiểm trạng thái
+  // BAN ĐẦU của form (chỉ MST, chưa hiện ô mật khẩu) nên gọi thẳng đúng hàm mà nút đó gọi.
+  await evaluate(client, "openLogin('')");
   assert(await evaluate(client, "document.getElementById('login-dialog').open && document.getElementById('login-mst').getClientRects().length>0 && document.getElementById('login-credentials').hidden"));
   console.log('PASS: login starts with MST only and keeps credentials hidden until CAPTCHA is ready');
   const png = await evaluate(client, "(()=>{let c=document.createElement('canvas');c.width=160;c.height=50;let x=c.getContext('2d');x.fillStyle='white';x.fillRect(0,0,160,50);x.fillStyle='black';x.font='26px sans-serif';x.fillText('TEST',16,34);return c.toDataURL()})()");

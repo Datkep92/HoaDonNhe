@@ -109,6 +109,7 @@ Page custom ModePage ModePageLeave
 
 ; ---- biến (phải khai báo trước khi dùng trong .onInit) ----------------------
 Var Portable
+Var UpdateMode
 Var RadioInstalled
 Var RadioPortable
 
@@ -119,10 +120,18 @@ Function .onInit
   SetShellVarContext current
   ; Lưu ý: ${GetParameters}/${GetOptions} dùng $R0..$R2 làm thanh ghi tạm -> chỉ dùng $0..$9.
   ${GetParameters} $0
+  ; Setup.exe /S /PORTABLE /D=<thư mục>  -> giải nén thẳng, không shortcut/gỡ cài đặt
   ClearErrors
   ${GetOptions} $0 "/PORTABLE" $1
   ${IfNot} ${Errors}
     StrCpy $Portable 1
+  ${EndIf}
+  ; Setup.exe /S /UPDATE  -> auto-update từ trong app: chờ app thoát rồi cài im lặng,
+  ; giữ nguyên thư mục cài + dữ liệu, và mở lại app sau khi xong.
+  ClearErrors
+  ${GetOptions} $0 "/UPDATE" $1
+  ${IfNot} ${Errors}
+    StrCpy $UpdateMode 1
   ${EndIf}
 FunctionEnd
 
@@ -197,6 +206,27 @@ FunctionEnd
 
 ; ==================== Kiểm tra ứng dụng đang chạy ===========================
 Function CheckAppRunning
+  ; Chế độ im lặng (/S — dùng cho auto-update): KHÔNG hỏi gì, chờ app thoát tối đa 60 giây
+  ; trước khi ghi đè. Không làm vậy thì MessageBox bị bỏ qua trong /S và việc ghi đè file
+  ; đang chạy có thể thất bại.
+  ${If} ${Silent}
+    StrCpy $2 0
+    check_wait:
+      Sleep 1000
+      nsExec::ExecToStack 'powershell -NoProfile -NonInteractive -Command "if (Get-Process -Name ${APP_BASENAME} -ErrorAction SilentlyContinue) { exit 1 } else { exit 0 }"'
+      Pop $0
+      Pop $1
+      ${If} $1 == "0"
+        Return
+      ${EndIf}
+      IntOp $2 $2 + 1
+      ${If} $2 < 60
+        Goto check_wait
+      ${EndIf}
+    ; Quá 60 giây vẫn chạy: dừng trước khi ghi gì, không để lại bản cài nửa vời.
+    SetErrors
+    Abort
+  ${EndIf}
   check_loop:
     nsExec::ExecToStack 'powershell -NoProfile -NonInteractive -Command "if (Get-Process -Name ${APP_BASENAME} -ErrorAction SilentlyContinue) { exit 1 } else { exit 0 }"'
     Pop $0
@@ -260,6 +290,11 @@ Section "Cài đặt ${PRODUCT_NAME}" SecMain
     WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_NAME}" "QuietUninstallString" '"$INSTDIR\Uninstall.exe" /S'
     WriteRegDWORD HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_NAME}" "NoModify" 1
     WriteRegDWORD HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_NAME}" "NoRepair" 1
+
+    ; Auto-update: cài xong thì mở lại app để người dùng thấy bản mới ngay.
+    ${If} $UpdateMode == 1
+      Exec "$INSTDIR\${APP_EXE}"
+    ${EndIf}
   ${Else}
     DetailPrint "Chế độ PORTABLE: chỉ giải nén, không tạo shortcut/gỡ cài đặt."
   ${EndIf}

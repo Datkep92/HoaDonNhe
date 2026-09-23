@@ -14,6 +14,31 @@ const { SupportStore } = require('./support');
 const { AppLockStore } = require('./app-lock');
 const VERSION = require('./version');
 const { checkUpdate } = require('./update-check');
+const { Updater, applySelfUpdate, cleanupUpdateTemp } = require('./updater');
+
+// ---------------------------------------------------------------------------
+// SELF-UPDATE: bản MỚI được khởi động với `--apply-update` để thay chính file đang chạy
+// rồi mở lại. Phải xử lý TRƯỚC khi chạm tới dữ liệu người dùng (du_lieu, secrets, Chrome…).
+// ---------------------------------------------------------------------------
+if (process.argv.includes('--apply-update')) {
+  const logFile = path.join(path.dirname(process.execPath), 'du_lieu', 'nhat-ky.log');
+  applySelfUpdate(process.argv, {
+    log: message => { try { fs.mkdirSync(path.dirname(logFile), { recursive: true }); fs.appendFileSync(logFile, `[${new Date().toLocaleString('vi-VN')}] ${message}\r\n`); } catch { /* bỏ */ } },
+  }).then(result => {
+    if (result && !result.ok) {
+      const text = `Cập nhật thất bại: ${result.error}${result.restored ? ' (đã khôi phục bản cũ)' : ''}`;
+      try { fs.appendFileSync(logFile, `[${new Date().toLocaleString('vi-VN')}] ${text}\r\n`); } catch { /* bỏ */ }
+      try {
+        const quoted = `'${text.replace(/'/g, "''")}'`;
+        execFile('powershell.exe', ['-NoProfile', '-STA', '-Command', `Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.MessageBox]::Show(${quoted}, 'Hoa Don Desktop', 'OK', 'Warning') | Out-Null`], { windowsHide: true }, () => {});
+      } catch { /* bỏ */ }
+      setTimeout(() => process.exit(1), 2000);
+    } else {
+      process.exit(0);
+    }
+  }).catch(() => process.exit(1));
+  return; // không chạy tiếp phần khởi động ứng dụng
+}
 
 const packed = !!process.pkg;
 const appDir = packed ? path.dirname(process.execPath) : path.resolve(__dirname, '..');
@@ -48,9 +73,21 @@ process.on('uncaughtException', error => {
 // (chưa có du_lieu/support-gateway.json — xem SUPPORT_SETUP.md mục 4). Bọc Promise.resolve để
 // không chết ở bước khởi động như bản v12.
 Promise.resolve(support.register()).catch(() => {}).then(() => ensureSupportStream());
-// Kiểm tra bản mới trên GitHub Releases (CHỈ ĐỌC, không tự cập nhật). Chạy nền ngay khi khởi động
-// và im lặng nếu lỗi mạng; UI đọc kết quả qua /api/update. Tắt bằng HOADON_NO_UPDATE_CHECK=1.
-if (!testServer && process.env.HOADON_NO_UPDATE_CHECK !== '1') checkUpdate().catch(() => {});
+// Bộ cập nhật: kiểm tra bản mới khi mở app (một lần), tải + xác minh SHA-256 + chạy bộ cài
+// CHỈ khi người dùng bấm xác nhận. Không bao giờ tự cài.
+const updater = new Updater({
+  version: VERSION.version,
+  execPath: process.execPath,
+  localAppData: process.env.LOCALAPPDATA,
+  checkUpdate,
+});
+// Kiểm tra bản mới MỘT LẦN khi mở app (không polling). Tắt bằng HOADON_NO_UPDATE_CHECK=1.
+// HOADON_FORCE_UPDATE_CHECK=1 để bật cả khi chạy --test-server (dùng cho test tự động).
+const updateCheckEnabled = process.env.HOADON_NO_UPDATE_CHECK !== '1'
+  && (!testServer || process.env.HOADON_FORCE_UPDATE_CHECK === '1');
+if (updateCheckEnabled) updater.check().catch(() => {});
+// Dọn thư mục tạm của lần tự cập nhật trước (file đang bị khoá sẽ được dọn ở lần mở sau).
+cleanupUpdateTemp();
 let lastUiPoll = 0;
 let accounts = loadJson(accountsFile, { accounts: [], selected: '' });
 let engine = null;
@@ -271,7 +308,7 @@ function stopSupportStream() {
 }
 function appState() {
   const snapshot = engine ? engine.snapshot() : { state: 'idle', busy: false, items: [], total: 0, done: 0, failed: 0, message: 'Chọn hoặc thêm MST để bắt đầu.' };
-  return { ...snapshot, accounts: accounts.accounts.map(publicAccount), selected, output, remembered: !!selected && isRemembered(selected), browserReady: !!browser.client, browserVisible: !!browser.visible, authenticated: !!authAccount, authBusy };
+  return { ...snapshot, accounts: accounts.accounts.map(publicAccount), selected, output, remembered: !!selected && isRemembered(selected), browserReady: !!browser.client, browserVisible: !!browser.visible, authenticated: !!authAccount, authBusy, update: updater.status() };
 }
 function ensureIdle() { if (engine?.busy) throw new Error('Tạm dừng tác vụ tải trước khi thay đổi phiên đăng nhập.'); }
 async function ensureLicenseAllowed() { return support.enforceLicense(); }
@@ -432,7 +469,16 @@ async function endpoint(req, res, url) {
     if (req.method === 'GET' && url.pathname === '/api/app-lock/status') return reply(res, 200, { ok: true, value: appLock.status() });
   // Version hiện tại + kiểm tra bản mới (chỉ đọc GitHub Releases, không tự ghi đè EXE).
   if (url.pathname === '/api/version') return reply(res, 200, { ok: true, value: { name: VERSION.name, version: VERSION.version } });
-  if (url.pathname === '/api/update') return reply(res, 200, { ok: true, value: await checkUpdate(url.searchParams.get('refresh') === '1') });
+  if (url.pathname === '/api/update') return reply(res, 200, { ok: true, value: { ...updater.status(), url: updater.status().releaseUrl } });
+  // ---- Self update: mỗi thao tác do người dùng chủ động gọi ----
+  if (url.pathname === '/api/update/check') return reply(res, 200, { ok: true, value: await updater.check(true) });
+  if (url.pathname === '/api/update/cancel') return reply(res, 200, { ok: true, value: updater.cancel() });
+  if (url.pathname === '/api/update/start') {
+    const result = await updater.start();
+    // Tải + xác minh xong và helper đã khởi động -> trả lời rồi tự đóng để helper thay file.
+    if (result.ok) setTimeout(() => { stop(); }, 1500);
+    return reply(res, 200, { ok: true, value: result });
+  }
     if (req.method === 'POST' && !String(req.headers['content-type'] || '').startsWith('application/json')) throw new Error('Yêu cầu không hợp lệ.');
     if (req.method === 'POST' && url.pathname === '/api/app-lock/set-pin') { const input = await readBody(req); return reply(res, 200, { ok: true, value: appLock.setPin(input.pin) }); }
     if (req.method === 'POST' && url.pathname === '/api/app-lock/unlock') { const input = await readBody(req); return reply(res, 200, { ok: true, value: appLock.verify(input.pin) }); }
@@ -568,6 +614,7 @@ const server = http.createServer((req, res) => {
   // renderer tự dùng chuông sinh sẵn trong vendor/sound.js (xem package.json > pkg.assets).
   if (url.pathname === '/template/thong-bao.mp3' && fs.existsSync(path.join(__dirname, 'template', 'thong-bao.mp3'))) return staticFile(res, 'template/thong-bao.mp3', 'audio/mpeg');
   if (url.pathname === '/app-settings.js') return staticFile(res, 'app-settings.js', 'text/javascript; charset=utf-8');
+  if (url.pathname === '/update-ui.js') return staticFile(res, 'update-ui.js', 'text/javascript; charset=utf-8');
   if (url.pathname === '/period.js') return staticFile(res, 'period.js', 'text/javascript; charset=utf-8');
   if (url.pathname.startsWith('/api/')) return void endpoint(req, res, url);
   res.writeHead(404); res.end();

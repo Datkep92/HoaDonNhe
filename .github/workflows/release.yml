@@ -74,6 +74,18 @@ jobs:
       - name: Build app EXE (pkg + ẩn console)
         run: npm run build
 
+      # Payload cho SELF-UPDATE: chính binary này được app tải về và thay tại chỗ.
+      - name: Tính SHA-256 cho payload self-update
+        shell: pwsh
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          $binary = "release/HoaDonNhe-v$($env:VERSION).exe"
+          if (-not (Test-Path $binary)) { throw "Thiếu $binary" }
+          $hash = (Get-FileHash $binary -Algorithm SHA256).Hash.ToLower()
+          "$hash  HoaDonNhe-v$($env:VERSION).exe" | Set-Content -Path "$binary.sha256" -Encoding ascii
+          Write-Host "self-update payload: $binary -> $hash"
+
       - name: Cài NSIS
         run: choco install nsis -y --no-progress
 
@@ -83,12 +95,14 @@ jobs:
       - name: Upload artifact dự phòng (nếu Release lỗi vẫn có file để tải)
         uses: actions/upload-artifact@v4
         with:
-          name: HoaDonNhe-Setup-v${{ steps.version.outputs.version }}
+          name: HoaDonNhe-v${{ steps.version.outputs.version }}
           path: |
             release/HoaDonNhe-Setup-v${{ steps.version.outputs.version }}.exe
             release/HoaDonNhe-Setup-v${{ steps.version.outputs.version }}.exe.sha256
+            release/HoaDonNhe-v${{ steps.version.outputs.version }}.exe
+            release/HoaDonNhe-v${{ steps.version.outputs.version }}.exe.sha256
 
-      - name: Tạo GitHub Release và upload Setup EXE
+      - name: Tạo GitHub Release và upload (Setup + self-update)
         if: ${{ github.event_name == 'push' || inputs.publish }}
         shell: pwsh
         env:
@@ -97,6 +111,10 @@ jobs:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
           $tag = if ($env:REF_NAME -like 'v*') { $env:REF_NAME } else { "v$($env:VERSION)" }
-          $exe = "release/HoaDonNhe-Setup-v$($env:VERSION).exe"
-          $sha = "$exe.sha256"
-          gh release create $tag $exe $sha --title "HoaDonNhe v$($env:VERSION)" --notes-file release/RELEASE_NOTES.md
+          $setup = "release/HoaDonNhe-Setup-v$($env:VERSION).exe"
+          $binary = "release/HoaDonNhe-v$($env:VERSION).exe"
+          gh release create $tag `
+            $setup "$setup.sha256" `
+            $binary "$binary.sha256" `
+            --title "HoaDonNhe v$($env:VERSION)" `
+            --notes-file release/RELEASE_NOTES.md

@@ -56,7 +56,7 @@ try {
 
   const size = fs.statSync(exe).size;
   console.log(`\nXong: ${path.relative(root, exe)} (${(size / 1048576).toFixed(1)} MB)`);
-  console.log('Nhắc: chạy "release\\HoaDonNhe-v' + version + '.exe" --smoke-test để kiểm tra EXE chạy được.');
+  console.log(`Nhắc: chạy "${path.relative(root, exe)}" --smoke-test để kiểm tra EXE chạy được.`);
 } catch (error) {
   console.error(`\nLỖI build app: ${error.message}`);
   process.exit(1);

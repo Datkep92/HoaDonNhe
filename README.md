@@ -117,12 +117,33 @@ git push origin main
 git push origin v1.0.1
 ```
 
-Workflow tự làm: checkout → cài dependency → **đồng bộ version theo tag** → chạy test → build app EXE (`npm run build`) → cài NSIS → đóng gói Setup (`npm run installer`, nhúng payload + tính SHA-256) → tạo GitHub Release và upload `HoaDonNhe-Setup-vX.Y.Z.exe` kèm file `.sha256`. Không cần build tay trên máy cá nhân.
+Workflow tự làm: checkout → cài dependency → **đồng bộ version theo tag** → chạy test → build app EXE (`npm run build`) → tính SHA-256 cho payload self-update → cài NSIS → đóng gói Setup (`npm run installer`) → tạo GitHub Release và upload **cả 4 file** (`HoaDonNhe-Setup-vX.Y.Z.exe` + `.sha256`, `HoaDonNhe-vX.Y.Z.exe` + `.sha256`). Không cần build tay trên máy cá nhân.
 
 ### Version
 
 `src/version.js` là nguồn version trong repo; `node tools/set-version.cjs X.Y.Z` đồng bộ nó với `package.json` và `package-lock.json`. Workflow tự chạy lệnh này theo tag trước khi build, nên app, file Setup và tên file Release luôn khớp tag.
 
-### Kiểm tra bản mới
+### Tự cập nhật (self-update)
 
-App đọc bản phát hành mới nhất trên GitHub Releases (endpoint `/api/update`, chỉ đọc) và hiện nhãn **Có bản mới vX.Y.Z** ở cột trái nếu có; bấm vào sẽ mở trang Release. **Không có updater tự động ghi đè EXE đang chạy** — người dùng tự tải bản mới. Tắt kiểm tra bằng biến môi trường `HOADON_NO_UPDATE_CHECK=1`.
+App đọc bản phát hành mới nhất trên GitHub Releases **một lần khi mở** (hoặc khi bấm kiểm tra lại) — không polling. Nếu có bản mới, một hộp thoại hiện ra:
+
+```
+Có phiên bản mới vX.Y.Z
+[Cập nhật ngay]   [Để sau]
+```
+
+- **Để sau**: không tải gì, app chạy tiếp bình thường.
+- **Cập nhật ngay**: tải `HoaDonNhe-vX.Y.Z.exe` vào `%TEMP%\HoaDonNhe-update\` (có tiến trình), tải file `.sha256` và so **SHA-256**; chỉ khi khớp mới tiếp tục. Sau đó app tự thay **chính file đang chạy** (backup → thay → kiểm tra → mở lại) rồi tự khởi động lại bản mới. **Không chạy lại Setup.**
+
+Điểm an toàn: app đang chạy **không tự ghi đè chính nó** — nó khởi động bản mới (đã tải + đã xác minh) với cờ `--apply-update` để bản mới làm việc thay thế, rồi thoát. Sai SHA-256, tải lỗi, hay không mở lại được bản mới ⇒ **giữ nguyên bản cũ** (khôi phục từ backup). Chỉ nâng cấp, không hạ cấp. Không đụng tới `du_lieu`, license/device identity, secrets hay dữ liệu hóa đơn. Tắt kiểm tra bằng `HOADON_NO_UPDATE_CHECK=1`; đặt `HOADON_FORCE_UPDATE_CHECK=1` để bật cả khi chạy `--test-server`.
+
+Nếu thư mục ứng dụng không cho ghi, app báo rõ là không thể tự cập nhật và giữ nguyên bản hiện tại (không cần Administrator).
+
+Setup EXE chỉ dùng cho **lần cài đầu tiên** (hoặc repair/uninstall). Mỗi Release phát hành 4 file:
+
+```
+HoaDonNhe-Setup-vX.Y.Z.exe           <- cài mới / repair
+HoaDonNhe-Setup-vX.Y.Z.exe.sha256
+HoaDonNhe-vX.Y.Z.exe                 <- payload cho self-update
+HoaDonNhe-vX.Y.Z.exe.sha256
+```

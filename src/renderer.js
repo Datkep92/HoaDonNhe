@@ -131,6 +131,9 @@ function renderAccounts(state) {
 }
 function render(state) {
   current = state; renderAccounts(state);
+  // Cho các module khác (hộp thoại cập nhật) bám theo trạng thái mới nhất mà không cần poll riêng.
+  window.HD_LAST_STATE = state;
+  try { window.dispatchEvent(new CustomEvent('hd:state', { detail: state })); } catch {}
   const browserText = state.browserVisible ? 'Ẩn Chrome đăng nhập' : 'Hiện Chrome đăng nhập';
   // Chrome tự đóng sau khi tải xong, nên nút này không còn phụ thuộc browserReady: chưa có cửa sổ
   // thì bấm vào sẽ mở lại (xem onclick), giống nút trong bảng đăng nhập.

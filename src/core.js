@@ -110,6 +110,9 @@ class Engine {
     const keys = new Set(j.items.map(x => invoiceKey(x.invoice)));
     for (const task of j.tasks) {
       if (task.done) continue;
+      // Chạy lại task còn dở: xoá chẩn đoán của lần trước để retry thành công không còn báo lỗi cũ.
+      // cursor/count/pages/seen giữ nguyên nên vẫn tiếp đúng chỗ đã dừng.
+      task.error = ''; task.warning = '';
       try {
         while (!task.done) {
           await this.checkAccount();
@@ -156,16 +159,23 @@ class Engine {
         this.save();
       }
     }
-    j.phase = 'download'; j.state = 'ready';
     j.stats = { total: j.items.length, existed: 0, queued: 0, downloaded: 0, skipped: 0, failed: 0 };
+    const unfinished = j.tasks.filter(t => !t.done);
+    // Còn task dở thì GIỮ phase 'search' để nút "Tải tiếp" vào lại scan(); scan() bỏ qua task đã done
+    // nên chỉ chạy tiếp đúng tháng còn thiếu, từ cursor đã lưu — không quét lại tháng đã hoàn tất.
+    j.phase = unfinished.length ? 'search' : 'download';
+    // 'partial' (không phải 'ready') vì giao diện chỉ bật nút "Tải tiếp" ở các trạng thái này.
+    j.state = unfinished.length ? 'partial' : 'ready';
     const failed = j.tasks.filter(t => t.error);
     const warned = j.tasks.filter(t => t.warning);
     const notes = [];
     if (failed.length) notes.push(`${failed.length} tháng lỗi (${failed.map(t => t.from.slice(0, 7)).join(', ')})`);
     if (warned.length) notes.push(`${warned.length} tháng cổng báo tổng không nhất quán (${warned.map(t => t.from.slice(0, 7)).join(', ')})`);
-    j.message = `Tra cứu xong theo cursor: ${j.items.length} hóa đơn.`
+    j.message = (unfinished.length
+      ? `Tra cứu chưa xong: ${j.items.length} hóa đơn đã lấy. Còn ${unfinished.length} tháng chưa hoàn tất (${unfinished.map(t => t.from.slice(0, 7)).join(', ')}). Bấm "Tải tiếp" để chạy nốt từ chỗ đã dừng.`
+      : `Tra cứu xong theo cursor: ${j.items.length} hóa đơn.`)
       + (notes.length ? ` CHƯA XÁC NHẬN ĐỦ: ${notes.join('; ')} — xem chi tiết trong file job (mục tasks).` : '')
-      + ' Bấm Tải hóa đơn.';
+      + (unfinished.length ? '' : ' Bấm Tải hóa đơn.');
     this.save();
   }
   async resume(download = false) {

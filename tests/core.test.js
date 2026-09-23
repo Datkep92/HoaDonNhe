@@ -126,7 +126,9 @@ test('cursor lặp lại thì dừng đúng task đó, không lặp vô hạn', 
   assert.equal(calls, 2, 'trang 1 nhận cursor, trang 2 trả lại chính cursor đó thì phải dừng');
   assert.equal(task.done, false);
   assert.match(task.error, /cursor đã dùng/);
-  assert.equal(engine.job.state, 'ready');
+  // Còn task dở -> giữ phase 'search' để "Tải tiếp" vào lại scan(), và state 'partial' để nút đó bật.
+  assert.equal(engine.job.phase, 'search');
+  assert.equal(engine.job.state, 'partial');
   assert.match(engine.job.message, /CHƯA XÁC NHẬN ĐỦ/);
 });
 test('trang rỗng mà vẫn còn cursor thì dừng task đó và ghi lỗi', async t => {
@@ -145,6 +147,39 @@ test('một tháng lỗi không làm dừng các tháng còn lại', async t => 
   assert.ok(engine.job.tasks[0].error, 'tháng 01 phải ghi lỗi');
   assert.equal(engine.job.tasks[1].done, true, 'tháng 02 vẫn phải chạy xong');
   assert.equal(engine.job.items.length, 51);
+  assert.equal(engine.job.state, 'partial', 'còn tháng lỗi nên chưa phải ready');
+  assert.equal(engine.job.phase, 'search', 'giữ phase search để Tải tiếp chạy nốt tháng lỗi');
+});
+test('resume() chỉ chạy lại tháng lỗi, tiếp từ cursor đã lưu, không quét lại tháng đã xong', async t => {
+  let january = 0;
+  const routes = [];
+  const { dir, engine } = setup(t, async route => {
+    routes.push(route);
+    if (route.includes('01/01/2026')) {
+      january += 1;
+      if (january === 1) return Buffer.from(JSON.stringify({ datas: [invoice(1)], total: 2, state: 'c1' }));
+      if (january === 2) throw new Error('TCT không phản hồi sau 30 giây.');
+      return Buffer.from(JSON.stringify({ datas: [invoice(2)], total: 2 }));
+    }
+    return Buffer.from(JSON.stringify({ datas: [invoice(500)], total: 1 }));
+  });
+  await engine.search({ ...params, to: '2026-02-28' }, dir);
+  const janTask = engine.job.tasks[0];
+  assert.equal(janTask.done, false);
+  assert.ok(janTask.cursor, 'cursor của trang kế tiếp phải được giữ lại');
+  assert.match(janTask.error, /30 giây/);
+  assert.equal(engine.job.tasks[1].done, true, 'tháng 02 đã xong ở lượt đầu');
+  assert.equal(engine.job.phase, 'search');
+  assert.equal(engine.job.state, 'partial');
+  const febCalls = routes.filter(r => r.includes('02/2026')).length;
+  assert.equal(febCalls, 1);
+
+  await engine.resume(); // đúng việc nút "Tải tiếp" gọi
+  assert.equal(engine.job.tasks[0].done, true, 'retry phải hoàn tất tháng 01');
+  assert.equal(engine.job.tasks[0].error, '', 'lỗi cũ phải được xoá sau khi retry thành công');
+  assert.equal(engine.job.items.length, 3, '1 + 2 của tháng 01 và 1 của tháng 02');
+  assert.equal(routes.filter(r => r.includes('02/2026')).length, febCalls, 'không được quét lại tháng 02 đã xong');
+  assert.equal(engine.job.phase, 'download', 'xong hết mới chuyển sang download');
   assert.equal(engine.job.state, 'ready');
 });
 test('XML ZIP extraction, checkpoint restore, and existing file skip', async t => {

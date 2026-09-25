@@ -101,7 +101,22 @@ function openIdentifiers(account) {
   $('identifiers-dialog').showModal();
   $('identifiers-values').focus();
 }
-// Bấm một dòng: còn phiên đã lưu thì vào thẳng giao diện chính, hết phiên thì mở form đăng nhập.
+// Bấm một dòng: còn phiên đã lưu thì vào thẳng giao diện chính. Hết phiên: TỰ ĐỘNG ĐĂNG NHẬP
+// bằng mật khẩu đã lưu (solver JS giải CAPTCHA hộ) — chỉ khi THẤT BẠI (quá 5 lần thử, sai mật
+// khẩu, chưa lưu mật khẩu…) mới mở form Đăng nhập thủ công.
+async function autoLoginMst(mst, { silent = false } = {}) {
+  const result = await call('/api/account/auto-login', { mst, remember: true });
+  if (result && result.authenticated) {
+    notice(`MST ${mst}: đăng nhập tự động thành công sau ${result.attempts || 1} lần thử. Phiên đã lưu.`);
+    await refresh();
+    return true;
+  }
+  // Thất bại: hiện form đăng nhập thủ công kèm challenge mới trả về từ server.
+  if (!silent) noticeFail(`MST ${mst}: đăng nhập tự động không thành công — mở form đăng nhập thủ công.`);
+  openLogin(mst);
+  if (result) await acceptLoginResult(result);
+  return false;
+}
 async function chooseMst(mst) {
   closeRowMenus();
   if (pending) return;
@@ -109,8 +124,10 @@ async function chooseMst(mst) {
   initialized = false;
   const result = await work('/api/account/select', { mst });
   if (!result) return;
-  if (result.authenticated) notice(`MST ${mst}: còn phiên đăng nhập — tra cứu được ngay.`);
-  else { notice(`MST ${mst} hết phiên hoặc chưa đăng nhập — nhập CAPTCHA để vào.`); openLogin(mst); }
+  if (result.authenticated) { notice(`MST ${mst}: còn phiên đăng nhập — tra cứu được ngay.`); return; }
+  notice(`MST ${mst} hết phiên — đang tự động đăng nhập…`);
+  try { await autoLoginMst(mst); }
+  catch (error) { noticeFail(error.message); openLogin(mst); }
 }
 async function forgetPassword(account) {
   if (!confirm(`Xoá mật khẩu đã lưu của MST ${account.mst}? Phiên đang đăng nhập vẫn giữ.`)) return;
@@ -160,6 +177,12 @@ function syncBanner(sync) {
     return { kind: 'running', text: sync.phase ? `Đang chạy · ${sync.phase}` : 'Đang tra cứu…' };
   }
   if (sync.lastError) return { kind: 'error', text: `Lỗi (${bannerWhen(sync.lastErrorTime)}): ${String(sync.lastError).slice(0, 120)}` };
+  // Chưa tải đủ dữ liệu hôm nay (một ngày một lần — xem dailySyncState trong sync-scheduler.js).
+  // Đứng TRƯỚC nhánh "Xong" để không hiện mốc CŨ như thể vừa chạy xong.
+  if (sync.syncedToday === false) {
+    const missing = (sync.missingToday || []).join(', ');
+    return { kind: 'pending', text: `Chưa đồng bộ hôm nay${missing ? ` · thiếu ${missing}` : ''}` };
+  }
   if (sync.lastSuccess) {
     const when = bannerWhen(sync.lastSuccess);
     const downloaded = (sync.buyDownloaded || 0) + (sync.sellDownloaded || 0);
@@ -193,7 +216,15 @@ function renderAccounts(state) {
     const syncing = !!account.sync?.running;
     const jobRunning = account.job?.state === 'searching' || account.job?.state === 'downloading' || account.job?.state === 'running';
     const running = syncing || jobRunning;
-    sub.textContent = `${account.mst}${account.identifiers?.length ? ` · +${account.identifiers.length} mã` : ''}${account.remembered ? ' · đã lưu mật khẩu' : ''}${running ? ' · đang xử lý' : ''}${account.job ? ` · ${account.job.total} hóa đơn` : ''}`;
+    // Trạng thái ĐÃ ĐỒNG BỘ / CHƯA ĐỒNG BỘ hôm nay — hiện ngay trên dòng MST.
+    // Một ngày chỉ cần đủ một lần nên nhìn đây là biết còn phải chạy hay không.
+    const sync = account.sync;
+    const syncNote = sync && sync.running ? ''
+      : sync && sync.syncedToday ? ' · đã đồng bộ hôm nay'
+        : sync ? ` · chưa đồng bộ hôm nay${sync.missingToday?.length ? ` (thiếu ${sync.missingToday.join(', ')})` : ''}` : '';
+    // Hoá đơn LỖI TẢI của lượt gần nhất — nói rõ để biết còn phải thử lại, thay vì im lặng.
+    const failNote = sync && sync.failedToday ? ` · ${sync.failedToday} HĐ lỗi tải` : '';
+    sub.textContent = `${account.mst}${account.identifiers?.length ? ` · +${account.identifiers.length} mã` : ''}${account.remembered ? ' · đã lưu mật khẩu' : ''}${running ? ' · đang xử lý' : ''}${account.job ? ` · ${account.job.total} hóa đơn` : ''}${syncNote}${failNote}`;
     info.append(title, sub);
     const stop = document.createElement('button');
     stop.type = 'button';
@@ -324,6 +355,16 @@ function render(state) {
   $('empty').hidden = !!state.total; $('limit').textContent = state.total > 1000 ? 'Hiển thị 1.000 dòng đầu; engine vẫn xử lý toàn bộ.' : '';
   const busy = state.busy || state.authBusy || pending;
   ['choose', 'add-mst', 'mst-login', 'account-login'].forEach(id => { const el = optional(id); if (el) el.disabled = busy; });
+  // Nút "Đồng bộ tất cả": một nút vừa khởi động vừa ngưng. Hiện số luồng đang chạy để thấy
+  // bể luôn giữ đủ 3 — MST nào xong thì MST kế tiếp vào chỗ.
+  const pool = state.pool || {};
+  const syncAll = optional('sync-all');
+  if (syncAll) {
+    const lanes = (pool.active || []).length;
+    syncAll.textContent = pool.running ? `Đang đồng bộ ${lanes} luồng · Ngưng` : 'Đồng bộ tất cả';
+    syncAll.className = pool.running ? 'danger' : 'secondary';
+    syncAll.disabled = pending || !(state.accounts || []).length;
+  }
   const searching = !!state.busy && state.mode !== 'stream' && state.state === 'searching';
   const downloading = !!state.busy && (state.mode === 'stream' || state.state === 'downloading');
   $('search').textContent = searching ? 'Ngưng tra cứu' : 'Tra cứu';
@@ -420,7 +461,21 @@ function paintSyncPreviewInto(preview, status) {
   $('empty').hidden = true;
   $('limit').textContent = 'Danh sách này là của lượt Auto Sync đang chạy (không phải lượt tra cứu thủ công).';
 }
-async function work(url, data) { pending = true; render(current); try { return await call(url, data); } catch (error) { noticeFail(error.message); return null; } finally { pending = false; await refresh(); } }
+// `longMst`: MST đang có tác vụ DÀI (tra cứu/tải) — dùng để hiện, KHÔNG dùng để chặn chuyển MST.
+let longMst = '';
+// `options.long`: tác vụ DÀI (tra cứu / tải cuốn chiếu) là MỘT request mở suốt nhiều phút. Trước đây
+// nó đặt `pending = true` suốt thời gian đó, mà `chooseMst()` lại `if (pending) return;` nên KHÔNG
+// THỂ bấm sang MST khác để làm việc. Nay tác vụ dài không giữ `pending` — chỉ yêu cầu UI ngắn
+// (chọn MST, thêm, đăng nhập…) mới giữ, để vẫn chặn bấm trùng.
+async function work(url, data, options = {}) {
+  const isLong = !!options.long;
+  if (isLong) longMst = String((data && data.mst) || (current && current.selected) || '');
+  else pending = true;
+  render(current);
+  try { return await call(url, data); }
+  catch (error) { noticeFail(error.message); return null; }
+  finally { if (isLong) longMst = ''; else pending = false; await refresh(); }
+}
 function loginError(text) { $('login-error').textContent = text || ''; $('login-error').hidden = !text; }
 function invalidateChallenge() {
   loginId = ''; preparedMst = ''; $('login-captcha').value = '';
@@ -469,6 +524,17 @@ function openLogin(mst = '') {
   if (mst) void prepareLogin();
 }
 $('add-mst').onclick = () => openMstForm(null);
+// "Đồng bộ tất cả": bấm lần đầu thì chạy, đang chạy thì bấm để ngưng.
+// Chạy NGAY (không phụ thuộc khung giờ / cửa sổ đóng) vì đây là ý người dùng.
+if (optional('sync-all')) optional('sync-all').onclick = async () => {
+  const wasRunning = !!(current && current.pool && current.pool.running);
+  const result = await work(wasRunning ? '/api/db/autosync/run-all/stop' : '/api/db/autosync/run-all', {});
+  if (!result) return;
+  if (wasRunning) { notice('Đã ngưng đồng bộ tất cả.'); return; }
+  if (!result.started) { notice(result.message || 'Không có MST nào để chạy.'); return; }
+  const skipped = (result.skipped || []).map(x => `${x.mst} (${x.reason})`);
+  notice(`Đang đồng bộ ${result.queued} MST · ${result.concurrency} luồng song song, xong cái nào rút cái kế tiếp.${skipped.length ? ` Bỏ qua: ${skipped.join(', ')}.` : ''}`);
+};
 if (optional('mst-login')) optional('mst-login').onclick = () => { if (current.selected) openLogin(current.selected); else notice('Chọn một MST trong danh sách trước.'); };
 if (optional('account-login')) optional('account-login').onclick = () => { if (current.selected) openLogin(current.selected); else notice('Chọn một MST trong danh sách trước.'); };
 $('mst-search').oninput = () => renderAccounts(current);
@@ -508,8 +574,11 @@ $('mst-form').onsubmit = async event => {
     const account = await call('/api/account/save', input);
     $('mst-dialog').close(); $('mst-password').value = ''; $('mst-error').hidden = true; await refresh();
     if (wasEditing) { notice(`Đã cập nhật ${displayName(account)}.`); return; }
-    notice(`Đã lưu ${displayName(account)} vào danh sách. Nhập CAPTCHA để đăng nhập.`);
-    await chooseMst(account.mst);
+    // Thêm MST mới: lưu xong là TỰ ĐỘNG ĐĂNG NHẬP luôn (mật khẩu vừa nhập trong form được saveAccount
+    // lưu sẵn). Chỉ khi thất bại mới mở form Đăng nhập thủ công.
+    notice(`Đã lưu ${displayName(account)} — đang tự động đăng nhập…`);
+    try { await autoLoginMst(account.mst); }
+    catch (error) { noticeFail(error.message); openLogin(account.mst); }
   } catch (error) { $('mst-error').textContent = error.message; $('mst-error').hidden = false; }
   finally { $('mst-submit').disabled = false; editingMst = ''; }
 };
@@ -607,13 +676,13 @@ async function runLookup(url) {
     catch (error) { noticeFail(error.message); $('output').focus(); return; }
   }
   // Không hiện toast sau khi tra cứu: kết quả đã nằm trong bảng + dòng trạng thái/tiến độ.
-  await work(url, { from: $('from').value, to: $('to').value, direction: $('direction').value, family: $('family').value, status: $('status').value, formats: [...document.querySelectorAll('.formats input:checked')].map(x => x.value), output: folder });
+  await work(url, { mst: current.selected, from: $('from').value, to: $('to').value, direction: $('direction').value, family: $('family').value, status: $('status').value, formats: [...document.querySelectorAll('.formats input:checked')].map(x => x.value), output: folder }, { long: true });
 }
 $('search').onclick = () => runLookup('/api/search');
 $('stream-download').onclick = () => runLookup('/api/stream');
 $('resume').onclick = async () => {
   if (!current.total) { notice('Chưa có lượt tải nào để tiếp tục — bấm “Tra cứu hóa đơn” trước.'); return; }
-  const result = await work('/api/resume', {});
+  const result = await work('/api/resume', { mst: current.selected }, { long: true });
   if (result) notice(result.message || 'Đã xử lý xong.');
 };
 $('open').onclick = () => work('/api/open-folder', {});

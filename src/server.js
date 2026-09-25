@@ -8,8 +8,15 @@ const { URL } = require('node:url');
 const { Engine, atomicWrite, validateParams, canReuseSearch } = require('./core');
 const { TaxBrowser, browserPath, jwtAccount } = require('./browser');
 const tct = require('./tct-api');
+const loginAuto = require('./login-auto');
 const mstFormat = require('./mst-format');
 const vnDate = require('./vn-date');
+// Hai module này THUẦN (không node:sqlite, không mạng) nên require thẳng được, không phá
+// quy tắc nạp lười tầng dữ liệu ở dưới.
+const syncWindow = require('./data/sync-window');
+const { createSyncScheduler, dailySyncState } = require('./data/sync-scheduler');
+const outputLock = require('./data/output-lock');
+const { createSyncPool } = require('./data/sync-pool');
 const XLSX = require('../resources/xlsx.cjs');
 const { ensureFolder } = require('./folders');
 const { SupportStore } = require('./support');
@@ -307,10 +314,21 @@ async function runAutoSyncDirection({ direction, days, mst: targetMst }) {
     let found = 0;
     let stats = {};
     let after = { imported: 0, skipped: 0, errors: 0 };
+    // Nghỉ ngắn trước khi thử lại, để không dội cổng thuế ngay sau khi vừa bị lỗi.
+    const RETRY_FAILED_PAUSE_MS = 5000;
     try {
       await syncEngine.search(params, output);
       found = (syncEngine.job && syncEngine.job.items.length) || 0;
       await syncEngine.resume(true);
+      // LỖI TẢI thường chỉ là tạm thời (mạng chập, cổng thuế bận). Thử lại NGAY MỘT LƯỢT, và chỉ
+      // thử khi có hoá đơn lỗi thuộc loại còn thử được — hoá đơn XML hỏng thì thử lại cũng vô ích.
+      // Không có bước này thì lỗi tải bị bỏ quên tới lượt sau, mà lượt sau là mai.
+      const failedItems = () => ((syncEngine.job && syncEngine.job.items) || []).filter(item => item.state === 'failed');
+      if (failedItems().some(item => item.retryable)) {
+        log(`Auto Sync ${direction}: ${failedItems().length} hoá đơn lỗi tải — thử lại một lượt.`);
+        await new Promise(resolve => setTimeout(resolve, RETRY_FAILED_PAUSE_MS));
+        await syncEngine.retryFailed();
+      }
       stats = (syncEngine.job && syncEngine.job.stats) || {};
     } catch (error) { stopNote(error); }
     // 3) Nhập XML vừa tải về (mục 22) — sau bước này data.db mới có dữ liệu mới.
@@ -322,6 +340,9 @@ async function runAutoSyncDirection({ direction, days, mst: targetMst }) {
       skipped: (stats.skipped || 0) + (after.skipped || 0),
       imported: after.imported || 0,
       errors: after.errors || 0,
+      // Lỗi TẢI (cổng thuế / mạng) SAU khi đã thử lại — khác `errors` là lỗi NHẬP XML.
+      // Trước đây trường này bị bỏ sót nên lỗi tải không hiện ở log, sync.json hay kết quả bể.
+      failed: stats.failed || 0,
     };
   } finally {
     if (syncEngine) autoSyncEngines.delete(syncEngine);
@@ -412,6 +433,9 @@ function saveAccounts() { atomicWrite(accountsFile, JSON.stringify(accounts, nul
 function safeMst(mst) { return mstFormat.isValidMst(mst); }
 function jobStore(mst) { return path.join(dataDir, 'jobs', `${mst}.json`); }
 function engineFor(mst) { return mst ? engines.get(mst) || null : null; }
+// Engine của ĐÚNG MST được yêu cầu. Mỗi MST một engine riêng trong `engines`, nên endpoint thủ công
+// nhận `mst` để chạy đúng luồng đó — không phụ thuộc việc người dùng đang xem MST nào.
+function engineOf(mst) { return (mst ? engineFor(mst) : null) || engine; }
 function setCurrentEngine(mst) { engine = engineFor(mst); return engine; }
 function makeExcel(items) {
   const rows = items.map(({ invoice: i, state, error }) => ({ 'Số hóa đơn': String(i.shdon ?? ''), 'Ký hiệu': String(i.khhdon ?? ''), 'Mẫu số': String(i.khmshdon ?? ''), 'Ngày lập': vnDate.dmy(i.tdlap), 'MST người bán': String(i.nbmst ?? ''), 'Người bán': String(i.nbten ?? ''), 'MST người mua': String(i.nmmst ?? ''), 'Người mua': String(i.nmten ?? ''), 'Tiền trước thuế': i.tgtcthue, 'Tiền thuế': i.tgtthue, 'Tổng tiền': i.tgtttbso, 'Trạng thái tải': state, 'Lỗi': error || '' }));
@@ -526,6 +550,8 @@ function syncSummary(mst) {
       .sort((a, b) => String(b.lastErrorTime || '').localeCompare(String(a.lastErrorTime || '')))[0] || null;
     // Lượt thành công GẦN NHẤT, để banner "Xong …" mang đúng mốc của lần chạy cuối.
     const lastSuccess = [state.buy.lastSuccess, state.sell.lastSuccess].filter(Boolean).sort().pop() || '';
+    // Trạng thái theo NGÀY: đã tải đủ dữ liệu (và phần còn thiếu) hôm nay hay chưa.
+    const daily = dailySyncState(state, syncWindow.vnClock(new Date()));
     return {
       running,
       phase: running && instance ? instance.status().phase : '',
@@ -538,6 +564,12 @@ function syncSummary(mst) {
       lastSuccess,
       lastError: errorSide ? errorSide.lastError : '',
       lastErrorTime: errorSide ? errorSide.lastErrorTime || '' : '',
+      // Đã đồng bộ / chưa đồng bộ hôm nay — UI hiện thẳng, bộ lập lịch dùng để bỏ qua.
+      syncedToday: daily.synced,
+      syncedAt: daily.at,
+      missingToday: daily.missing,
+      // Số hoá đơn LỖI TẢI của lượt gần nhất (cổng thuế / mạng) — khác `errors` là lỗi NHẬP XML.
+      failedToday: (state.buy.failed || 0) + (state.sell.failed || 0),
       days: settings.days || 7,
       progress: live ? {
         phase: live.phase || '',
@@ -722,9 +754,15 @@ function appState() {
   configureXmlWatcher();
   setCurrentEngine(selected);
   const snapshot = engine ? engine.snapshot() : { state: 'idle', busy: false, items: [], total: 0, done: 0, failed: 0, message: 'Chọn hoặc thêm MST để bắt đầu.' };
-  return { ...snapshot, accounts: activeAccounts().map(publicAccount), selected, output, companyName: companyNameFor(selected), remembered: !!selected && isRemembered(selected), browserReady: !!browser.client, browserVisible: !!browser.visible, authenticated: !!selected && !!(authAccount || directTokens.has(selected)), authBusy, update: updater.status() };
+  return { ...snapshot, accounts: activeAccounts().map(publicAccount), selected, output, companyName: companyNameFor(selected), remembered: !!selected && isRemembered(selected), browserReady: !!browser.client, browserVisible: !!browser.visible, authenticated: !!selected && !!(authAccount || directTokens.has(selected)), authBusy, update: updater.status(), pool: syncPool.status() };
 }
-function ensureIdle(mst = selected) { const target = engineFor(mst) || engine; if (target?.busy) throw new Error('Tạm dừng tác vụ tải trước khi thay đổi phiên đăng nhập.'); }
+// Chỉ kiểm tra engine của ĐÚNG MST đích. Trước đây có nhánh dự phòng `|| engine`: MST đích chưa
+// từng dùng thì engineFor() = null, nó rơi vào engine của MST ĐANG CHỌN ⇒ tác vụ của MST A chặn
+// luôn việc thêm/đăng nhập MST B.
+function ensureIdle(mst = selected) {
+  const target = engineFor(mst);
+  if (target && target.busy) throw new Error(`MST ${mst} đang chạy tác vụ — ngưng tác vụ của MST đó trước.`);
+}
 async function ensureLicenseAllowed() { return support.enforceLicense(); }
 async function authOperation(fn) {
   if (authBusy) throw new Error('Đang xử lý phiên đăng nhập. Vui lòng chờ.');
@@ -805,6 +843,37 @@ async function submitLogin(input) {
   if (result.authenticated) { const account = await checkLogin(); if (!account) throw new Error('Phiên đăng nhập chưa hợp lệ. Bấm Lấy CAPTCHA để thử lại.'); remember(); return { authenticated: true, account, mst: selected, remembered: keep && !!password }; }
   return challengeResponse(result);
 }
+// Auto login hoàn toàn: dùng mật khẩu đã lưu (hoặc mật khẩu gửi lên), solver JS tự giải CAPTCHA.
+// Trả về cùng hình dạng với submitLogin để renderer dùng lại acceptLoginResult.
+async function autoLoginAccount(input) {
+  const mst = String(input.mst || selected || '');
+  if (!mst) throw new Error('Chọn hoặc thêm MST trước.');
+  if (mst !== selected) await selectAccount(mst);
+  ensureIdle(mst);
+  const savedPassword = secrets.read(mst, ['password']).password;
+  const password = (typeof input.password === 'string' ? input.password : '') || savedPassword;
+  if (!password) throw new Error('MST này chưa lưu mật khẩu — nhập mật khẩu một lần trong form Đăng nhập rồi bấm Tự động đăng nhập sau.');
+  const username = String(input.username || '').trim() || mst;
+  const keep = input.remember !== false;
+  loginChallenge = null;
+  const result = await loginAuto.autoLogin({ username, password, mst, maxAttempts: input.maxAttempts }, mst);
+  if (!result.ok) {
+    // Hết lượt thử: trả về challenge mới để form đăng nhập tay vẫn dùng được ngay.
+    const next = await tct.captcha(mst).catch(() => null);
+    if (next) return challengeResponse({ ...next, ready: true, authenticated: false, remembered: isRemembered(mst), error: `Tự động đăng nhập chưa thành công sau ${result.attempts} lần thử. ${result.error || ''}`.trim() });
+    throw new Error(`Tự động đăng nhập chưa thành công sau ${result.attempts} lần thử. ${result.error || ''}`.trim());
+  }
+  const token = result.token;
+  const identity = jwtAccount(token);
+  if (identity?.mst && !mstFormat.mstAliases(mst).includes(String(identity.mst))) {
+    forgetSession(mst);
+    throw new Error(`Tài khoản này thuộc MST ${identity.mst}, không khớp hồ sơ ${mst}.`);
+  }
+  directTokens.set(mst, token); authAccount = identity || { mst, label: username }; tokenAccounts.set(mst, authAccount);
+  storeSession(mst, token, keep ? password : '', keep);
+  const account = await checkLogin();
+  return { authenticated: true, account, mst, remembered: keep && !!password, attempts: result.attempts };
+}
 // Hộp thoại chọn thư mục: cửa sổ "chủ" TopMost để hộp thoại luôn nổi lên trên cửa sổ app,
 // có đường lui sang Shell.Application nếu WinForms không dùng được, và timeout để không treo.
 function runPowerShell(script, timeout = 300000) {
@@ -847,11 +916,130 @@ function allowed(req) {
     && (!req.headers.origin || req.headers.origin === `http://${expectedHost}`);
 }
 function staticFile(res, name, type) { res.writeHead(200, { 'Content-Type': type, 'Cache-Control': 'no-store' }); res.end(fs.readFileSync(path.join(__dirname, name))); }
+
+// ---- PHASE 5: CHẠY NỀN THEO KHUNG GIỜ ------------------------------------------------------
+// Hai cổng phải CÙNG mở: trong khung giờ (mặc định 08:00–18:00 giờ VN) VÀ cửa sổ app đã đóng.
+// Người dùng là ưu tiên số 1: mở lại cửa sổ hoặc thao tác là nền ngưng ngay MST đang chạy.
+let lastUiSeen = 0; // mốc cuối cùng giao diện gọi /api/state
+const UI_CLOSED_MS = 10000;
+const syncWindowFile = path.join(dataDir, 'sync-window.json');
+function syncWindowConfig() {
+  const saved = loadJson(syncWindowFile, null);
+  return { enabled: !(saved && saved.enabled === false), windows: (saved && saved.windows) || syncWindow.DEFAULT_WINDOWS };
+}
+// Cửa sổ app đã đóng: không còn /api/state trong 10 giây. UI poll 1,5 giây/lần (renderer.js) nên
+// 10 giây là khoảng lùi an toàn. KHÔNG dùng lastUiPoll vì mọi lời gọi /api/* đều cập nhật nó —
+// kể cả /api/ping của instance thứ hai, sẽ làm tưởng cửa sổ còn mở mãi.
+function uiClosed() { return !lastUiSeen || Date.now() - lastUiSeen > UI_CLOSED_MS; }
+function manualBusyNow() {
+  if (authBusy || loginChallenge) return true;
+  // Bể "Đồng bộ tất cả" do người dùng bấm ⇒ lịch nền theo khung giờ đứng ngoài, không tranh MST.
+  if (syncPool.running) return true;
+  for (const one of engines.values()) if (one && one.busy) return true;
+  try { if (dataLayer().importJob.status().running) return true; } catch { /* chưa cần tầng dữ liệu */ }
+  return false;
+}
+// MST nền được phép chạy: còn trong danh sách, CÓ phiên lưu (âm thầm — không mở Chrome, không hỏi
+// CAPTCHA), và đã quá `intervalMinutes` kể từ lượt trước. Xếp MST LÂU CHƯA ĐỒNG BỘ NHẤT lên trước
+// để không dòng nào bị bỏ đói. Hàng đợi suy ra từ sync.json nên không cần file riêng.
+function dueMsts() {
+  if (!output) return [];
+  const data = dataLayer();
+  const nowMs = Date.now();
+  const clock = syncWindow.vnClock(new Date());
+  const rows = [];
+  for (const account of activeAccounts()) {
+    const mst = account.mst;
+    if (!hasSavedSession(mst)) continue;
+    if (syncPool.isActive(mst)) continue; // đang chạy trong bể "Đồng bộ tất cả" rồi
+    let state = null;
+    try { state = data.mst.readSyncState(path.join(data.mst.mstDirectory(output, mst), 'sync.json')); } catch { state = null; }
+    // Đã đồng bộ đủ hôm nay ⇒ BỎ QUA tới hết ngày. Một ngày một lần, không lặp lại.
+    if (dailySyncState(state, clock).synced) continue;
+    // Chưa xong mà vừa thử cách đây chưa lâu ⇒ chờ, không dội cổng thuế (chống vòng lặp khi lỗi).
+    const intervalMs = Math.max(5, Number((state && state.settings && state.settings.intervalMinutes) || 30)) * 60000;
+    const stamps = [state && state.buy && state.buy.lastSync, state && state.sell && state.sell.lastSync]
+      .map(value => Date.parse(value || '') || 0);
+    const lastAttempt = Math.max(...stamps, 0);
+    if (lastAttempt && nowMs - lastAttempt < intervalMs) continue;
+    rows.push({ mst, lastSync: lastAttempt });
+  }
+  // Thứ tự (lâu chưa đồng bộ nhất trước) do bộ lập lịch tự sắp — xem sync-scheduler.js.
+  return rows;
+}
+// Ngưng CHỈ engine của đúng MST đó — không đụng lượt Auto Sync người dùng tự bấm ở MST khác.
+function pauseBackgroundFor(mst) {
+  for (const one of autoSyncEngines) {
+    if (one && one.job && one.job.account && one.job.account.mst === mst) one.pause();
+  }
+}
+// KHOÁ THEO THƯ MỤC LƯU — nhiều bản app (bản gốc / bản copy / EXE đã cài) có thể cùng trỏ vào MỘT
+// thư mục lưu (đã kiểm chứng thật). Chốt "một instance" theo workspace không nhìn thấy nhau;
+// khoá này nằm trong chính thư mục lưu nên nhìn thấy mọi bản.
+const WORKSPACE = path.resolve(__dirname, '..');
+let lockBlockedLogged = false;
+function outputBusy() {
+  if (!output) return true; // chưa có thư mục lưu thì không chạy nền
+  return outputLock.inspect(output, { pid: process.pid, workspace: WORKSPACE }).state === 'other';
+}
+function touchOutputLock() {
+  if (!output) return;
+  const result = outputLock.claim(output, { pid: process.pid, workspace: WORKSPACE });
+  // Chỉ ghi log khi TRẠNG THÁI ĐỔI, không rải một dòng mỗi nhịp 20 giây.
+  if (!result.ok && result.state === 'other') {
+    if (!lockBlockedLogged) { log(`Chạy nền nhường: ${result.reason}.`); lockBlockedLogged = true; }
+  } else if (lockBlockedLogged) {
+    log('Chạy nền: đã giành lại khoá thư mục lưu.');
+    lockBlockedLogged = false;
+  }
+}
+const backgroundSync = createSyncScheduler({
+  get windows() { return syncWindowConfig().windows; },
+  dueMsts,
+  runOne: (mst, { days }) => autoSyncFor(mst).run('window', { days }),
+  pauseOne: pauseBackgroundFor,
+  uiClosed,
+  manualBusy: manualBusyNow,
+  outputBusy,
+  heartbeat: touchOutputLock,
+  log,
+});
+// BỂ "ĐỒNG BỘ TẤT CẢ" — người dùng bấm là chạy NGAY (không phụ thuộc khung giờ / cửa sổ app).
+// Mỗi MST một profile Chrome + kho cookie riêng nên chạy song song không lẫn phiên. Giữ luôn đủ
+// số luồng: MST nào xong thì rút MST kế tiếp. Dùng `days` của TỪNG MST — giống nút ▶ trên dòng,
+// để "tải toàn bộ" không tự ý đổi khoảng ngày người dùng đã đặt cho hồ sơ đó.
+const syncPool = createSyncPool({
+  concurrency: 3,
+  runOne: mst => autoSyncFor(mst).run('pool'),
+  pause: pauseBackgroundFor,
+  shouldStop: () => false,
+  log,
+});
+// Đối soát lúc khởi động: dòng nào `status: 'running'` mà không còn engine sống nghĩa là tiến trình
+// trước bị ngắt giữa lượt (đã gặp thật hôm nay). Để nguyên thì banner báo "đang chạy" mãi và bộ lập
+// lịch tưởng MST đó đang bận. Đưa về 'idle', giữ nguyên mọi trường khác.
+function reconcileInterruptedSync() {
+  try {
+    if (!output) return;
+    const data = dataLayer();
+    for (const account of activeAccounts()) {
+      const file = path.join(data.mst.mstDirectory(output, account.mst), 'sync.json');
+      if (!fs.existsSync(file)) continue;
+      const state = data.mst.readSyncState(file);
+      let touched = false;
+      for (const key of ['buy', 'sell']) {
+        if (state[key] && state[key].status === 'running') { state[key] = { ...state[key], status: 'idle' }; touched = true; }
+      }
+      if (touched) { data.mst.writeSyncState(file, state); log(`Đối soát: MST ${account.mst} có lượt chạy bị ngắt — đưa về trạng thái nghỉ.`); }
+    }
+  } catch (error) { log('Đối soát trạng thái đồng bộ lỗi: ' + (error && error.message ? error.message : error)); }
+}
+
 async function endpoint(req, res, url) {
   if (!allowed(req)) return reply(res, 403, { ok: false, error: 'Không có quyền truy cập giao diện.' });
   lastUiPoll = Date.now(); // giao diện còn sống; dùng để tự thoát khi người dùng đóng cửa sổ
   try {
-    if (req.method === 'GET' && url.pathname === '/api/state') return reply(res, 200, { ok: true, value: appState() });
+    if (req.method === 'GET' && url.pathname === '/api/state') { lastUiSeen = Date.now(); return reply(res, 200, { ok: true, value: appState() }); }
   // ---- PHASE 3: Kho dữ liệu hoá đơn — đọc từ SQLite, KHÔNG quét XML khi mở danh sách (mục 15, 50, 33) ----
   if (url.pathname.startsWith('/api/db/')) {
     const data = dataLayer();
@@ -955,6 +1143,10 @@ async function endpoint(req, res, url) {
           dir: mst && output ? data.mst.mstDirectory(output, mst) : '',
           // Danh sách hoá đơn đang tải: UI tab Tra cứu & tải hiện lên cho trực quan.
           preview: value.running ? autoSyncPreview(mst) : null,
+          // Chạy nền theo khung giờ (chỉ đọc, không gọi cổng thuế).
+          window: backgroundSync.status(),
+          // Bể "Đồng bộ tất cả" (chỉ đọc).
+          pool: syncPool.status(),
         },
       });
     }
@@ -976,6 +1168,32 @@ async function endpoint(req, res, url) {
       if (instance && instance.running) throw new Error(`MST ${mst} đang chạy Auto Sync. Bấm Ngưng trước nếu muốn dừng.`);
       runAutoSyncFor(mst, 'manual').catch(error => log(`Auto Sync MST ${mst} lỗi: ${error && error.message ? error.message : error}`));
       return reply(res, 200, { ok: true, value: { ...(instance ? instance.status() : {}), mst } });
+    }
+    // "ĐỒNG BỘ TẤT CẢ": chạy SONG SONG nhiều MST — mỗi MST một profile Chrome và một kho cookie
+    // riêng nên không lẫn phiên. Bể giữ LUÔN đủ số luồng: MST nào xong thì rút MST kế tiếp.
+    if (req.method === 'POST' && url.pathname === '/api/db/autosync/run-all') {
+      await ensureLicenseAllowed();
+      if (!output) throw new Error('Chọn thư mục lưu trước khi đồng bộ tất cả.');
+      const entries = [];
+      const skipped = [];
+      for (const account of activeAccounts()) {
+        const mst = account.mst;
+        // Không có phiên lưu thì không chạy ÂM THẦM được (phải mở Chrome + nhập CAPTCHA thủ công),
+        // nên bỏ qua và nói rõ lý do thay vì mở một loạt cửa sổ đăng nhập.
+        if (!hasSavedSession(mst)) { skipped.push({ mst, reason: 'chưa có phiên — cần đăng nhập' }); continue; }
+        const instance = autoSyncFor(mst);
+        if (instance && instance.running) { skipped.push({ mst, reason: 'đang chạy' }); continue; }
+        entries.push({ mst });
+      }
+      const result = syncPool.start(entries);
+      if (!result.started) return reply(res, 200, { ok: true, value: { ...syncPool.status(), skipped, message: result.reason } });
+      log(`Đồng bộ tất cả: ${result.queued} MST · ${result.concurrency} luồng song song${skipped.length ? ` · bỏ qua ${skipped.length} MST` : ''}.`);
+      result.done.catch(() => { /* lỗi từng MST đã ghi trong status() */ });
+      return reply(res, 200, { ok: true, value: { ...syncPool.status(), skipped } });
+    }
+    if (req.method === 'POST' && url.pathname === '/api/db/autosync/run-all/stop') {
+      const stopped = syncPool.stop();
+      return reply(res, 200, { ok: true, value: { ...syncPool.status(), stopped } });
     }
     // Ngưng mọi tác vụ của MỘT MST: lượt Auto Sync (engine riêng) và lượt tải thủ công của MST đó.
     if (req.method === 'POST' && url.pathname === '/api/db/autosync/stop') {
@@ -1115,6 +1333,8 @@ async function endpoint(req, res, url) {
     if (req.method === 'POST' && url.pathname === '/api/account/login') { const input = await readBody(req); return reply(res, 200, { ok: true, value: await authOperation(() => addOrLogin(input.mst)) }); }
     if (req.method === 'POST' && url.pathname === '/api/account/submit') { const input = await readBody(req); return reply(res, 200, { ok: true, value: await authOperation(() => submitLogin(input)) }); }
     if (req.method === 'POST' && url.pathname === '/api/account/captcha') return reply(res, 200, { ok: true, value: await authOperation(async () => { if (!selected) throw new Error('Chọn MST trước.'); const value = await browser.loginAction({ mode: 'refresh' }); if (value.authenticated) return { ...value, account: await checkLogin() }; return challengeResponse(value); }) });
+    // Auto login hoàn toàn: solver JS (ddddocr) tự giải CAPTCHA rồi authenticate — không cần gõ tay.
+    if (req.method === 'POST' && url.pathname === '/api/account/auto-login') { const input = await readBody(req); return reply(res, 200, { ok: true, value: await authOperation(() => autoLoginAccount(input)) }); }
     if (req.method === 'POST' && url.pathname === '/api/account/show') {
       const input = await readBody(req); const mst = input.mst || selected;
       ensureIdle(); if (!safeMst(mst)) throw new Error('Nhập MST hợp lệ trước khi mở trang thuế.');
@@ -1161,35 +1381,40 @@ async function endpoint(req, res, url) {
     if (req.method === 'POST' && ['/api/search','/api/stream','/api/download','/api/resume','/api/export-excel'].includes(url.pathname) && authBusy) throw new Error('Chờ đăng nhập hoàn tất trước khi tải.');
     if (req.method === 'POST' && url.pathname === '/api/search') {
       await ensureLicenseAllowed();
-      if (!engine) throw new Error('Chọn MST và kiểm tra phiên trước.');
+      const input = await readBody(req);
+      // Chạy đúng luồng của MST được yêu cầu ⇒ MST A đang tra cứu vẫn bấm sang MST B làm việc được.
+      const target = engineOf(String(input.mst || '').trim());
+      if (!target) throw new Error('Chọn MST và kiểm tra phiên trước.');
       // Đang chạy tác vụ thì nút Tra cứu đóng vai nút Tạm dừng (tránh trường hợp giao diện chưa kịp
       // cập nhật trạng thái mà người dùng bấm lần nữa).
-      if (engine.busy) { engine.pause(); return reply(res, 200, { ok: true, value: engine.snapshot() }); }
-      const input = await readBody(req); const folder = String(input.output ?? output ?? '').trim();
+      if (target.busy) { target.pause(); return reply(res, 200, { ok: true, value: target.snapshot() }); }
+      const folder = String(input.output ?? output ?? '').trim();
       await ensureFolder(folder); // báo lỗi rõ nếu là ổ gốc / ổ chỉ đọc / không có quyền ghi
       output = folder; accounts.output = output; saveAccounts();
-      const value = await engine.search(input, output);
+      const value = await target.search(input, output);
       await closeBrowserWhenIdle('tra cứu xong');
       return reply(res, 200, { ok: true, value });
     }
     if (req.method === 'POST' && url.pathname === '/api/stream') {
       await ensureLicenseAllowed();
-      if (!engine) throw new Error('Chọn MST và kiểm tra phiên trước.');
-      if (engine.busy) { engine.pause(); return reply(res, 200, { ok: true, value: engine.snapshot() }); }
-      const input = await readBody(req); const folder = String(input.output ?? output ?? '').trim();
+      const input = await readBody(req);
+      const target = engineOf(String(input.mst || '').trim());
+      if (!target) throw new Error('Chọn MST và kiểm tra phiên trước.');
+      if (target.busy) { target.pause(); return reply(res, 200, { ok: true, value: target.snapshot() }); }
+      const folder = String(input.output ?? output ?? '').trim();
       await ensureFolder(folder);
       output = folder; accounts.output = output; saveAccounts();
       const requested = validateParams(input);
-      const currentJob = engine.job;
+      const currentJob = target.job;
       // Luật tái sử dụng nằm ở core để test được (canReuseSearch + tests/core.test.js).
       const reuse = canReuseSearch(currentJob, requested);
       let value;
       if (reuse) {
         currentJob.mode = 'stream';
         currentJob.output = output;
-        value = await engine.resume(true);
+        value = await target.resume(true);
       } else {
-        value = await engine.stream(requested, output);
+        value = await target.stream(requested, output);
       }
       await closeBrowserWhenIdle('tải cuốn chiếu xong');
       autoImportAfterDownload('tải cuốn chiếu xong');
@@ -1198,12 +1423,29 @@ async function endpoint(req, res, url) {
     // Xuất Excel danh sách hóa đơn từ chính kết quả tra cứu (không gọi API chi tiết, không tải XML/PDF).
     if (req.method === 'POST' && url.pathname === '/api/export-excel') {
       await ensureLicenseAllowed();
-      if (!engine) throw new Error('Chưa chọn MST và chưa tra cứu.');
+      const target = engineOf(String((await readBody(req)).mst || '').trim());
+      if (!target) throw new Error('Chưa chọn MST và chưa tra cứu.');
       await applyOutput();
-      return reply(res, 200, { ok: true, value: await engine.exportList() });
+      return reply(res, 200, { ok: true, value: await target.exportList() });
     }
-    if (req.method === 'POST' && url.pathname === '/api/download') { await ensureLicenseAllowed(); if (!engine) throw new Error('Chưa chọn MST.'); await applyOutput(); const value = await engine.resume(true); await closeBrowserWhenIdle('tải xong'); autoImportAfterDownload('tải xong'); return reply(res, 200, { ok: true, value }); }
-    if (req.method === 'POST' && url.pathname === '/api/resume') { await ensureLicenseAllowed(); if (!engine) throw new Error('Chưa chọn MST.'); await applyOutput(); const value = await engine.resume(); await closeBrowserWhenIdle('tải xong'); autoImportAfterDownload('chạy tiếp'); return reply(res, 200, { ok: true, value }); }
+    if (req.method === 'POST' && url.pathname === '/api/download') {
+      await ensureLicenseAllowed();
+      const target = engineOf(String((await readBody(req)).mst || '').trim());
+      if (!target) throw new Error('Chưa chọn MST.');
+      await applyOutput();
+      const value = await target.resume(true);
+      await closeBrowserWhenIdle('tải xong'); autoImportAfterDownload('tải xong');
+      return reply(res, 200, { ok: true, value });
+    }
+    if (req.method === 'POST' && url.pathname === '/api/resume') {
+      await ensureLicenseAllowed();
+      const target = engineOf(String((await readBody(req)).mst || '').trim());
+      if (!target) throw new Error('Chưa chọn MST.');
+      await applyOutput();
+      const value = await target.resume();
+      await closeBrowserWhenIdle('tải xong'); autoImportAfterDownload('chạy tiếp');
+      return reply(res, 200, { ok: true, value });
+    }
     if (req.method === 'POST' && url.pathname === '/api/pause') { if (engine) engine.pause(); return reply(res, 200, { ok: true, value: appState() }); }
     if (req.method === 'POST' && url.pathname === '/api/open-folder') {
       const base = engine?.job?.output || output;
@@ -1584,6 +1826,11 @@ server.listen(0, '127.0.0.1', async () => {
       try { launchUi(port); ensureTray(); } catch (error) { reportFatal(error.message); stop(); return; }
       // Sau khi cửa sổ đã mở: CHỈ kiểm tra phiên của MST dùng gần nhất. KHÔNG tự tra cứu/tải.
       setTimeout(() => { startupSessionCheck(); }, 3000);
+      // Đối soát trước khi bật lịch: nếu không, một dòng kẹt `running` sẽ khiến lịch tưởng MST đó bận.
+      setTimeout(() => {
+        reconcileInterruptedSync();
+        if (syncWindowConfig().enabled) backgroundSync.startTimer();
+      }, 5000);
     }).catch(error => log('Khởi động lỗi: ' + (error && error.message ? error.message : error)));
   }
 });
@@ -1607,6 +1854,8 @@ async function stop() {
   if (engine?.busy) engine.pause();
   xmlWatcher.stop();
   stopTray();
+  backgroundSync.stop();
+  outputLock.release(output, { pid: process.pid, workspace: WORKSPACE });
   removeInstanceFile();
   stopSupportStream();
   closeUiWindows();

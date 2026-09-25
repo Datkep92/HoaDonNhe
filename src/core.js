@@ -335,6 +335,17 @@ class Engine {
       else if (download || this.job.phase === 'download') await this.download();
     });
   }
+  // Thử lại CHỈ những hoá đơn còn lỗi. `incremental: true` ⇒ pending = queued + failed, nên KHÔNG
+  // tải lại những cái đã xong. Dùng ngay sau một lượt tải còn lỗi, để lỗi tạm thời (mạng chập,
+  // cổng thuế bận) không bị bỏ quên tới lượt sau — với luật "một ngày một lần" thì lượt sau là mai.
+  async retryFailed() {
+    if (!this.job) throw new Error('Chưa có lượt tải để thử lại.');
+    return this.run(async () => {
+      await this.checkAccount();
+      if (this.job.phase === 'search') await this.scan();
+      else await this.download({ incremental: true, finalize: true });
+    });
+  }
   // Quét thư mục đích để nhận diện file đã có: file hóa đơn nằm trong <MST>/<Mua_vao|Ban_ra>/<xml|pdf|html|zip>/,
   // nhưng vẫn nhận cả file nằm ngay trong <Mua_vao|Ban_ra>/ (bản trước ghi phẳng) để không tải lại.
   scanFolder(root, direction) {

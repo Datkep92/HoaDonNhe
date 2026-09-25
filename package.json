@@ -1,6 +1,6 @@
 {
   "name": "cn-tax-tools",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "Ung dung nhe tai hoa don qua Chrome/Edge he thong",
   "author": "CN Tax Tools",
   "private": true,
@@ -8,19 +8,22 @@
   "bin": "src/server.js",
   "scripts": {
     "start": "node src/server.js",
-    "test": "node --test --test-isolation=none tests/core.test.js tests/tct-api.test.js tests/secrets.test.js tests/pace.test.js tests/folders.test.js tests/period.test.js tests/excel.test.js tests/app-lock.test.js tests/support-license.test.js tests/support-trial.test.js tests/support-realtime.test.js tests/updater.test.js tests/update-check.test.js tests/apps-script.test.js tests/data-core.test.js tests/xml-engine.test.js tests/data-queries.test.js tests/auto-sync.test.js tests/rebuild.test.js tests/large-data.test.js tests/backfill.test.js tests/ui-wiring.test.js tests/invoice-a4.test.js tests/lifecycle.test.js tests/pace-rest.test.js tests/excel-export.test.js tests/superseded.test.js tests/superseded-queue.test.js tests/password-manager.test.js tests/autosync-manual.test.js tests/mst-format.test.js tests/vn-date.test.js",
+    "test": "node --test --test-isolation=none tests/core.test.js tests/tct-api.test.js tests/secrets.test.js tests/pace.test.js tests/folders.test.js tests/period.test.js tests/excel.test.js tests/app-lock.test.js tests/support-license.test.js tests/support-trial.test.js tests/support-realtime.test.js tests/updater.test.js tests/update-check.test.js tests/apps-script.test.js tests/data-core.test.js tests/xml-engine.test.js tests/data-queries.test.js tests/auto-sync.test.js tests/rebuild.test.js tests/large-data.test.js tests/backfill.test.js tests/ui-wiring.test.js tests/invoice-a4.test.js tests/lifecycle.test.js tests/pace-rest.test.js tests/excel-export.test.js tests/superseded.test.js tests/superseded-queue.test.js tests/password-manager.test.js tests/autosync-manual.test.js tests/mst-format.test.js tests/vn-date.test.js tests/sync-background.test.js tests/output-lock.test.js tests/sync-pool.test.js tests/retry-failed.test.js tests/mst-lanes.test.js tests/captcha-solver.test.js",
     "test:browser": "node tests/browser-regression.js",
     "build": "node tools/build-app.cjs",
     "installer": "node tools/build-installer.cjs",
     "release:local": "npm run build && npm run installer",
     "set-version": "node tools/set-version.cjs",
+    "fetch-onnx": "node tools/fetch-onnx.cjs",
     "icon": "node tools/make-icon.cjs",
     "hide-console": "node tools/hide-console.cjs",
     "smoke": "node src/server.js --smoke-test"
   },
   "dependencies": {
     "chrome-remote-interface": "0.33.3",
-    "jszip": "3.10.1"
+    "jszip": "3.10.1",
+    "onnxruntime-node": "^1.30.0",
+    "sharp": "^0.35.4"
   },
   "devDependencies": {
     "@yao-pkg/pkg": "^6.22.0",
@@ -40,13 +43,17 @@
       "src/app-lock.js",
       "src/support.js",
       "src/period.js",
-    "src/mst-format.js",
+      "src/mst-format.js",
       "src/data-ui.js",
       "src/data-view.css",
       "src/template/*.jpg",
       "src/template/*.mp3",
       "src/vendor/*.js",
-      "resources/xlsx.cjs"
+      "resources/xlsx.cjs",
+      "src/onnx/common.onnx",
+      "src/onnx/common.json",
+      "node_modules/onnxruntime-node/bin/napi-v6/win32/x64/*.node",
+      "node_modules/onnxruntime-node/bin/napi-v6/win32/x64/*.dll"
     ]
   }
 }

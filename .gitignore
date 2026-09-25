@@ -11,8 +11,16 @@ setup-github.md.txt
 cloudflare-.txt
 ctl3.txt
 
+# Dữ liệu hóa đơn XML xuất thử + ảnh rác ở gốc project
+/*.xml
+/banra/
+/*.png
+
 # Build/archive artifacts
 *.zip
+
+# Model OCR lớn (54MB) — lấy lại bằng: npm run fetch-onnx
+src/onnx/
 
 # Test/data artifacts
 login-regression.png

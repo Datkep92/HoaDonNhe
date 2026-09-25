@@ -528,7 +528,22 @@
     const parts = [];
     if (value.running) parts.push(`Đang chạy: ${value.phase || '…'}`);
     parts.push(line('Mua vào', value.directions.buy), line('Bán ra', value.directions.sell));
-    parts.push(value.settings.enabled ? `tự chạy mỗi ${value.settings.intervalMinutes} phút cho ${value.settings.days} ngày gần nhất` : 'đang tắt tự động');
+    parts.push(`giãn cách mỗi MST ${value.settings.intervalMinutes} phút`);
+    // CHẠY NỀN: hai cổng là KHUNG GIỜ và CỬA SỔ APP ĐÃ ĐÓNG (src/data/sync-scheduler.js).
+    // Hiện một dòng chữ gọn — không hộp thoại, không tiếng — để không làm phiền người dùng.
+    const win = value.window;
+    if (win && win.windows && win.windows.length) {
+      const span = win.windows.map(w => `${w.from}–${w.to || '…'}`).join(', ');
+      const state = win.phase === 'running' ? `đang chạy nền MST ${win.mst}` : (win.reason || 'chờ');
+      parts.push(`chạy nền ${span}: ${state}`);
+    }
+    // BỂ "Đồng bộ tất cả" do người dùng bấm: hiện số luồng đang chạy để thấy nó luôn giữ đủ 3.
+    const pool = value.pool;
+    if (pool && (pool.running || (pool.done || []).length || (pool.failed || []).length)) {
+      parts.push(pool.running
+        ? `đồng bộ tất cả: ${(pool.active || []).length}/${pool.concurrency} luồng · còn ${(pool.queued || []).length} chờ`
+        : `đồng bộ tất cả: ${(pool.done || []).length} xong${(pool.failed || []).length ? `, ${pool.failed.length} lỗi` : ''}`);
+    }
     const downloaded = (value.directions.buy.downloaded || 0) + (value.directions.sell.downloaded || 0);
     if (downloaded) parts.push(`lượt gần nhất tải ${downloaded} hoá đơn mới`);
     $('autosync-status').textContent = parts.join(' · ');

@@ -25,6 +25,7 @@ aside h2{margin:17px 0 22px}
 .mst-banner.done{background:#1c4436;color:#5fe0b0}
 .mst-banner.empty{background:#2a3b4d;color:#9db6ce}
 .mst-banner.error{background:#4a2230;color:#ff9db0}
+.mst-banner.pending{background:#4a3d22;color:#ffd88a}
 .row-menu{background:transparent;border:0;color:#9db6ce;padding:2px 6px;font-size:15px;line-height:1}
 .row-menu:hover{color:#fff;background:#2a4a68}
 .row-menu-panel{position:absolute;right:6px;top:calc(100% - 2px);z-index:12;background:#fff;border:1px solid #dfe7ef;border-radius:9px;box-shadow:0 12px 30px #102b3540;padding:5px;min-width:200px;display:flex;flex-direction:column}
@@ -34,6 +35,7 @@ aside h2{margin:17px 0 22px}
 .side-actions{display:flex;flex-direction:column;gap:8px;margin:14px 0 0}
 .side-actions button{width:100%;padding:11px 12px;background:#1f3a54;border-color:#2c4a67;color:#dcebf7}
 .side-actions button.primary{background:#087f70;border-color:#0a8f7e;color:#fff}
+.side-actions button.danger{background:#5b2430;border-color:#7a3140;color:#ffc9d3}
 .search-actions{display:grid;grid-template-columns:1fr 1fr;gap:8px}
 .search-actions button{width:100%}
 .side-license{display:flex;flex-direction:column;gap:7px;margin-top:12px;padding-top:12px;border-top:1px solid #263d55}

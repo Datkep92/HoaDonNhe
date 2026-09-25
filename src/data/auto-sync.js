@@ -78,12 +78,17 @@ function createAutoSync({ runDirection, syncFile, manualBusy = () => false, para
   }
 
   // MỘT hướng (Mua vào hoặc Bán ra). Không ném ra ngoài: hướng này lỗi không làm chết hướng kia.
-  async function oneDirection({ key, code, label }) {
+  async function oneDirection({ key, code, label }, runOptions = {}) {
     const started = new Date().toISOString();
     patchState(key, { status: 'running', lastSync: started, lastError: null });
     try {
       const settings = readState().settings;
-      const result = await runDirection({ direction: code, days: settings.days });
+      // Lượt CHẠY NỀN truyền `days` riêng (khung giờ, mặc định 3 ngày) để quét bù hoá đơn mới.
+      // Lấy MIN với cấu hình của MST: nền không bao giờ vượt quá điều người dùng đặt, và một hồ sơ
+      // đặt `days: 365` cho việc dựng lại dữ liệu cũng không biến lượt nền thành chạy cả ngày.
+      const configured = Math.max(1, Number(settings.days) || 7);
+      const days = runOptions.days ? Math.min(configured, Math.max(1, Number(runOptions.days) || configured)) : configured;
+      const result = await runDirection({ direction: code, days });
       patchState(key, {
         status: 'idle',
         lastSuccess: new Date().toISOString(),
@@ -94,8 +99,10 @@ function createAutoSync({ runDirection, syncFile, manualBusy = () => false, para
         skipped: result.skipped || 0,
         imported: result.imported || 0,
         errors: result.errors || 0,
+        // Lỗi TẢI của lượt này (sau khi đã thử lại một lượt) — khác `errors` là lỗi NHẬP XML.
+        failed: result.failed || 0,
       });
-      log(`Auto Sync ${label}: tìm ${result.found || 0}, tải ${result.downloaded || 0}, nhập ${result.imported || 0}, lỗi ${result.errors || 0}`);
+      log(`Auto Sync ${label}: tìm ${result.found || 0}, tải ${result.downloaded || 0}, nhập ${result.imported || 0}, lỗi nhập ${result.errors || 0}, lỗi tải ${result.failed || 0}`);
       return { key, ok: true, result };
     } catch (directionError) {
       // "Ngưng theo yêu cầu" là trạng thái bình thường, KHÔNG phải lỗi — không ghi vào sync.json như lỗi.
@@ -123,19 +130,21 @@ function createAutoSync({ runDirection, syncFile, manualBusy = () => false, para
     finishedAt = null;
     error = '';
     lastReason = reason;
+    // Truyền xuống từng hướng: `days` riêng cho lượt chạy nền (xem oneDirection).
+    const runOptions = options;
     const useParallel = typeof options.parallel === 'boolean' ? options.parallel : !!parallel();
     const detail = {};
     try {
       if (useParallel) {
         phase = 'Mua vào + Bán ra (song song)';
-        for (const outcome of await Promise.all(DIRECTIONS.map(oneDirection))) {
+        for (const outcome of await Promise.all(DIRECTIONS.map(direction => oneDirection(direction, runOptions)))) {
           if (outcome.ok) detail[outcome.key] = { ok: true, ...outcome.result };
           else { detail[outcome.key] = { ok: false, stopped: outcome.stopped, error: outcome.error }; if (!outcome.stopped) error = outcome.error; }
         }
       } else {
         for (const direction of DIRECTIONS) {
           phase = `${direction.label} (${direction.code})`;
-          const outcome = await oneDirection(direction);
+          const outcome = await oneDirection(direction, runOptions);
           if (outcome.ok) detail[outcome.key] = { ok: true, ...outcome.result };
           else { detail[outcome.key] = { ok: false, stopped: outcome.stopped, error: outcome.error }; if (!outcome.stopped) error = outcome.error; }
         }

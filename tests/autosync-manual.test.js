@@ -215,7 +215,10 @@ test('nút play/stop trên dòng MST điều khiển Auto Sync của đúng MST 
   const renderer = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer.js'), 'utf8');
   const start = renderer.indexOf('const syncing = !!account.sync?.running');
   assert.ok(start > -1, 'phải có biến phân biệt Auto Sync với lượt tải thủ công');
-  const body = renderer.slice(start, start + 2400);
+  // Cắt tới HẾT hàm renderAccounts (mốc cấu trúc) thay vì một số ký tự cố định — cửa sổ cố định
+  // sẽ đỏ oan mỗi lần thêm chữ vào hàm, dù hành vi không đổi.
+  const end = renderer.indexOf('let lastRenderedState = null;', start);
+  const body = renderer.slice(start, end > start ? end : start + 4000);
   assert.ok(body.includes("work('/api/db/autosync/run', { mst: account.mst })"), 'bấm play phải chạy Auto Sync cho ĐÚNG MST đó');
   assert.ok(body.includes("work('/api/db/autosync/stop', {})"), 'bấm stop phải gọi endpoint ngưng');  assert.ok(body.includes("work('/api/pause', {})"), 'đang tải thủ công thì vẫn tạm dừng lượt tải');
   assert.ok(!body.includes("'/api/resume'"), 'không còn dùng nút này để chạy tiếp lượt tải cũ');

@@ -50,7 +50,9 @@ test('có endpoint chạy theo MST và endpoint ngưng; MỖI MST LÀ MỘT LU�
   assert.ok(serverSource.includes("url.pathname === '/api/db/autosync/run'"), 'thiếu endpoint chạy');
   assert.ok(serverSource.includes("url.pathname === '/api/db/autosync/stop'"), 'thiếu endpoint ngưng');
   const run = serverSource.slice(serverSource.indexOf("url.pathname === '/api/db/autosync/run'"));
-  const runBlock = run.slice(0, run.indexOf('}\n'));
+  // '}\n' KHÔNG khớp khi file checkout ra CRLF (`}\r\n`) ⇒ dùng /\}\r?\n/ để đúng ở cả hai kiểu xuống dòng.
+  const runEnd = run.search(/\}\r?\n/);
+  const runBlock = runEnd > -1 ? run.slice(0, runEnd) : run.slice(0, 900);
   assert.ok(runBlock.includes('input.mst'), 'endpoint chạy phải nhận ĐÚNG MST được bấm');
   assert.ok(runBlock.includes('accountFor(mst)'), 'phải kiểm MST có trong danh sách');
   // Yêu cầu: MST này đang chạy KHÔNG được chặn MST khác — chỉ chặn chính nó chạy chồng.

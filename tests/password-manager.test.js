@@ -75,7 +75,9 @@ test('index.html: ô mật khẩu/PIN KHÔNG dùng autocomplete current-password
 test('tax-login.js: trước khi gửi form thì tắt autocomplete cho form cổng thuế', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'tax-login.js'), 'utf8');
   assert.match(source, /const quietPasswordManager = f => \{/, 'phải có hàm quietPasswordManager');
-  assert.match(source, /quietPasswordManager\(f\);\n/, 'phải gọi hàm này trong nhánh submit');
+  // Dấu xuống dòng có thể là LF (máy người viết) hoặc CRLF (git checkout khi core.autocrlf=true,
+  // tức trên GitHub Actions) nên phải chấp nhận cả hai — nếu không, test đúng ở máy mà trượt ở CI.
+  assert.match(source, /quietPasswordManager\(f\);\r?\n/, 'phải gọi hàm này trong nhánh submit');
   // Không được đụng tới name/id/value của form — nếu đổi sẽ làm hỏng việc gửi form của cổng thuế.
   const fn = source.slice(source.indexOf('const quietPasswordManager = f => {'), source.indexOf('const token ='));
   assert.ok(!/\.name\s*=/.test(fn), 'không được đổi name');

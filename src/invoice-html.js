@@ -6,6 +6,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { QRCode, QRErrorCorrectLevel } = require('./vendor/qrcode.js');
+const vnDate = require('./vn-date');
 
 // ===== Nguyên hàm phụ trợ (giữ nguyên từ dự án gốc) =====
 
@@ -135,12 +136,11 @@ function buildInvoiceHtml(inv, detail, assets) {
     let day, month, year;
     if (s.includes('/')) { [day, month, year] = s.split('/'); }
     else if (s.includes('-')) {
-      let dateStr;
-      if (/T\d{2}:\d{2}/.test(s)) {
-        const ms = Date.parse(s);
-        dateStr = !isNaN(ms) ? new Date(ms + 25200000).toISOString().split('T')[0] : s.split('T')[0];
-      } else { dateStr = s.split('T')[0]; }
-      const p = dateStr.split('-'); year = p[0]; month = p[1]; day = p[2];
+      // tdlap của cổng thuế là MỐC UTC ("...T17:00:00Z" = ngày hôm sau giờ VN) ⇒ quy về ngày VN.
+      // NLap của XML (YYYY-MM-DD) và chuỗi không kèm múi giờ đã là ngày VN nên giữ nguyên.
+      const dateStr = vnDate.isoDay(s);
+      if (!dateStr) return '';
+      [year, month, day] = dateStr.split('-');
     }
     else return s;
     return `Ng&agrave;y ${day} th&aacute;ng ${month} n&abreve;m ${year}`;
@@ -214,17 +214,16 @@ function buildInvoiceHtml(inv, detail, assets) {
     if (isNaN(num)) return fmtNum(n);
     return (isAdjust && num > 0) ? '+' + fmtNum(num) : fmtNum(num);
   };
-  // Ngày dạng dd/mm/yyyy (cho dòng "thay thế/điều chỉnh cho..."), +7h ra ngày VN
+  // Ngày dạng dd/mm/yyyy (cho dòng "thay thế/điều chỉnh cho..."), quy về ngày VN qua src/vn-date.js
   const fmtDateDMY = (s) => {
     if (!s) return '';
     s = String(s);
     let day, month, year;
     if (s.includes('/')) { [day, month, year] = s.split('/'); }
     else if (s.includes('-')) {
-      let dateStr;
-      if (/T\d{2}:\d{2}/.test(s)) { const ms = Date.parse(s); dateStr = !isNaN(ms) ? new Date(ms + 25200000).toISOString().split('T')[0] : s.split('T')[0]; }
-      else { dateStr = s.split('T')[0]; }
-      const p = dateStr.split('-'); year = p[0]; month = p[1]; day = p[2];
+      const dateStr = vnDate.isoDay(s);
+      if (!dateStr) return '';
+      [year, month, day] = dateStr.split('-');
     } else return s;
     return `${day}/${month}/${year}`;
   };

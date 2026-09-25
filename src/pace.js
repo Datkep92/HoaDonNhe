@@ -4,9 +4,16 @@
 // VNIT cũng làm đúng việc này ("NHIP" + "PHUT_NGHI_MIN/MAX" + chế độ an toàn) nên nó không bị
 // cổng thuế chặn hàng loạt, còn bản này trước đây gọi liên tiếp không chờ.
 // Chỉnh nhịp bằng biến môi trường: HOADON_NHIP_MS (mặc định 900ms), HOADON_NHIP_JITTER_MS (300ms).
+// Mức nghỉ khi bị chặn: HOADON_NGHI_MS (mặc định 10 phút) — đặt thấp để TEST nhanh, không phải chờ đủ 10 phút.
 const MIN_GAP = Math.max(0, Number(process.env.HOADON_NHIP_MS ?? 900) || 0);
 const JITTER = Math.max(0, Number(process.env.HOADON_NHIP_JITTER_MS ?? 300) || 0);
-const MAX_REST = 10 * 60 * 1000;
+const DEFAULT_MAX_REST = 10 * 60 * 1000;
+// Mức nghỉ tối đa khi cổng thuế chặn (403) hoặc trả 429. Đọc lúc GỌI nên test có thể đặt
+// HOADON_NGHI_MS thấp để chạy nhanh; không đặt thì giữ nguyên 10 phút như trước.
+function maxRest() {
+  const value = Number(process.env.HOADON_NGHI_MS);
+  return Number.isFinite(value) && value > 0 ? value : DEFAULT_MAX_REST;
+}
 const BLOCKED = /phát hiện hành vi không hợp lệ/i;
 let nextAt = 0;
 let restUntil = 0;
@@ -28,7 +35,7 @@ function note(status, text = '', retryAfter = '') {
   if (!bad) { if (status >= 200 && status < 300) resetRest(); return 0; }
   const header = Number(String(retryAfter ?? '').trim());
   if (status === 429) strikes += 1;
-  const fallback = status === 429 ? Math.min(20000 * 2 ** Math.max(0, strikes - 1), MAX_REST) : MAX_REST;
+  const fallback = status === 429 ? Math.min(20000 * 2 ** Math.max(0, strikes - 1), maxRest()) : maxRest();
   const wait = Number.isFinite(header) && header > 0 ? Math.min(header * 1000, 30 * 60 * 1000) : fallback;
   restUntil = Date.now() + wait;
   restReason = status === 429 ? 'HTTP 429 – quá nhiều yêu cầu' : 'HTTP 403 – bị chặn vì hành vi không hợp lệ';
@@ -49,4 +56,4 @@ async function wait() {
 // Sau mỗi response vẫn giãn thêm một nhịp như cũ; chỉ đẩy mốc đi xa hơn (monotonic), không kéo về
 // gần, để khoảng cách tối thiểu luôn đúng dù có bao nhiêu task chạy song song.
 function mark() { nextAt = Math.max(nextAt, Date.now() + nextGap()); }
-module.exports = { wait, mark, note, guard, blocked, restRemaining, resetRest, gapMs, MIN_GAP };
+module.exports = { wait, mark, note, guard, blocked, restRemaining, resetRest, gapMs, MIN_GAP, maxRest };

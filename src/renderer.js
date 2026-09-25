@@ -1,16 +1,16 @@
 'use strict';
 const $ = id => document.getElementById(id);
+const optional = id => document.getElementById(id);
 const labels = { idle: 'Sẵn sàng', searching: 'Đang tra cứu', downloading: 'Đang tải', paused: 'Tạm dừng', auth_required: 'Cần đăng nhập', ready: 'Sẵn sàng tải', completed: 'Hoàn tất', failed: 'Có lỗi', partial: 'Còn hóa đơn lỗi', queued: 'Chờ tải', running: 'Đang xử lý', skipped: 'Đã có sẵn – bỏ qua', done: 'Đã tải' };
+// mst-format.js nạp bằng <script> TRƯỚC file này. Nếu vì lý do gì đó nó không nạp được thì dùng bản
+// dự phòng ngay tại đây — nếu không sẽ ném "Cannot read properties of undefined" tại chỗ nhập MST.
+const MstFormat = window.MstFormat || (() => {
+  const HINT = 'Không nạp được bộ kiểm tra định dạng (mst-format.js). Mở lại ứng dụng.';
+  return { MST_HINT: HINT, isValidMst: () => true, normalizeMst: v => String(v ?? '').trim(), baseMst: v => String(v ?? '').trim().split('-')[0], mstAliases: v => [String(v ?? '').trim()] };
+})();
+const errorLabels = { auth: 'Cần đăng nhập lại', rate_limited: 'Cổng đang giới hạn nhịp', timeout: 'Cổng phản hồi chậm', network: 'Lỗi kết nối', invalid_xml: 'XML/ZIP không hợp lệ', portal: 'Lỗi từ cổng thuế' };
 let current = { busy: false, accounts: [] }, pending = false, initialized = false;
 let loginId = '', preparedMst = '', loginWorking = false, polling = false;
-// "Tải hóa đơn" must never be silently dead: it either runs, or it says exactly what to do next.
-function downloadPlan(state) {
-  if (pending || state.busy) return { disabled: true, reason: '' };
-  if (!state.total) return { disabled: false, reason: state.selected ? 'Chưa có hóa đơn nào trong lượt này — bấm “Tra cứu hóa đơn” trước rồi mới tải.' : 'Chưa chọn MST — bấm “Thêm MST / Đăng nhập” trước.' };
-  if (['searching', 'downloading'].includes(state.state)) return { disabled: false, reason: 'Lượt tải đang chạy, số liệu tự cập nhật — xem thanh tiến độ bên dưới.' };
-  if (state.state === 'completed') return { disabled: false, reason: `Đã tải xong ${state.done || 0}/${state.total} hóa đơn. Bấm “Tra cứu hóa đơn” nếu muốn chạy lượt mới.` };
-  return { disabled: false, reason: '' };
-}
 async function call(url, body) {
   let response;
   try { response = await fetch(url, { method: url === '/api/state' ? 'GET' : 'POST', headers: { 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) }); }
@@ -86,16 +86,25 @@ function openRowMenu(row, account) {
         await view.openAutoSync();
       } catch (error) { noticeFail(error.message); }
     }),
+    item('CCCD/MST bổ sung…', () => openIdentifiers(account)),
     item('Sửa MST', () => openMstForm(account)),
     item('Xoá mật khẩu đã lưu', () => forgetPassword(account)),
     item('Bỏ khỏi danh sách', () => removeMst(account), true)
   );
   row.append(panel);
 }
+function openIdentifiers(account) {
+  $('identifiers-primary').value = account.mst;
+  $('identifiers-values').value = (account.identifiers || []).join('\n');
+  $('identifiers-subtitle').textContent = `Hóa đơn khớp MST chính ${account.mst} hoặc một mã dưới đây sẽ được đưa vào cùng kho dữ liệu.`;
+  $('identifiers-error').hidden = true;
+  $('identifiers-dialog').showModal();
+  $('identifiers-values').focus();
+}
 // Bấm một dòng: còn phiên đã lưu thì vào thẳng giao diện chính, hết phiên thì mở form đăng nhập.
 async function chooseMst(mst) {
   closeRowMenus();
-  if (pending || current.busy) return;
+  if (pending) return;
   if (mst === current.selected && current.authenticated) { notice(`Đang dùng phiên đăng nhập sẵn có của MST ${mst}.`); return; }
   initialized = false;
   const result = await work('/api/account/select', { mst });
@@ -128,10 +137,44 @@ function openMstForm(account) {
   $('mst-remember').checked = account ? !!account.remembered : true;
   $('mst-error').hidden = true; $('mst-dialog').showModal(); $('mst-name').focus();
 }
+// Mốc thời gian ngắn "15:01 25/09" cho banner trạng thái MST.
+// Trạng thái CUỐI (lỗi / xong / trống) luôn đi kèm mốc đã ghi trong sync.json; mốc này được ghi lại
+// mỗi lượt Auto Sync nên nhìn banner là biết trạng thái đó CŨ hay MỚI — không còn cảnh báo đỏ cho
+// một lỗi đã hết từ lâu (lỗi thật: "database disk image is malformed" treo mãi vì không ai xoá).
+function bannerWhen(value) {
+  const date = new Date(value || '');
+  if (Number.isNaN(date.getTime())) return 'chưa rõ lúc nào';
+  const time = date.toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' });
+  return `${time} ${String(date.getDate()).padStart(2, '0')}/${String(date.getMonth() + 1).padStart(2, '0')}`;
+}
+
+// Banner trạng thái Auto Sync hiện NGAY TRÊN DÒNG MST, để nhìn vào danh sách là biết MST nào
+// đang tra cứu / đang tải bao nhiêu / đã xong / không có hóa đơn mới / lỗi.
+function syncBanner(sync) {
+  if (!sync) return null;
+  if (sync.running) {
+    const progress = sync.progress;
+    if (progress && progress.queued) {
+      return { kind: 'running', text: `Đang tải ${progress.downloaded}/${progress.queued}${progress.failed ? ` · lỗi ${progress.failed}` : ''}` };
+    }
+    return { kind: 'running', text: sync.phase ? `Đang chạy · ${sync.phase}` : 'Đang tra cứu…' };
+  }
+  if (sync.lastError) return { kind: 'error', text: `Lỗi (${bannerWhen(sync.lastErrorTime)}): ${String(sync.lastError).slice(0, 120)}` };
+  if (sync.lastSuccess) {
+    const when = bannerWhen(sync.lastSuccess);
+    const downloaded = (sync.buyDownloaded || 0) + (sync.sellDownloaded || 0);
+    const found = (sync.buyFound || 0) + (sync.sellFound || 0);
+    if (downloaded > 0) return { kind: 'done', text: `Xong · ${downloaded} hóa đơn mới · ${when}` };
+    if (found > 0) return { kind: 'done', text: `Xong · ${found} hóa đơn, không có bản mới · ${when}` };
+    return { kind: 'empty', text: `Không có hóa đơn mới · ${when}` };
+  }
+  return null;
+}
+
 function renderAccounts(state) {
   const list = $('mst-items'); const query = $('mst-search').value.trim().toLowerCase();
   const all = state.accounts || [];
-  const shown = query ? all.filter(x => `${displayName(x)} ${x.mst}`.toLowerCase().includes(query)) : all;
+  const shown = query ? all.filter(x => `${displayName(x)} ${x.mst} ${(x.identifiers || []).join(' ')}`.toLowerCase().includes(query)) : all;
   $('mst-count').textContent = all.length > 1 ? `Danh sách MST (${shown.length}/${all.length})` : 'Danh sách MST';
   list.replaceChildren();
   if (!shown.length) {
@@ -147,12 +190,50 @@ function renderAccounts(state) {
     const info = document.createElement('div'); info.className = 'mst-info';
     const title = document.createElement('strong'); title.textContent = displayName(account);
     const sub = document.createElement('small');
-    sub.textContent = `${account.mst}${account.remembered ? ' · đã lưu mật khẩu' : ''}${account.job ? ` · ${account.job.total} hóa đơn` : ''}`;
+    const syncing = !!account.sync?.running;
+    const jobRunning = account.job?.state === 'searching' || account.job?.state === 'downloading' || account.job?.state === 'running';
+    const running = syncing || jobRunning;
+    sub.textContent = `${account.mst}${account.identifiers?.length ? ` · +${account.identifiers.length} mã` : ''}${account.remembered ? ' · đã lưu mật khẩu' : ''}${running ? ' · đang xử lý' : ''}${account.job ? ` · ${account.job.total} hóa đơn` : ''}`;
     info.append(title, sub);
+    const stop = document.createElement('button');
+    stop.type = 'button';
+    stop.className = 'mst-stop';
+    stop.innerHTML = running
+      ? '<svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" aria-hidden="true"><path d="M6 5h4v14H6zM14 5h4v14h-4z"/></svg>'
+      : '<svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>';
+    // Nút này là CÔNG TẮC AUTO SYNC của MST: bấm play ⇒ chạy Auto Sync cho đúng MST này
+    // (không chạy các MST khác); bấm stop ⇒ ngưng mọi tác vụ của MST này.
+    stop.title = running
+      ? `Ngưng mọi tác vụ đang hoạt động của MST ${account.mst}`
+      : `Chạy Auto Sync cho MST ${account.mst}`;
+    stop.setAttribute('aria-label', stop.title);
+    stop.disabled = !!pending;
+    stop.onclick = async event => {
+      event.stopPropagation();
+      try {
+        if (account.mst !== current.selected) {
+          initialized = false;
+          await work('/api/account/select', { mst: account.mst });
+        }
+        // Đang chạy Auto Sync ⇒ ngưng Auto Sync; đang tải thủ công ⇒ tạm dừng lượt tải;
+        // đang rảnh ⇒ bắt đầu Auto Sync cho MST này.
+        if (syncing) await work('/api/db/autosync/stop', {});
+        else if (jobRunning) await work('/api/pause', {});
+        else await work('/api/db/autosync/run', { mst: account.mst });
+      } catch (error) { noticeFail(error.message); }
+    };
+    // Banner trạng thái ngay trên dòng MST đang chạy để nhìn vào danh sách là biết.
+    const banner = syncBanner(account.sync);
+    if (banner) {
+      const line = document.createElement('small');
+      line.className = `mst-banner ${banner.kind}`;
+      line.textContent = banner.text;
+      info.append(line);
+    }
     const menu = document.createElement('button');
     menu.type = 'button'; menu.className = 'row-menu'; menu.textContent = '⋯'; menu.setAttribute('aria-label', `Tuỳ chọn cho ${account.mst}`);
     menu.onclick = event => { event.stopPropagation(); openRowMenu(row, account); };
-    row.append(dot, info, menu);
+    row.append(dot, info, stop, menu);
     row.onclick = () => chooseMst(account.mst);
     row.onkeydown = event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); chooseMst(account.mst); } };
     list.append(row);
@@ -178,7 +259,8 @@ function render(state) {
   const browserText = state.browserVisible ? 'Ẩn Chrome đăng nhập' : 'Hiện Chrome đăng nhập';
   // Chrome tự đóng sau khi tải xong, nên nút này không còn phụ thuộc browserReady: chưa có cửa sổ
   // thì bấm vào sẽ mở lại (xem onclick), giống nút trong bảng đăng nhập.
-  $('browser-toggle').textContent = browserText; $('browser-toggle').disabled = !state.selected || state.authBusy || pending;
+  const browserToggle = optional('browser-toggle');
+  if (browserToggle) { browserToggle.textContent = browserText; browserToggle.disabled = !state.selected || state.authBusy || pending; }
   if ($('login-dialog').open) $('login-show-page').textContent = browserText;
   const selected = state.selected || '';
   const account = (state.accounts || []).find(x => x.mst === selected);
@@ -204,17 +286,16 @@ function render(state) {
       box.append(nameSpan);
     }
   }
-  $('account-hint').textContent = selected ? (state.authenticated ? 'Đang dùng phiên còn hiệu lực — sẵn sàng tra cứu.' : (account?.session === 'saved' ? 'Có phiên đã lưu nhưng đã hết hạn — bấm để đăng nhập lại.' : 'Chưa đăng nhập — bấm “Đăng nhập MST này”.')) : 'Chọn một MST trong danh sách bên trái.';
+  $('account-hint').textContent = selected ? (state.authenticated ? 'Đang online' : (account?.session === 'saved' ? 'Có phiên đã lưu nhưng đã hết hạn.' : 'Chưa đăng nhập.')) : 'Chọn một MST trong danh sách bên trái.';
   $('auth-dot').classList.toggle('active', !!state.authenticated);
   $('total').textContent = state.total || 0; $('done').textContent = state.done || 0; $('failed').textContent = state.failed || 0;
   $('state').textContent = labels[state.state] || state.state; $('message').textContent = state.message || '';
+  $('results-title').textContent = state.mode === 'stream' ? 'Hóa đơn tải thành công' : 'Danh sách hóa đơn';
   const percent = state.total ? Math.round(100 * ((state.done || 0) + (state.failed || 0)) / state.total) : 0;
   $('percentage').textContent = `${percent}%`; $('progress').value = percent;
-  if (!initialized && state.params) {
-    for (const key of ['from', 'to', 'direction', 'family', 'status']) $(key).value = state.params[key] || '';
-    document.querySelectorAll('.formats input').forEach(x => { x.checked = state.params.formats.includes(x.value); });
-    syncPeriodOptions(); // ô Năm/Tháng/Quý khớp khoảng ngày của lượt tải đang mở
-  }
+  // KHÔNG tự điền lại cấu hình của lượt tra cứu CŨ vào form khi mở app: người dùng mở app là thấy
+  // form trống như mới. Form chỉ được điền khi (a) người dùng tự chọn, hoặc (b) Auto Sync chủ động
+  // đẩy cấu hình đang chạy lên để nhìn cho trực quan (xem window.HD_SHOW_SYNC).
   initialized = true;
   // Không ghi đè lên đường dẫn người dùng đang gõ; chỉ cập nhật khi nơi lưu đổi thật.
   const field = $('output');
@@ -227,7 +308,8 @@ function render(state) {
     const cell = (text, small) => { const td = document.createElement('td'); td.textContent = text ?? ''; if (small) { const sub = document.createElement('small'); sub.textContent = small; td.append(sub); } row.append(td); return td; };
     const stt = cell(String(index + 1)); stt.className = 'stt';
     cell(inv.number, inv.symbol); cell(inv.name || inv.seller, inv.seller); cell(inv.amount == null ? '—' : amountFormat.format(inv.amount));
-    const result = cell(labels[inv.state] || inv.state, inv.error); result.className = inv.state;
+    const detail = inv.error ? `${errorLabels[inv.errorType] || ''}${errorLabels[inv.errorType] ? ': ' : ''}${inv.error}` : (inv.warning || '');
+    const result = cell(labels[inv.state] || inv.state, detail); result.className = inv.state;
     // Dòng đã có file: bấm vào để mở hóa đơn bằng ứng dụng mặc định của Windows.
     if ((inv.files || []).length) {
       row.classList.add('clickable'); row.tabIndex = 0; row.title = 'Bấm để mở hóa đơn đã tải';
@@ -241,26 +323,103 @@ function render(state) {
   table.replaceChildren(tableRows);
   $('empty').hidden = !!state.total; $('limit').textContent = state.total > 1000 ? 'Hiển thị 1.000 dòng đầu; engine vẫn xử lý toàn bộ.' : '';
   const busy = state.busy || state.authBusy || pending;
-  ['choose', 'add-mst', 'mst-login', 'account-login'].forEach(id => { $(id).disabled = busy; });
-  // Nút Tra cứu: khi đang tra cứu thì đổi thành "Tạm dừng tra cứu" (cùng logic với nút Tạm dừng).
-  const searching = !!state.busy && state.state === 'searching';
-  const downloading = !!state.busy && state.state === 'downloading';
-  $('search').textContent = searching ? 'Tạm dừng tra cứu' : 'Tra cứu hóa đơn';
+  ['choose', 'add-mst', 'mst-login', 'account-login'].forEach(id => { const el = optional(id); if (el) el.disabled = busy; });
+  const searching = !!state.busy && state.mode !== 'stream' && state.state === 'searching';
+  const downloading = !!state.busy && (state.mode === 'stream' || state.state === 'downloading');
+  $('search').textContent = searching ? 'Ngưng tra cứu' : 'Tra cứu';
   $('search').classList.toggle('btn-loading', searching);
-  $('search').disabled = state.authBusy || pending || (state.busy && !searching);
-  $('download').classList.toggle('btn-loading', downloading);
-  $('resume').classList.toggle('btn-loading', downloading);
+  // Nút của tác vụ ĐANG chạy luôn phải BẤM ĐƯỢC để dừng: `pending` = true suốt thời gian request
+  // dài đang chờ (server trả lời khi tác vụ kết thúc), nên không được dùng `pending` trần để khoá.
+  $('search').disabled = state.authBusy || (!!state.busy && !searching) || (pending && !searching);
+  $('stream-download').textContent = downloading ? 'Ngưng tải' : 'Tải ngay';
+  $('stream-download').classList.toggle('btn-loading', downloading);
+  $('stream-download').disabled = state.authBusy || (!!state.busy && !downloading) || (pending && !downloading);
   // Nút "Xuất Excel theo mẫu MISA" chỉ bật khi đã có kết quả tra cứu; dòng thống kê đọc từ kết quả xử lý.
   $('export-excel').disabled = busy || !state.total || !state.selected;
   const stats = state.stats;
   $('stats').textContent = stats ? `Tổng ${stats.total} · đã có sẵn ${stats.existed} · đưa vào hàng tải ${stats.queued} · đã tải ${stats.downloaded} · bỏ qua ${stats.skipped} · lỗi ${stats.failed}` : '';
-  $('browser-toggle').disabled = busy || state.authBusy || !state.selected;
+  if (browserToggle) browserToggle.disabled = busy || state.authBusy || !state.selected;
   document.querySelectorAll('.filters input:not([readonly]), .filters select').forEach(x => { x.disabled = busy; });
-  $('pause').disabled = !state.busy; const plan = downloadPlan(state);
-  $('download').disabled = plan.disabled; $('download').title = plan.reason || 'Tải toàn bộ hóa đơn của lượt tra cứu này';
-  $('resume').disabled = busy || !['paused', 'failed', 'partial', 'auth_required'].includes(state.state);
+  $('resume').disabled = busy || !state.authenticated || !['paused', 'failed', 'partial', 'auth_required'].includes(state.state);
 }
-async function refresh() { if (polling) return; polling = true; try { render(await call('/api/state')); } catch (error) { noticeFail(error.message); } finally { polling = false; } }
+async function refresh() { if (polling) return; polling = true; try { render(await call('/api/state')); } catch (error) { noticeFail(error.message); } finally { polling = false; } await paintSyncPreview(); }
+
+// ---------------------------------------------------------------------------
+// AUTO SYNC ĐANG CHẠY — hiện lên tab "Tra cứu & tải" cho trực quan:
+//   • điền cấu hình của lượt Auto Sync (khoảng ngày, Mua vào/Bán ra) vào form;
+//   • hiện danh sách hoá đơn đang được tra cứu/tải kèm trạng thái từng dòng.
+// Chỉ vẽ khi lượt tải THỦ CÔNG không bận — không giành bảng với người dùng đang thao tác.
+// Banner trên dòng MST (renderer) vẫn giữ, phần này chi tiết hơn.
+let syncPreviewActive = false;
+let syncPreviewBusy = false;
+let syncPreviewSignature = '';
+
+function clearSyncPreview() {
+  if (!syncPreviewActive) return;
+  syncPreviewActive = false;
+  syncPreviewSignature = '';
+  // Buộc render() vẽ lại bảng/labels theo state thật ở nhịp kế tiếp.
+  lastRenderedState = null;
+}
+
+async function paintSyncPreview() {
+  const selected = current.selected || '';
+  if (!selected || current.busy || current.authBusy || pending) { clearSyncPreview(); return; }
+  if (syncPreviewBusy) return;
+  syncPreviewBusy = true;
+  try {
+    const response = await fetch(`/api/db/autosync/status?mst=${encodeURIComponent(selected)}`);
+    const result = await response.json();
+    const preview = result && result.ok ? result.value.preview : null;
+    if (!preview || !(preview.items || []).length) { clearSyncPreview(); return; }
+    paintSyncPreviewInto(preview, result.value);
+  } catch { clearSyncPreview(); }
+  finally { syncPreviewBusy = false; }
+}
+
+function paintSyncPreviewInto(preview, status) {
+  const params = preview.params || {};
+  // Cấu hình đang chạy: người dùng nhìn là biết Auto Sync đang tải khoảng thời gian nào.
+  if (params.from) $('from').value = params.from;
+  if (params.to) $('to').value = params.to;
+  if (params.direction) $('direction').value = params.direction;
+  $('results-title').textContent = 'Auto Sync đang tải hóa đơn';
+  $('state').textContent = labels[preview.state] || preview.state || 'Đang chạy';
+  $('message').textContent = preview.message || 'Auto Sync đang chạy…';
+  $('total').textContent = preview.items.length;
+  $('done').textContent = preview.items.filter(x => x.state === 'done' || x.state === 'skipped').length;
+  $('failed').textContent = preview.items.filter(x => x.state === 'failed').length;
+  const percent = preview.items.length ? Math.round(100 * (+$('done').textContent + +$('failed').textContent) / preview.items.length) : 0;
+  $('percentage').textContent = `${percent}%`; $('progress').value = percent;
+
+  const signature = JSON.stringify([status.mst, preview.items.map(x => [x.number, x.state]).join()]);
+  if (signature === syncPreviewSignature) return;
+  syncPreviewSignature = signature;
+  syncPreviewActive = true;
+
+  const table = $('rows');
+  const fragment = document.createDocumentFragment();
+  const cell = (text, small) => {
+    const td = document.createElement('td'); td.textContent = text ?? '';
+    if (small) { const sub = document.createElement('small'); sub.textContent = small; td.append(sub); }
+    return td;
+  };
+  for (const [index, inv] of preview.items.entries()) {
+    const row = document.createElement('tr');
+    row.className = inv.state || '';
+    const stt = cell(String(index + 1)); stt.className = 'stt';
+    const number = cell(inv.number, `${inv.symbol || ''}${params.direction === 'sold' ? ' · Bán ra' : (params.direction === 'purchase' ? ' · Mua vào' : '')}`);
+    const seller = cell(inv.name || inv.seller, inv.seller);
+    const amount = cell(inv.amount == null ? '—' : amountFormat.format(inv.amount));
+    const detail = inv.error ? `${errorLabels[inv.errorType] || ''}${errorLabels[inv.errorType] ? ': ' : ''}${inv.error}` : (inv.warning || '');
+    const result = cell(labels[inv.state] || inv.state, detail); result.className = inv.state;
+    row.append(stt, number, seller, amount, result);
+    fragment.append(row);
+  }
+  table.replaceChildren(fragment);
+  $('empty').hidden = true;
+  $('limit').textContent = 'Danh sách này là của lượt Auto Sync đang chạy (không phải lượt tra cứu thủ công).';
+}
 async function work(url, data) { pending = true; render(current); try { return await call(url, data); } catch (error) { noticeFail(error.message); return null; } finally { pending = false; await refresh(); } }
 function loginError(text) { $('login-error').textContent = text || ''; $('login-error').hidden = !text; }
 function invalidateChallenge() {
@@ -294,7 +453,7 @@ async function acceptLoginResult(result) {
 }
 async function prepareLogin() {
   const mst = $('login-mst').value.trim();
-  if (!/^\d+$/.test(mst)) { loginError('Nhập MST chỉ gồm chữ số trước khi lấy CAPTCHA.'); return; }
+  if (!MstFormat.isValidMst(mst)) { loginError(MstFormat.MST_HINT + ' Trước khi lấy CAPTCHA.'); return; }
   if (!$('login-user').value.trim()) $('login-user').value = mst;
   invalidateChallenge(); loginBusy(true); loginError(''); $('login-status').textContent = 'Đang mở phiên cổng thuế và lấy CAPTCHA…';
   try { await acceptLoginResult(await call('/api/account/login', { mst })); }
@@ -310,16 +469,39 @@ function openLogin(mst = '') {
   if (mst) void prepareLogin();
 }
 $('add-mst').onclick = () => openMstForm(null);
-$('mst-login').onclick = () => { if (current.selected) openLogin(current.selected); else notice('Chọn một MST trong danh sách trước.'); };
-$('account-login').onclick = () => { if (current.selected) openLogin(current.selected); else notice('Chọn một MST trong danh sách trước.'); };
+if (optional('mst-login')) optional('mst-login').onclick = () => { if (current.selected) openLogin(current.selected); else notice('Chọn một MST trong danh sách trước.'); };
+if (optional('account-login')) optional('account-login').onclick = () => { if (current.selected) openLogin(current.selected); else notice('Chọn một MST trong danh sách trước.'); };
 $('mst-search').oninput = () => renderAccounts(current);
 $('mst-close').onclick = () => $('mst-dialog').close();
 $('mst-cancel').onclick = () => $('mst-dialog').close();
+$('identifiers-close').onclick = () => $('identifiers-dialog').close();
+$('identifiers-cancel').onclick = () => $('identifiers-dialog').close();
+$('identifiers-form').onsubmit = async event => {
+  event.preventDefault();
+  const mst = $('identifiers-primary').value;
+  const identifiers = $('identifiers-values').value.split(/[\s,;]+/).map(value => value.trim()).filter(Boolean);
+  const invalid = identifiers.find(value => !/^\d{6,20}$/.test(value));
+  if (invalid) {
+    $('identifiers-error').textContent = `Mã “${invalid}” không hợp lệ. Chỉ nhập 6–20 chữ số.`;
+    $('identifiers-error').hidden = false;
+    return;
+  }
+  $('identifiers-save').disabled = true;
+  try {
+    const account = await call('/api/account/identifiers', { mst, identifiers });
+    $('identifiers-dialog').close();
+    notice(`Đã lưu ${account.identifiers.length} mã bổ sung cho MST ${mst}.`);
+    await refresh();
+  } catch (error) {
+    $('identifiers-error').textContent = error.message;
+    $('identifiers-error').hidden = false;
+  } finally { $('identifiers-save').disabled = false; }
+};
 document.addEventListener('click', event => { if (!event.target.closest('.mst-row')) closeRowMenus(); });
 $('mst-form').onsubmit = async event => {
   event.preventDefault();
   const input = { previous: editingMst, mst: $('mst-code').value.trim(), name: $('mst-name').value.trim(), password: $('mst-password').value, remember: $('mst-remember').checked };
-  if (!/^\d+$/.test(input.mst)) { $('mst-error').textContent = 'MST chỉ được gồm chữ số.'; $('mst-error').hidden = false; return; }
+  if (!MstFormat.isValidMst(input.mst)) { $('mst-error').textContent = MstFormat.MST_HINT; $('mst-error').hidden = false; return; }
   const wasEditing = editingMst;
   $('mst-submit').disabled = true;
   try {
@@ -355,7 +537,7 @@ $('login-show-page').onclick = async () => {
   catch (error) { loginError(error.message); }
   finally { restore(); }
 };
-$('browser-toggle').onclick = async () => {
+if (optional('browser-toggle')) optional('browser-toggle').onclick = async () => {
   // Chưa có cửa sổ (Chrome đã tự đóng sau lượt tải trước) thì mở lại và hiện lên, đúng như nút
   // "Hiện Chrome đăng nhập" trong bảng đăng nhập.
   const result = current.browserReady
@@ -401,18 +583,22 @@ $('output').onchange = async () => {
     $('output').value = folder; current.output = folder; notice(`Đã đặt thư mục lưu: ${folder}`); await refresh();
   } catch (error) { noticeFail(error.message); $('output').value = current.output || ''; }
 };
-$('search').onclick = async () => {
-  if (pending) return;
+async function runLookup(url) {
+  // KHÔNG chặn ở đây: `pending` = true suốt thời gian request dài đang chờ (server chỉ trả lời khi
+  // tác vụ xong), nên phải xử lý nhánh DỪNG trước rồi mới tới guard pending — nếu không, bấm
+  // "Ngưng tải" / "Ngưng tra cứu" bị nuốt im lặng.
   // Lấy trạng thái MỚI NHẤT trước khi quyết định (dữ liệu hiển thị chỉ cập nhật 1,5 giây một lần).
   let state = current;
   try { state = await call('/api/state'); render(state); } catch {}
-  // Đang tra cứu: nút này hoạt động như nút Tạm dừng (cùng gọi /api/pause).
-  if (state.busy && state.state === 'searching') {
+  const stoppingSearch = url === '/api/search' && state.busy && state.mode !== 'stream' && state.state === 'searching';
+  const stoppingDownload = url === '/api/stream' && state.busy && (state.mode === 'stream' || state.state === 'downloading');
+  if (stoppingSearch || stoppingDownload) {
     await work('/api/pause', {});
-    notice('Đã tạm dừng tra cứu. Bấm “Tải tiếp / Thử lại lỗi” để chạy tiếp phần còn lại.', [{ label: 'Tải tiếp', url: '/api/resume', body: {} }]);
+    notice(`Đã ngưng ${stoppingSearch ? 'tra cứu' : 'tải'}. Bấm “Tải tiếp / Thử lại lỗi” để tiếp tục.`, [{ label: 'Tải tiếp', url: '/api/resume', body: {} }]);
     return;
   }
-  if (state.busy) { notice('Đang có tác vụ chạy — bấm “Tạm dừng” nếu muốn dừng.'); return; }
+  if (pending) return; // chỉ chặn thao tác MỚI khi đang có request khác
+  if (state.busy) return;
   const folder = $('output').value.trim();
   if (!folder) { notice('Chọn thư mục lưu hóa đơn trước khi tra cứu.'); $('output').focus(); return; }
   // Người dùng có thể gõ/dán đường dẫn rồi bấm Tra cứu ngay: lưu lại trước khi chạy.
@@ -421,21 +607,16 @@ $('search').onclick = async () => {
     catch (error) { noticeFail(error.message); $('output').focus(); return; }
   }
   // Không hiện toast sau khi tra cứu: kết quả đã nằm trong bảng + dòng trạng thái/tiến độ.
-  await work('/api/search', { from: $('from').value, to: $('to').value, direction: $('direction').value, family: $('family').value, status: $('status').value, formats: [...document.querySelectorAll('.formats input:checked')].map(x => x.value), output: folder });
-};
-$('download').onclick = async () => {
-  const plan = downloadPlan(current);
-  if (plan.disabled) return;
-  if (plan.reason) { notice(plan.reason); return; }
-  const result = await work('/api/download', {});
-  if (result) notice(result.message || 'Đã xử lý xong.');
-};
+  await work(url, { from: $('from').value, to: $('to').value, direction: $('direction').value, family: $('family').value, status: $('status').value, formats: [...document.querySelectorAll('.formats input:checked')].map(x => x.value), output: folder });
+}
+$('search').onclick = () => runLookup('/api/search');
+$('stream-download').onclick = () => runLookup('/api/stream');
 $('resume').onclick = async () => {
   if (!current.total) { notice('Chưa có lượt tải nào để tiếp tục — bấm “Tra cứu hóa đơn” trước.'); return; }
   const result = await work('/api/resume', {});
   if (result) notice(result.message || 'Đã xử lý xong.');
 };
-$('pause').onclick = () => work('/api/pause', {}); $('open').onclick = () => work('/api/open-folder', {});
+$('open').onclick = () => work('/api/open-folder', {});
 $('export-excel').onclick = async () => {
   if (!current.total) { notice('Chưa có kết quả tra cứu để xuất Excel. Bấm “Tra cứu hóa đơn” trước.'); return; }
   const result = await work('/api/export-excel', {});

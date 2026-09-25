@@ -128,6 +128,48 @@ function insertInvoice(db, record) {
   });
 }
 
+// XML cùng đường dẫn đã thay đổi: cập nhật lại hóa đơn và thay toàn bộ dòng hàng
+// trong một transaction. File khác có cùng invoice_key vẫn do scanner xử lý là bản trùng.
+function upsertInvoice(db, record) {
+  const value = normalizeRecord(record);
+  const items = normalizeItems(record.items);
+  const stamp = nowIso();
+  const existing = findInvoiceByKey(db, value.invoiceKey);
+  if (!existing) return insertInvoice(db, record);
+  return withTransaction(db, () => {
+    db.prepare(`UPDATE invoices SET
+      direction = ?, mst_ban = ?, mst_mua = ?, ten_ban = ?, ten_mua = ?, ngay_lap = ?,
+      khms_hd = ?, khh_hd = ?, so_hd = ?, loai_hoa_don = ?, tien_truoc_thue = ?,
+      tien_thue = ?, tong_tien = ?, file_xml = ?, updated_at = ? WHERE id = ?`).run(
+      value.direction,
+      value.mstBan ?? null,
+      value.mstMua ?? null,
+      value.tenBan ?? null,
+      value.tenMua ?? null,
+      value.ngayLap ?? null,
+      value.khmsHd ?? null,
+      value.khhHd ?? null,
+      value.soHd ?? null,
+      value.loaiHoaDon ?? null,
+      asNumber(value.tienTruocThue, 'invoices.tien_truoc_thue'),
+      asNumber(value.tienThue, 'invoices.tien_thue'),
+      asNumber(value.tongTien, 'invoices.tong_tien'),
+      value.fileXml,
+      stamp,
+      existing.id,
+    );
+    db.prepare('DELETE FROM invoice_items WHERE invoice_id = ?').run(existing.id);
+    const insertItem = db.prepare(`INSERT INTO invoice_items
+      (invoice_id, stt, ma_hang, ten_hang, don_vi, so_luong, don_gia, chiet_khau, thanh_tien, thue_suat, tien_thue)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+    for (const item of items) {
+      insertItem.run(existing.id, item.stt, item.maHang, item.tenHang, item.donVi, item.soLuong, item.donGia, item.chietKhau, item.thanhTien, item.thueSuat, item.tienThue);
+    }
+    if (record.importedFile) recordImportedFile(db, { ...record.importedFile, invoiceKey: record.importedFile.invoiceKey || value.invoiceKey });
+    return { inserted: false, updated: true, invoiceId: existing.id, itemsInserted: items.length, invoiceKey: value.invoiceKey };
+  });
+}
+
 function countInvoices(db) {
   return db.prepare('SELECT COUNT(*) AS c FROM invoices').get().c;
 }
@@ -162,4 +204,4 @@ function getSyncState(db, key) {
   try { return JSON.parse(row.value); } catch { return row.value; }
 }
 
-module.exports = { insertInvoice, findInvoiceByKey, recordImportedFile, countInvoices, countItems, itemsOfInvoice, listInvoices, setSyncState, getSyncState, normalizeRecord, normalizeItems };
+module.exports = { insertInvoice, upsertInvoice, findInvoiceByKey, recordImportedFile, countInvoices, countItems, itemsOfInvoice, listInvoices, setSyncState, getSyncState, normalizeRecord, normalizeItems };

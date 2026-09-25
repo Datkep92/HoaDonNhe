@@ -8,6 +8,18 @@ async function taxLoginAction(options) {
   const form = () => [...document.querySelectorAll('form')].find(f => visible(f.querySelector('#username')) && visible(f.querySelector('#password')));
   const image = f => [...(f || document).querySelectorAll('img[alt="captcha"], img[src*="captcha"], img')].find(img => visible(img) && (img.alt?.toLowerCase() === 'captcha' || img.closest('form') === f));
   const pageError = () => [...document.querySelectorAll('.ant-form-item-explain-error,.ant-form-explain,.ant-message-error,.ant-notification-notice-description')].filter(visible).map(el => el.textContent.trim()).filter(Boolean).join(' · ').slice(0, 500);
+  // Không để Chrome/Edge hiện bong bóng "Lưu mật khẩu?" cho form đăng nhập của cổng thuế.
+  // autocomplete="off" trên cả form lẫn từng ô; data-lpignore/data-1p-ignore cho trình quản lý mật khẩu bên thứ ba.
+  // Chỉ thêm thuộc tính — KHÔNG đổi name/id/value nên việc gửi form của cổng thuế giữ nguyên.
+  const quietPasswordManager = f => {
+    if (!f) return false;
+    f.setAttribute('autocomplete', 'off');
+    for (const el of f.querySelectorAll('input')) {
+      el.setAttribute('autocomplete', 'off');
+      if (String(el.type).toLowerCase() === 'password') { el.setAttribute('data-lpignore', 'true'); el.setAttribute('data-1p-ignore', 'true'); }
+    }
+    return true;
+  };
   const token = () => { try { return window.__NEXT_REDUX_STORE__?.getState?.().authReducer?.jwt || ''; } catch { return ''; } };
   const authenticated = () => {
     try { const value = token(); const part = value.split('.')[1].replace(/-/g, '+').replace(/_/g, '/'); const p = JSON.parse(atob(part)); return !p.exp || p.exp * 1000 > Date.now(); } catch { return false; }
@@ -44,6 +56,7 @@ async function taxLoginAction(options) {
   if (options.mode === 'submit') {
     const f = form();
     if (!f) throw new Error('Form cổng thuế chưa sẵn sàng. Bấm Lấy CAPTCHA lại.');
+    quietPasswordManager(f);
     const cap = [...f.querySelectorAll('#cvalue,input[name="cvalue"]')].find(visible);
     const fields = [[f.querySelector('#username'), options.username], [f.querySelector('#password'), options.password], [cap, options.captcha]];
     if (fields.some(([el]) => !el)) throw new Error('Không tìm thấy đủ ô tài khoản, mật khẩu và CAPTCHA trên cổng thuế.');
@@ -85,7 +98,7 @@ async function taxLoginAction(options) {
   // TCT sometimes needs longer than 25 seconds before rendering the welcome popup.
   for (let n = 0; n < (options.mode === 'status' ? 1 : 240); n++) {
     const state = await snapshot();
-    if (state.authenticated || state.ready) return state;
+    if (state.authenticated || state.ready) { quietPasswordManager(form()); return state; }
     if (!form() && Date.now() - clickedAt > 1000) {
       // The TCT home page shows a welcome layer over its header. Always dismiss it
       // before clicking Đăng nhập, then repeat once in case its animation blocks the first click.

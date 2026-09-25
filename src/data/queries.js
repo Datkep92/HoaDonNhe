@@ -64,10 +64,45 @@ function summary(db) {
   };
 }
 
+// Làm sạch chuỗi người dùng gõ thành biểu thức MATCH an toàn cho FTS5: chỉ giữ chữ và số
+// (mọi ký tự đặc biệt của FTS5 bị thay bằng khoảng trắng), mỗi token dùng dạng tiền tố "từ"*.
+function ftsMatchOf(text) {
+  const cleaned = String(text || '').replace(/[^\p{L}\p{N}\s]/gu, ' ');
+  const tokens = cleaned.split(/\s+/).filter(t => t.length > 0);
+  if (!tokens.length) return '';
+  return tokens.map(t => `"${t}"*`).join(' ');
+}
+
+// Dựng mệnh đề WHERE cho danh sách hoá đơn (dùng CHUNG cho phân trang và xuất Excel):
+// bộ lọc cơ bản (chiều + khoảng ngày) + tìm kiếm chữ (FTS5 trước, LIKE dự phòng).
+function invoiceWhere(db, options = {}) {
+  const text = String(options.q || '').trim();
+  // Bộ lọc cơ bản (chiều + khoảng ngày), KHÔNG gồm phần tìm kiếm chữ.
+  const base = filtersOf({ ...options, q: '' });
+  if (!text) return { clause: base.clause, params: base.params };
+
+  // FTS5 trước (nhanh, có index, bỏ dấu tiếng Việt). Nếu FTS không khớp thì rơi xuống LIKE
+  // để giữ nguyên hành vi cũ (bắt substring ở giữa, ví dụ "6423" trong "00006423").
+  const match = ftsMatchOf(text);
+  if (match) {
+    const ftsClause = `${base.clause ? `${base.clause} AND` : 'WHERE'} id IN (SELECT rowid FROM invoice_fts WHERE invoice_fts MATCH ?)`;
+    try {
+      const ftsParams = [...base.params, match];
+      if (db.prepare(`SELECT COUNT(*) AS c FROM invoices ${ftsClause}`).get(...ftsParams).c > 0) {
+        return { clause: ftsClause, params: ftsParams };
+      }
+    } catch { /* DB chưa có bảng FTS (chưa qua applySchema) → dùng LIKE */ }
+  }
+  const like = `%${text}%`;
+  const likeWhere = '(so_hd LIKE ? OR khh_hd LIKE ? OR khms_hd LIKE ? OR mst_ban LIKE ? OR mst_mua LIKE ? OR ten_ban LIKE ? OR ten_mua LIKE ? OR invoice_key LIKE ?)';
+  return { clause: `${base.clause ? `${base.clause} AND ` : 'WHERE '}${likeWhere}`, params: [...base.params, like, like, like, like, like, like, like, like] };
+}
+
 function listInvoices(db, options = {}) {
   const size = Math.max(1, Math.min(200, Number(options.limit) || 50));
   const offset = Math.max(0, Number(options.offset) || 0);
-  const { clause, params } = filtersOf(options);
+  const { clause, params } = invoiceWhere(db, options);
+
   const total = db.prepare(`SELECT COUNT(*) AS c FROM invoices ${clause}`).get(...params).c;
   const rows = db.prepare(`SELECT id, invoice_key, direction, ngay_lap, khms_hd, khh_hd, so_hd,
       mst_ban, ten_ban, mst_mua, ten_mua, tong_tien, tien_truoc_thue, tien_thue, file_xml
@@ -111,18 +146,21 @@ function products(db, options = {}) {
 
 // §39: khách hàng (bán ra) và nhà cung cấp (mua vào) lấy trực tiếp từ invoices.
 // kind = 'buyer' | 'supplier' | 'all' (all = cả hai, có cột `loai` để phân biệt).
-const partnerSql = {
-  supplier: `SELECT mst_ban AS mst, ten_ban AS ten, COUNT(*) AS so_hoa_don, SUM(tong_tien) AS tong_tien, SUM(tien_thue) AS tong_thue
-    FROM invoices WHERE direction = 'BUY' GROUP BY mst_ban, ten_ban`,
-  buyer: `SELECT mst_mua AS mst, ten_mua AS ten, COUNT(*) AS so_hoa_don, SUM(tong_tien) AS tong_tien, SUM(tien_thue) AS tong_thue
-    FROM invoices WHERE direction = 'SELL' GROUP BY mst_mua, ten_mua`,
-};
-
-function partners(db, { kind = 'buyer', limit = 100 } = {}) {
+// from/to (tuỳ chọn) = khoảng ngày đang xem, để tab Đối tác và file Excel khớp đúng bộ lọc.
+function partners(db, { kind = 'buyer', limit = 100, from = '', to = '' } = {}) {
   const size = Math.max(1, Math.min(500, Number(limit) || 100));
-  if (kind === 'supplier') return db.prepare(`${partnerSql.supplier} ORDER BY tong_tien DESC LIMIT ?`).all(size);
-  if (kind === 'buyer') return db.prepare(`${partnerSql.buyer} ORDER BY tong_tien DESC LIMIT ?`).all(size);
-  return db.prepare(`SELECT *, 'NCC' AS loai FROM (${partnerSql.supplier}) UNION ALL SELECT *, 'KH' AS loai FROM (${partnerSql.buyer}) ORDER BY tong_tien DESC LIMIT ?`).all(size);
+  const range = [];
+  const params = [];
+  if (from) { range.push('ngay_lap >= ?'); params.push(from); }
+  if (to) { range.push('ngay_lap <= ?'); params.push(to); }
+  const more = range.length ? ` AND ${range.join(' AND ')}` : '';
+  const supplier = `SELECT mst_ban AS mst, ten_ban AS ten, COUNT(*) AS so_hoa_don, SUM(tong_tien) AS tong_tien, SUM(tien_thue) AS tong_thue
+    FROM invoices WHERE direction = 'BUY'${more} GROUP BY mst_ban, ten_ban`;
+  const buyer = `SELECT mst_mua AS mst, ten_mua AS ten, COUNT(*) AS so_hoa_don, SUM(tong_tien) AS tong_tien, SUM(tien_thue) AS tong_thue
+    FROM invoices WHERE direction = 'SELL'${more} GROUP BY mst_mua, ten_mua`;
+  if (kind === 'supplier') return db.prepare(`${supplier} ORDER BY tong_tien DESC LIMIT ?`).all(...params, size);
+  if (kind === 'buyer') return db.prepare(`${buyer} ORDER BY tong_tien DESC LIMIT ?`).all(...params, size);
+  return db.prepare(`SELECT *, 'NCC' AS loai FROM (${supplier}) UNION ALL SELECT *, 'KH' AS loai FROM (${buyer}) ORDER BY tong_tien DESC LIMIT ?`).all(...params, ...params, size);
 }
 
-module.exports = { summary, listInvoices, getInvoice, products, partners, filtersOf };
+module.exports = { summary, listInvoices, getInvoice, products, partners, filtersOf, ftsMatchOf, invoiceWhere };

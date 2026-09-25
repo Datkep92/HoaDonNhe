@@ -7,7 +7,7 @@
 // Đổi schema ⇒ tăng SCHEMA_VERSION (tầng sqlite.js sẽ tự nâng cấp theo bước).
 // ---------------------------------------------------------------------------
 
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 3;
 
 const TABLES = [
   `CREATE TABLE IF NOT EXISTS invoices (
@@ -73,12 +73,48 @@ const INDEXES = [
   'CREATE INDEX IF NOT EXISTS idx_invoice_sell_mst ON invoices(mst_ban)',
   'CREATE INDEX IF NOT EXISTS idx_invoice_buy_mst ON invoices(mst_mua)',
   'CREATE INDEX IF NOT EXISTS idx_invoice_number ON invoices(so_hd)',
+  'CREATE INDEX IF NOT EXISTS idx_invoice_direction_date ON invoices(direction, ngay_lap DESC, id DESC)',
+  'CREATE INDEX IF NOT EXISTS idx_invoice_symbol_number ON invoices(khh_hd, so_hd)',
+  'CREATE INDEX IF NOT EXISTS idx_invoice_updated ON invoices(updated_at DESC)',
   'CREATE INDEX IF NOT EXISTS idx_item_code ON invoice_items(ma_hang)',
   'CREATE INDEX IF NOT EXISTS idx_item_invoice ON invoice_items(invoice_id)',
   'CREATE INDEX IF NOT EXISTS idx_imported_file_path ON imported_files(file_path)',
   'CREATE INDEX IF NOT EXISTS idx_imported_invoice_key ON imported_files(invoice_key)',
 ];
 
-const DDL = [...TABLES, ...INDEXES];
+// FTS5 (external content) cho tìm kiếm nhanh ở tab "Kho dữ liệu" (mục §34).
+// - content='invoices', content_rowid='id': index đọc nội dung thẳng từ bảng invoices
+//   (KHÔNG lưu bản sao nội dung), nhưng UPDATE/DELETE vẫn đúng vì trigger cung cấp giá trị CŨ.
+// - KHÔNG dùng content='' (contentless): lệnh 'delete' chỉ có rowid KHÔNG xoá được token cũ,
+//   nên sau khi sửa/xoá hoá đơn index còn sót từ khoá cũ ⇒ tìm kiếm ra kết quả "ma".
+//   (contentless_delete=1 thì SQLite lại từ chối cú pháp 'delete' kiểu này.)
+// - unicode61 remove_diacritics 2 : không phân biệt hoa/thường VÀ bỏ dấu tiếng Việt đầy đủ
+//                ("cong ty" khớp "CÔNG TY", "nguoi" khớp "NGƯỜI", "tnhh" khớp "TNHH").
+//                Số 2 là bắt buộc: mặc định (1) chỉ bỏ dấu khối Latin-1 nên "nguoi" KHÔNG khớp "NGƯỜI".
+// - Trigger đồng bộ nội dung từ bảng invoices; mọi đường ghi qua repository đều chạy trigger.
+const FTS5 = [
+  `CREATE VIRTUAL TABLE IF NOT EXISTS invoice_fts USING fts5(
+    ten_ban, ten_mua, so_hd, khh_hd, khms_hd,
+    content='invoices',
+    content_rowid='id',
+    tokenize='unicode61 remove_diacritics 2'
+  )`,
+  `CREATE TRIGGER IF NOT EXISTS trg_invoice_fts_ai AFTER INSERT ON invoices BEGIN
+    INSERT INTO invoice_fts(rowid, ten_ban, ten_mua, so_hd, khh_hd, khms_hd)
+    VALUES (new.id, new.ten_ban, new.ten_mua, new.so_hd, new.khh_hd, new.khms_hd);
+  END`,
+  `CREATE TRIGGER IF NOT EXISTS trg_invoice_fts_au AFTER UPDATE ON invoices BEGIN
+    INSERT INTO invoice_fts(invoice_fts, rowid, ten_ban, ten_mua, so_hd, khh_hd, khms_hd)
+    VALUES ('delete', old.id, old.ten_ban, old.ten_mua, old.so_hd, old.khh_hd, old.khms_hd);
+    INSERT INTO invoice_fts(rowid, ten_ban, ten_mua, so_hd, khh_hd, khms_hd)
+    VALUES (new.id, new.ten_ban, new.ten_mua, new.so_hd, new.khh_hd, new.khms_hd);
+  END`,
+  `CREATE TRIGGER IF NOT EXISTS trg_invoice_fts_ad AFTER DELETE ON invoices BEGIN
+    INSERT INTO invoice_fts(invoice_fts, rowid, ten_ban, ten_mua, so_hd, khh_hd, khms_hd)
+    VALUES ('delete', old.id, old.ten_ban, old.ten_mua, old.so_hd, old.khh_hd, old.khms_hd);
+  END`,
+];
 
-module.exports = { SCHEMA_VERSION, TABLES, INDEXES, DDL };
+const DDL = [...TABLES, ...INDEXES, ...FTS5];
+
+module.exports = { SCHEMA_VERSION, TABLES, INDEXES, FTS5, DDL };

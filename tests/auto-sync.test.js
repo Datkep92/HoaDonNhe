@@ -25,7 +25,8 @@ function makeEngine(dir, { shouldSkip, counter } = {}) {
     }
     if (route.includes('export-xml')) {
       counter.downloads += 1;
-      return Buffer.from('<HDon><DLHDon Id="X"><TTChung><SHDon>1</SHDon></TTChung></DLHDon></HDon>');
+      const number = new URLSearchParams(String(route).split('?')[1] || '').get('shdon') || '';
+      return Buffer.from(`<HDon><DLHDon Id="X"><TTChung><SHDon>${number}</SHDon></TTChung></DLHDon></HDon>`);
     }
     throw new Error(`route lạ trong test: ${route}`);
   };

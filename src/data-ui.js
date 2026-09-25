@@ -18,6 +18,9 @@
   const num = new Intl.NumberFormat('vi-VN');
   const RANGE_KEY = 'hoadon.data.range';
   const SIZE_KEY = 'hoadon.data.size';
+  const PERIOD_KEY = 'hoadon.data.period';
+  // Nhãn menu xuất Excel (dùng cho thông báo sau khi xuất).
+  const PART_LABEL = { all: 'toàn bộ kho dữ liệu', buy: 'hóa đơn mua vào', sell: 'hóa đơn bán ra', productsBuy: 'hàng hóa mua vào', productsSell: 'hàng hóa bán ra', suppliers: 'nhà cung cấp', buyers: 'khách hàng' };
 
   let app = {};
   let view = 'download';
@@ -28,6 +31,7 @@
   let selectedKey = '';
   let products = [];
   let range = { from: '', to: '', chip: 'all' };
+  let periodLabel = '';
   // Mỗi bảng có lựa chọn chiều riêng, không dùng chung một ô lọc.
   const tabState = { products: { dir: '' }, list: { dir: '' }, partners: { kind: 'all' } };
   let importPoll = null;
@@ -36,13 +40,16 @@
   let seenImportRunning = false;
   let autoRunning = false;
   let newInvoices = 0;
+  let activeDataTab = 'products';
+  let changeRevision = -1;
+  let changePollBusy = false;
+  const requests = new Map();
 
   const fail = error => {
     if (window.noticeFail) window.noticeFail(error.message);
     else if (window.notice) window.notice(error.message);
     else console.error(error);
   };
-  const csvCell = value => { const text = String(value ?? ''); return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text; };
   const isoDate = date => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
   const shortMoney = value => {
     const n = Math.round(Number(value) || 0);
@@ -82,6 +89,27 @@
     if (!result.ok) throw new Error(result.error || 'Lỗi không rõ.');
     return result.value;
   }
+  // Huỷ yêu cầu cũ là chuyện BÌNH THƯỜNG (bấm nhanh, đổi tab, lật trang…), nhưng trình duyệt báo
+  // lỗi huỷ với tên/mã/message khác nhau — Chrome: "signal is aborted without reason", Node: AbortError…
+  // Gộp về một chỗ để lỗi huỷ KHÔNG bao giờ hiện lên người dùng.
+  const isAbort = error => !!error && (error.name === 'AbortError' || error.code === 20 || /abort/i.test(String(error.message || '')));
+  const ignoreAbort = error => { if (!isAbort(error)) fail(error); };
+  const aborted = () => Object.assign(new Error('Yêu cầu đã được thay thế.'), { name: 'AbortError' });
+  async function latestApi(channel, path) {
+    const previous = requests.get(channel);
+    if (previous) previous.abort();
+    const controller = new AbortController();
+    requests.set(channel, controller);
+    try {
+      return await api(path, { signal: controller.signal });
+    } catch (error) {
+      // Chính yêu cầu này đã bị huỷ (hoặc là lỗi huỷ) ⇒ trả AbortError chuẩn để call site bỏ qua.
+      if (controller.signal.aborted || isAbort(error)) throw aborted();
+      throw error;
+    } finally {
+      if (requests.get(channel) === controller) requests.delete(channel);
+    }
+  }
   const post = (path, body) => api(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) });
 
   // ------------------------------------------------------------------ điều hướng
@@ -99,8 +127,16 @@
 
   async function refreshAll() {
     try {
-      await Promise.all([loadSummary(), loadList(), loadProducts(), loadPartners(), loadImportStatus(), loadAutoSync(), loadBackfill()]);
-    } catch (error) { fail(error); }
+      const visible = activeDataTab === 'products' ? loadProducts() : (activeDataTab === 'list' ? loadList() : loadPartners());
+      await Promise.all([loadSummary(), visible, loadImportStatus(), loadAutoSync(), loadBackfill()]);
+    } catch (error) { if (!isAbort(error)) fail(error); }
+  }
+
+  async function refreshVisibleData() {
+    await loadSummary();
+    if (activeDataTab === 'products') await loadProducts();
+    else if (activeDataTab === 'list') await loadList();
+    else await loadPartners();
   }
 
   // Ô thống kê: nhãn nhỏ mờ + giá trị đậm; màu theo nhóm (mua vào / bán ra / thuế).
@@ -127,11 +163,7 @@
       tile('Thuế bán ra', shortMoney(value.taxSell), 'tax'),
       tile('Cập nhật', shortWhen(value.lastImport), 'time'),
     );
-    // Nói rõ độ phủ của tiền thuế dòng: XML của một số nhà cung cấp KHÔNG có thẻ TThue
-    // (đo trên dữ liệu thật), nên bảng hàng hoá để “—” cho những dòng đó — không tự tính bù.
-    const covered = Number(value.itemsWithTax) || 0;
-    const allItems = Number(value.items) || 0;
-    $('data-tax-note').textContent = `Tiền thuế dòng: ${num.format(covered)}/${num.format(allItems)} dòng hàng có sẵn trong XML — dòng nào file XML không có thẻ TThue thì để “—” (không tự tính bù). Tiền thuế của cả hoá đơn luôn có đủ, xem ở tab Danh sách hóa đơn.`;
+    $('data-tax-note').textContent = '';
   }
 
   function announceNew(count) {
@@ -154,25 +186,77 @@
     return { from: isoDate(new Date(now.getFullYear(), 0, 1)), to: isoDate(new Date(now.getFullYear(), 11, 31)), chip: kind };
   }
 
+  // Chọn nhanh theo Năm / Quý / Tháng — dùng chung công thức ngày với tab Tra cứu & tải (src/period.js).
+  function syncPeriodOptions() {
+    const now = new Date();
+    const years = [];
+    for (let year = now.getFullYear() + 1; year >= now.getFullYear() - 12; year -= 1) years.push(String(year));
+    $('data-period-year').replaceChildren(...years.map(year => new Option(year, year)));
+    $('data-period-month').replaceChildren(...Array.from({ length: 12 }, (_, i) => new Option(`Tháng ${i + 1}`, String(i + 1))));
+    $('data-period-quarter').replaceChildren(...Array.from({ length: 4 }, (_, i) => new Option(`Quý ${i + 1}`, String(i + 1))));
+    $('data-period-year').value = String(now.getFullYear());
+    $('data-period-month').value = String(now.getMonth() + 1);
+    $('data-period-quarter').value = String(Math.floor(now.getMonth() / 3) + 1);
+    paintPeriodMode();
+  }
+
+  function paintPeriodMode() {
+    const mode = $('data-period-mode').value;
+    $('data-period-month').hidden = mode !== 'month';
+    $('data-period-quarter').hidden = mode !== 'quarter';
+  }
+
+  // Áp khoảng ngày của kỳ đã chọn rồi tải lại bảng đang mở. Nhãn hiện đúng kiểu:
+  // "2023" · "Quý 1 2023" · "Tháng 1 2023".
+  function applyPeriod() {
+    const mode = $('data-period-mode').value;
+    const year = Number($('data-period-year').value);
+    const unit = mode === 'quarter' ? Number($('data-period-quarter').value) : Number($('data-period-month').value);
+    const chosen = window.Period.rangeFor(mode, year, unit);
+    range = { from: chosen.from, to: chosen.to, chip: 'period' };
+    periodLabel = mode === 'year' ? String(year) : (mode === 'quarter' ? `Quý ${unit} ${year}` : `Tháng ${unit} ${year}`);
+    savePrefs();
+    paintRange();
+    reloadAll();
+  }
+
   function paintRange() {
     for (const button of document.querySelectorAll('.data-chips button')) button.classList.toggle('active', button.dataset.range === range.chip);
     $('data-from').value = range.from;
     $('data-to').value = range.to;
+    $('data-period-label').textContent = range.chip === 'period' ? periodLabel : '';
   }
 
   function savePrefs() {
     try {
       localStorage.setItem(RANGE_KEY, JSON.stringify({ range, size }));
+      localStorage.setItem(PERIOD_KEY, JSON.stringify({
+        label: periodLabel,
+        mode: $('data-period-mode').value,
+        year: $('data-period-year').value,
+        month: $('data-period-month').value,
+        quarter: $('data-period-quarter').value,
+      }));
     } catch { /* chế độ riêng tư */ }
   }
 
   function restorePrefs() {
+    syncPeriodOptions();
     try {
       const saved = JSON.parse(localStorage.getItem(RANGE_KEY) || '{}');
       if (saved.range && typeof saved.range === 'object') range = { from: saved.range.from || '', to: saved.range.to || '', chip: saved.range.chip || 'all' };
       const savedSize = Number(localStorage.getItem(SIZE_KEY));
       if ([50, 100, 200].includes(savedSize)) size = savedSize;
+      const savedPeriod = JSON.parse(localStorage.getItem(PERIOD_KEY) || '{}');
+      if (savedPeriod.mode) {
+        $('data-period-mode').value = savedPeriod.mode;
+        if (savedPeriod.year) $('data-period-year').value = savedPeriod.year;
+        if (savedPeriod.month) $('data-period-month').value = savedPeriod.month;
+        if (savedPeriod.quarter) $('data-period-quarter').value = savedPeriod.quarter;
+        periodLabel = String(savedPeriod.label || '');
+      }
     } catch { /* bỏ qua */ }
+    paintPeriodMode();
     $('data-size').value = String(size);
     paintRange();
   }
@@ -181,13 +265,17 @@
     return { q: $('data-q').value.trim(), from: range.from, to: range.to };
   }
 
-  function reloadAll() { page = 0; savePrefs(); loadList().catch(fail); loadProducts().catch(fail); if (tabState.partners.kind) loadPartners().catch(fail); loadSummary().catch(fail); }
+  function reloadAll() {
+    page = 0; savePrefs();
+    const loading = activeDataTab === 'products' ? loadProducts() : (activeDataTab === 'list' ? loadList() : loadPartners());
+    loading.catch(ignoreAbort);
+  }
 
   // ------------------------------------------------------------------ danh sách hoá đơn
   async function loadList() {
     const filters = activeFilters();
     const params = new URLSearchParams({ ...filters, direction: tabState.list.dir, limit: String(size), offset: String(page * size) });
-    const value = await api(`/api/db/invoices?${params.toString()}`);
+    const value = await latestApi('list', `/api/db/invoices?${params.toString()}`);
     total = value.total || 0;
     rows = value.rows || [];
     const body = $('data-rows');
@@ -258,15 +346,16 @@
 
   // ------------------------------------------------------------------ tab con + chiều riêng từng bảng
   function showDataTab(name) {
+    activeDataTab = name;
     for (const one of ['products', 'list', 'partners']) $('data-tab-' + one).hidden = one !== name;
     for (const [key, id] of [['products', 'data-tab-products-btn'], ['list', 'data-tab-list-btn'], ['partners', 'data-tab-partners-btn']]) {
       const button = $(id);
       button.classList.toggle('active', key === name);
       button.setAttribute('aria-selected', key === name ? 'true' : 'false');
     }
-    if (name === 'products') loadProducts().catch(fail);
-    if (name === 'list') loadList().catch(fail);
-    if (name === 'partners') loadPartners().catch(fail);
+    if (name === 'products') loadProducts().catch(ignoreAbort);
+    if (name === 'list') loadList().catch(ignoreAbort);
+    if (name === 'partners') loadPartners().catch(ignoreAbort);
   }
 
   function bindSegment(id, onPick) {
@@ -282,7 +371,7 @@
   async function loadProducts() {
     const filters = activeFilters();
     const params = new URLSearchParams({ ...filters, direction: tabState.products.dir, limit: '200' });
-    const value = await api(`/api/db/products?${params.toString()}`);
+    const value = await latestApi('products', `/api/db/products?${params.toString()}`);
     products = value.rows || [];
     const body = $('data-products');
     body.replaceChildren();
@@ -301,7 +390,9 @@
 
   // ------------------------------------------------------------------ đối tác
   async function loadPartners() {
-    const value = await api(`/api/db/partners?kind=${encodeURIComponent(tabState.partners.kind)}&limit=200`);
+    // Tab Đối tác là DANH BẠ đối tác: tổng hợp mọi hoá đơn đã nhập, KHÔNG lọc theo kỳ
+    // — đúng như sheet "Nhà cung cấp"/"Khách hàng" trong file Excel xuất ra.
+    const value = await latestApi('partners', `/api/db/partners?kind=${encodeURIComponent(tabState.partners.kind)}&limit=200`);
     const body = $('data-partners');
     body.replaceChildren();
     for (const partner of value.rows || []) {
@@ -315,40 +406,70 @@
     }
   }
 
-  function exportProducts() {
-    if (!products.length) {
-      fail(new Error('Chưa có dữ liệu hàng hóa. Bấm “Tải lại” hoặc “Nhập / cập nhật từ XML” trước.'));
-      return;
+  // Xuất Excel "Kho dữ liệu" — máy chủ dựng workbook từ SQLite, tôn trọng ĐÚNG bộ lọc đang xem
+  // (q + khoảng ngày). part = 'all' (6 bảng) hoặc một mã bảng để xuất RIÊNG bảng đó.
+  async function exportExcel(part) {
+    const summary = $('data-export');
+    const chosen = part || 'all';
+    const filters = activeFilters();
+    const params = new URLSearchParams({ q: filters.q || '', from: filters.from || '', to: filters.to || '' });
+    if (chosen !== 'all') params.set('parts', chosen);
+    const label = summary.textContent;
+    summary.setAttribute('aria-busy', 'true');
+    summary.textContent = 'Đang xuất…';
+    try {
+      const response = await fetch(`/api/db/export?${params.toString()}`);
+      if (!response.ok) {
+        const detail = await response.json().catch(() => ({}));
+        throw new Error(detail.error || `Không xuất được Excel (HTTP ${response.status}).`);
+      }
+      const blob = await response.blob();
+      const counts = JSON.parse(response.headers.get('X-Export-Counts') || '{}');
+      const now = new Date();
+      const pad = value => String(value).padStart(2, '0');
+      const stamp = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}`;
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `kho-du-lieu-${chosen === 'all' ? '' : `${chosen}-`}${app.selected || 'MST'}-${stamp}.xlsx`;
+      document.body.append(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 5000);
+      // Chỉ kể ra những bảng THỰC SỰ có trong file vừa xuất.
+      const pieces = [];
+      if ('buy' in counts) pieces.push(`${num.format(counts.buy)} HĐ mua vào`);
+      if ('sell' in counts) pieces.push(`${num.format(counts.sell)} HĐ bán ra`);
+      if ('productsBuy' in counts) pieces.push(`${num.format(counts.productsBuy)} mặt hàng mua vào`);
+      if ('productsSell' in counts) pieces.push(`${num.format(counts.productsSell)} mặt hàng bán ra`);
+      if ('suppliers' in counts) pieces.push(`${num.format(counts.suppliers)} nhà cung cấp`);
+      if ('buyers' in counts) pieces.push(`${num.format(counts.buyers)} khách hàng`);
+      if (window.notice) window.notice(`Đã xuất ${PART_LABEL[chosen] || chosen}: ${pieces.join(' · ') || 'không có dòng nào theo bộ lọc này'}.`);
+    } catch (error) {
+      if (!isAbort(error)) fail(error);
+    } finally {
+      summary.removeAttribute('aria-busy');
+      summary.textContent = label;
     }
-    const lines = [['Mã hàng', 'Tên hàng', 'ĐVT', 'Số lượng', 'Thuế suất', 'Tiền thuế', 'Thành tiền'].join(',')]
-      .concat(products.map(item => [item.ma_hang, item.ten_hang, item.don_vi, item.tong_so_luong, item.thue_suat, item.tong_thue, item.tong_tien].map(csvCell).join(',')));
-    const blob = new Blob([`\uFEFF${lines.join('\r\n')}`], { type: 'text/csv;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = `hang-hoa-${app.selected || 'MST'}.csv`;
-    document.body.append(link);
-    link.click();
-    link.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 5000);
-    if (window.notice) window.notice(`Đã xuất ${num.format(products.length)} mặt hàng ra CSV.`);
   }
 
   // ------------------------------------------------------------------ nhập XML
   function renderImport(status) {
     const bar = $('data-import-bar');
     const line = $('data-import-status');
+    // Hoá đơn "Đã bị thay thế" (tthai = 4) bị loại khỏi kho — chỉ hiện khi có để không rối dòng trạng thái.
+    const dropped = status.superseded ? ` · loại ${num.format(status.superseded)} HĐ bị thay thế` : '';
     if (status.running) {
       bar.hidden = false;
       bar.value = status.total ? Math.round(100 * status.scanned / status.total) : 0;
-      line.textContent = `Đang nhập ${num.format(status.scanned)}/${num.format(status.total)} file · nhập ${status.imported} · trùng ${status.duplicates} · bỏ qua ${status.skipped} · lỗi ${status.errors}${status.current ? ` · ${status.current}` : ''}`;
+      line.textContent = `Đang nhập ${num.format(status.scanned)}/${num.format(status.total)} file · mới ${status.imported} · cập nhật ${status.updated || 0} · trùng ${status.duplicates} · bỏ qua ${status.skipped}${dropped} · lỗi ${status.errors}${status.current ? ` · ${status.current}` : ''}`;
       return;
     }
     if (status.finishedAt) {
       bar.hidden = false;
       bar.value = 100;
       line.textContent = status.total
-        ? `Nhập xong ${num.format(status.total)} file · nhập ${status.imported}, trùng ${status.duplicates}, bỏ qua ${status.skipped}, lỗi ${status.errors} · ${num.format(status.itemsTotal)} dòng hàng hóa.`
+        ? `Nhập xong ${num.format(status.total)} file · mới ${status.imported}, cập nhật ${status.updated || 0}, trùng ${status.duplicates}, bỏ qua ${status.skipped}${dropped}, lỗi ${status.errors} · ${num.format(status.itemsTotal)} dòng hàng hóa.`
         : `Không tìm thấy file XML nào cho MST ${status.mst || '…'} trong ${status.dir || '…'} (đã tìm cả thư mục con Mua_vao / Ban_ra).`;
       return;
     }
@@ -363,7 +484,7 @@
       try {
         const status = await api('/api/db/import/status');
         renderImport(status);
-        if (!status.running) { stopImportPolling(); if (status.imported) announceNew(status.imported); await refreshAll(); }
+        if (!status.running) { stopImportPolling(); if (status.imported || status.updated) announceNew((status.imported || 0) + (status.updated || 0)); await refreshAll(); }
       } catch { /* lần sau thử lại */ }
     }, 800);
   }
@@ -399,7 +520,11 @@
     $('autosync-days').value = value.settings.days;
     $('autosync-interval').value = value.settings.intervalMinutes;
     $('autosync-mst').textContent = value.mst ? `MST ${value.mst} · tự tra cứu → tải XML còn thiếu → nhập vào kho dữ liệu.` : 'Chọn một MST ở cột bên trái trước.';
-    const line = (label, state) => `${label}: ${state.status === 'error' ? `lỗi — ${state.lastError || ''}` : shortWhen(state.lastSuccess)}`;
+    // Trạng thái cuối LUÔN kèm mốc thời gian đã ghi; mốc này được ghi lại mỗi lượt Auto Sync.
+    const line = (label, state) => {
+      if (state.status === 'error') return `${label}: lỗi${state.lastErrorTime ? ` (${shortWhen(state.lastErrorTime)})` : ''} — ${state.lastError || ''}`;
+      return `${label}: ${shortWhen(state.lastSuccess)}`;
+    };
     const parts = [];
     if (value.running) parts.push(`Đang chạy: ${value.phase || '…'}`);
     parts.push(line('Mua vào', value.directions.buy), line('Bán ra', value.directions.sell));
@@ -515,9 +640,23 @@
 
     $('data-refresh').onclick = () => { savePrefs(); refreshAll(); };
     $('data-import').onclick = startImport;
-    $('data-export').onclick = exportProducts;
-    $('data-prev').onclick = () => { if (page > 0) { page -= 1; loadList().catch(fail); } };
-    $('data-next').onclick = () => { page += 1; loadList().catch(fail); };
+    // Menu "Xuất Excel": "Tải toàn bộ" hoặc mở từng nhóm (Hóa đơn / Hàng hóa / Đối tác)
+    // rồi chọn Mua vào · Bán ra (hoặc Nhà cung cấp · Khách hàng).
+    const exportMenu = $('data-export-menu');
+    const closeExportMenu = () => {
+      exportMenu.open = false;
+      for (const group of $('data-export-list').querySelectorAll('details.group')) group.open = false;
+    };
+    for (const button of $('data-export-list').querySelectorAll('button[data-part]')) {
+      button.onclick = () => { closeExportMenu(); exportExcel(button.dataset.part).catch(() => { /* đã báo lỗi bên trong */ }); };
+    }
+    document.addEventListener('click', event => { if (exportMenu.open && !exportMenu.contains(event.target)) closeExportMenu(); });
+
+    // Chọn nhanh Năm / Quý / Tháng.
+    $('data-period-mode').onchange = () => { paintPeriodMode(); applyPeriod(); };
+    for (const id of ['data-period-year', 'data-period-quarter', 'data-period-month']) $(id).onchange = applyPeriod;
+    $('data-prev').onclick = () => { if (page > 0) { page -= 1; loadList().catch(ignoreAbort); } };
+    $('data-next').onclick = () => { page += 1; loadList().catch(ignoreAbort); };
     $('data-size').onchange = () => { size = Number($('data-size').value) || 50; reloadAll(); };
     $('data-from').onchange = () => { range = { from: $('data-from').value, to: $('data-to').value, chip: 'custom' }; paintRange(); reloadAll(); };
     $('data-to').onchange = () => { range = { from: $('data-from').value, to: $('data-to').value, chip: 'custom' }; paintRange(); reloadAll(); };
@@ -541,9 +680,9 @@
     $('data-tab-products-btn').onclick = () => showDataTab('products');
     $('data-tab-list-btn').onclick = () => showDataTab('list');
     $('data-tab-partners-btn').onclick = () => showDataTab('partners');
-    bindSegment('data-seg-products', button => { tabState.products.dir = button.dataset.dir === 'all' ? '' : button.dataset.dir; loadProducts().catch(fail); });
-    bindSegment('data-seg-list', button => { tabState.list.dir = button.dataset.dir === 'all' ? '' : button.dataset.dir; page = 0; loadList().catch(fail); loadSummary().catch(fail); });
-    bindSegment('data-seg-partners', button => { tabState.partners.kind = button.dataset.kind; loadPartners().catch(fail); });
+    bindSegment('data-seg-products', button => { tabState.products.dir = button.dataset.dir === 'all' ? '' : button.dataset.dir; loadProducts().catch(ignoreAbort); });
+    bindSegment('data-seg-list', button => { tabState.list.dir = button.dataset.dir === 'all' ? '' : button.dataset.dir; page = 0; loadList().catch(ignoreAbort); loadSummary().catch(ignoreAbort); });
+    bindSegment('data-seg-partners', button => { tabState.partners.kind = button.dataset.kind; loadPartners().catch(ignoreAbort); });
 
     $('invoice-close').onclick = closeInvoice;
     $('invoice-print').onclick = printInvoice;
@@ -553,7 +692,7 @@
     $('autosync-save').onclick = saveAutoSync;
     $('autosync-run').onclick = runAutoSyncNow;
 
-    $('backfill-open').onclick = () => { $('backfill-dialog').showModal(); loadBackfill().catch(fail); };
+    $('backfill-open').onclick = () => { $('backfill-dialog').showModal(); loadBackfill().catch(ignoreAbort); };
     $('backfill-close').onclick = () => $('backfill-dialog').close();
     $('backfill-mode').onchange = syncBackfillFields;
     $('backfill-start').onclick = startBackfill;
@@ -580,6 +719,7 @@
         newInvoices = 0;
         $('data-new-badge').hidden = true;
         page = 0;
+        changeRevision = -1;
         if (view === 'data') refreshAll();
       }
     });
@@ -599,11 +739,27 @@
         if (window.notice) window.notice(`Đang nhập ${num.format(status.total)} file XML vào kho dữ liệu… mở tab “Kho dữ liệu” để xem tiến độ.`);
       }
       if (!status.running) {
-        if (seenImportRunning && status.imported) announceNew(status.imported);
+        if (seenImportRunning && (status.imported || status.updated)) announceNew((status.imported || 0) + (status.updated || 0));
         seenImportRunning = false;
       }
     } catch { /* lần sau thử lại */ }
   }, 3000);
+
+  // Scanner nền phát hiện XML mới/thay đổi; chỉ làm mới thống kê và bảng con đang mở.
+  setInterval(async () => {
+    if (view !== 'data' || changePollBusy || !app.selected) return;
+    changePollBusy = true;
+    try {
+      const status = await api('/api/db/changes');
+      if (changeRevision < 0) changeRevision = status.revision || 0;
+      else if ((status.revision || 0) > changeRevision) {
+        changeRevision = status.revision || 0;
+        announceNew((status.imported || 0) + (status.updated || 0));
+        await refreshVisibleData();
+      }
+    } catch { /* lần sau thử lại */ }
+    finally { changePollBusy = false; }
+  }, 1200);
 
   window.HD_DATA_VIEW = { show: showView, refresh: refreshAll, openAutoSync };
 })();

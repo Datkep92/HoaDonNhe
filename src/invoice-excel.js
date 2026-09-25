@@ -6,6 +6,7 @@
 // MST/số hóa đơn/ký hiệu = text, tiền = số, Tỷ giá = text "1.0", Tổng tiền phí để trống nếu không có.
 // Dữ liệu lấy từ CHÍNH kết quả tra cứu (không gọi API chi tiết, không tải XML/PDF).
 const XLSX = require('../resources/xlsx.cjs');
+const vnDate = require('./vn-date');
 
 const HEADERS = ['STT', 'Ký hiệu mẫu số', 'Ký hiệu hóa đơn', 'Số hóa đơn', 'Ngày lập', 'MST người bán/MST người xuất hàng', 'Tên người bán/Tên người xuất hàng', 'MST người mua/MST người nhận hàng', 'Tên người mua/Tên người nhận hàng', 'Địa chỉ người mua', 'Tổng tiền chưa thuế', 'Tổng tiền thuế', 'Tổng tiền chiết khấu thương mại', 'Tổng tiền phí', 'Tổng tiền thanh toán', 'Đơn vị tiền tệ', 'Tỷ giá', 'Trạng thái hóa đơn', 'Kết quả kiểm tra hóa đơn'];
 const WIDTHS = [7.36, 11.27, 11.27, 11.27, 19.09, 30.82, 30.82, 30.82, 30.82, 30.82, 11.27, 11.27, 19.09, 19.09, 19.09, 11.27, 11.27, 19.09, 50.36];
@@ -25,7 +26,11 @@ const text = value => (value === null || value === undefined ? '' : String(value
 const money = value => { const n = Number(value); return Number.isFinite(n) ? n : 0; };
 const optionalMoney = value => (value === null || value === undefined || value === '' ? null : money(value));
 const rate = value => (value === null || value === undefined || value === '' ? '' : Number(value).toFixed(1));
-const isoToDmy = value => { const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(value || '')); return m ? `${m[3]}/${m[2]}/${m[1]}` : ''; };
+// Ngày lập của cổng thuế (`tdlap`) là một MỐC thời gian UTC, ví dụ "2026-08-30T17:00:00Z" chính là
+// 00:00 ngày 31/08 giờ Việt Nam. Cắt thẳng 10 ký tự đầu sẽ lệch MỘT NGÀY (lỗi thật: tra
+// 01/08–31/08 mà file ghi "Từ ngày 31/07 đến ngày 30/08"). Quy đổi nằm ở src/vn-date.js.
+// `meta.from`/`meta.to` là ngày VN dạng YYYY-MM-DD nên đi qua đây cũng ra đúng như cũ.
+const isoToDmy = value => vnDate.dmy(value);
 
 // 1 dòng dữ liệu đúng 19 cột theo mẫu
 function rowOf(item, index) {

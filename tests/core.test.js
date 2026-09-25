@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const JSZip = require('jszip');
-const { Engine, dates, safeName, invoiceHtml } = require('../src/core');
+const { Engine, dates, safeName, invoiceHtml, canReuseSearch, classifyDownloadError, validateInvoiceXml } = require('../src/core');
 const account = { key: '123|user', mst: '0123456789', label: 'user' };
 const params = { from: '2026-01-01', to: '2026-01-31', direction: 'sold', family: 'query', formats: ['xml'], status: '' };
 function setup(t, request) {
@@ -18,6 +18,19 @@ test('calendar month split handles leap day and invalid dates', () => {
   assert.deepEqual(dates('2024-02-28', '2024-03-02'), [['2024-02-28', '2024-02-29'], ['2024-03-01', '2024-03-02']]);
   assert.throws(() => dates('2026-02-29', '2026-03-01'));
   assert.throws(() => dates('2026-03-02', '2026-03-01'));
+});
+test('download errors are classified for safe retry handling', () => {
+  assert.deepEqual(classifyDownloadError(new Error('TCT không phản hồi sau 30 giây.')).type, 'timeout');
+  assert.equal(classifyDownloadError(new Error('TCT trả HTTP 429.')).retryable, true);
+  assert.equal(classifyDownloadError(new Error('Gói tải không có XML.')).retryable, false);
+  assert.equal(classifyDownloadError(Object.assign(new Error('Hết phiên'), { auth: true })).type, 'auth');
+});
+test('downloaded XML must identify the requested invoice', () => {
+  const xml = '<HDon><DLHDon><TTChung><KHMSHDon>1</KHMSHDon><KHHDon>C26TAA</KHHDon><SHDon>9</SHDon></TTChung></DLHDon></HDon>';
+  assert.deepEqual(validateInvoiceXml(xml, invoice(9)), { number: '9', symbol: 'C26TAA', form: '1', verified: true });
+  assert.throws(() => validateInvoiceXml(xml, invoice(10)), /không khớp/i);
+  assert.equal(validateInvoiceXml('<HDon/>', invoice(9)).verified, false);
+  assert.equal(validateInvoiceXml(xml.replace('<SHDon>9</SHDon>', '<SHDon>00000009</SHDon>'), invoice(9)).verified, true, 'số 0 đầu không làm XML thành hóa đơn khác');
 });
 test('file names and HTML cannot introduce paths or active content', () => {
   assert(!/[<>:"/\\|?*]/.test(safeName('../../x:y')));
@@ -316,17 +329,46 @@ test('pause stops a running search right away and keeps what was found', async t
 test('pause also stops a running download mid-way', async t => {
   const zip = new JSZip(); zip.file('invoice.xml', '<?xml version="1.0"?><HDon/>');
   const bytes = await zip.generateAsync({ type: 'nodebuffer' });
-  const invoices = Array.from({ length: 5 }, (_, i) => invoice(i + 1));
-  const { dir, engine } = setup(t, async route => {
-    if (route.includes('export-xml')) { await new Promise(resolve => setTimeout(resolve, 80)); return bytes; }
+  // 20 hoá đơn để chắc chắn còn hoá đơn dở: luồng tải chạy NHIỀU worker song song nên không thể
+  // khẳng định "đúng 1 hoá đơn xong" — chỉ có thể chắc chắn ≥1 xong và < tổng.
+  const invoices = Array.from({ length: 20 }, (_, i) => invoice(i + 1));
+  const { dir, options } = setup(t, async route => {
+    if (route.includes('export-xml')) { await new Promise(resolve => setTimeout(resolve, 20)); return bytes; }
     return Buffer.from(JSON.stringify({ datas: invoices, total: invoices.length }));
   });
+  // Tạm dừng NGAY khi hoá đơn đầu tiên hoàn tất — mốc XÁC ĐỊNH qua emit, không dùng hẹn giờ, nên
+  // test không phụ thuộc tốc độ máy (trước đây dùng setTimeout(…,120) nên máy bận là done=0, đỏ oan).
+  let paused = false;
+  let engine = null;
+  engine = new Engine({
+    ...options,
+    emit: snapshot => { if (!paused && snapshot.done >= 1) { paused = true; engine.pause(); } },
+  });
   await engine.search({ ...params, formats: ['xml'] }, dir);
-  const running = engine.resume(true);
-  setTimeout(() => engine.pause(), 120);
-  const snapshot = await running;
+  const snapshot = await engine.resume(true);
   assert.equal(snapshot.state, 'paused');
-  assert.ok(snapshot.done >= 1 && snapshot.done < 5, `đã dừng giữa đường (done=${snapshot.done})`);
+  assert.ok(snapshot.done >= 1 && snapshot.done < invoices.length, `dừng giữa đường (done=${snapshot.done}/${invoices.length})`);
+});
+
+// GỐI ĐẦU: khi trang 1 còn cursor thì app LẤY TRƯỚC trang 2 (search-2) rồi mới bắt đầu tải trang 1
+// (download-1, download-2) — nhờ vậy cổng không bị nghỉ giữa hai trang. Trước đây thứ tự là tải xong
+// trang 1 mới tra cứu trang 2; đổi theo yêu cầu "tra cứu gối đầu để tải cuốn chiếu không bị delay".
+test('tải cuốn chiếu: LẤY TRƯỚC trang kế rồi tải trang hiện tại (gối đầu, không chờ hết trang)', async t => {
+  const zip = new JSZip(); zip.file('invoice.xml', '<?xml version="1.0"?><HDon/>');
+  const bytes = await zip.generateAsync({ type: 'nodebuffer' });
+  const events = [];
+  let page = 0;
+  const { dir, engine } = setup(t, async route => {
+    if (route.includes('export-xml')) { events.push(`download-${new URLSearchParams(route.split('?')[1]).get('shdon')}`); return bytes; }
+    page += 1; events.push(`search-${page}`);
+    return Buffer.from(JSON.stringify({ datas: [invoice(page)], total: 2, state: page === 1 ? 'next-page' : null }));
+  });
+  const snapshot = await engine.stream(params, dir);
+  assert.deepEqual(events, ['search-1', 'search-2', 'download-1', 'download-2'], 'search-2 (trang kế) phải được gọi TRƯỚC khi tải trang 1');
+  assert.equal(snapshot.state, 'completed');
+  assert.equal(snapshot.mode, 'stream');
+  assert.equal(snapshot.items.length, 2, 'UI chỉ nhận các hóa đơn tải thành công');
+  assert(snapshot.items.every(item => item.state === 'done'));
 });
 test('purchase invoices land in Mua_vao regardless of the issued-code state', async t => {
   const zip = new JSZip(); zip.file('invoice.xml', '<?xml version="1.0"?><HDon/>');
@@ -364,4 +406,86 @@ test('invalid XML response is kept as per-invoice failure', async t => {
   const { dir, engine } = setup(t, async route => Buffer.from(route.includes('export-xml') ? '{"message":"No XML"}' : JSON.stringify({ datas: [invoice(1)], total: 1 })));
   await engine.search(params, dir); await engine.resume(true);
   assert.equal(engine.job.state, 'partial'); assert.equal(engine.job.items[0].state, 'failed'); assert.equal(engine.job.items[0].files.length, 0);
+});
+test('retry does not inflate queued or failed counters', async t => {
+  const good = Buffer.from('<HDon><DLHDon><TTChung><KHMSHDon>1</KHMSHDon><KHHDon>C26TAA</KHHDon><SHDon>1</SHDon></TTChung></DLHDon></HDon>');
+  let attempts = 0;
+  const { dir, engine } = setup(t, async route => {
+    if (!route.includes('export-xml')) return Buffer.from(JSON.stringify({ datas: [invoice(1)], total: 1 }));
+    attempts += 1;
+    if (attempts === 1) throw new Error('network timeout');
+    return good;
+  });
+  await engine.search(params, dir); await engine.resume(true);
+  assert.deepEqual({ queued: engine.job.stats.queued, downloaded: engine.job.stats.downloaded, failed: engine.job.stats.failed }, { queued: 1, downloaded: 0, failed: 1 });
+  await engine.resume(true);
+  assert.deepEqual({ queued: engine.job.stats.queued, downloaded: engine.job.stats.downloaded, failed: engine.job.stats.failed }, { queued: 1, downloaded: 1, failed: 0 });
+});
+test('HTTP 429 pauses the queue instead of failing every remaining invoice', async t => {
+  const invoices = Array.from({ length: 10 }, (_, index) => invoice(index + 1));
+  let exports = 0;
+  const { dir, engine } = setup(t, async route => {
+    if (!route.includes('export-xml')) return Buffer.from(JSON.stringify({ datas: invoices, total: invoices.length }));
+    exports += 1;
+    throw new Error('TCT trả HTTP 429 – quá nhiều yêu cầu.');
+  });
+  await engine.search(params, dir); await engine.resume(true);
+  assert.equal(engine.job.state, 'paused');
+  assert.ok(exports <= 2, `chỉ các worker đang bay được phép lỗi, thực tế ${exports}`);
+  assert.ok(engine.job.stats.failed <= 2);
+});
+test('Tra cứu & tải ngay: CHỈ tái sử dụng danh sách khi điều kiện trùng hoàn toàn', () => {
+  const ready = { phase: 'download', state: 'ready', params: { ...params, formats: ['xml', 'pdf'] } };
+  const same = { ...params, formats: ['pdf', 'xml'] };
+  assert.equal(canReuseSearch(ready, same), true, 'cùng điều kiện (khác thứ tự formats) thì dùng lại danh sách');
+  assert.equal(canReuseSearch(ready, { ...same, from: '2025-12-01' }), false, 'khác TỪ NGÀY thì không dùng lại');
+  assert.equal(canReuseSearch(ready, { ...same, to: '2026-02-28' }), false, 'khác ĐẾN NGÀY thì không dùng lại');
+  assert.equal(canReuseSearch(ready, { ...same, direction: 'purchase' }), false, 'khác chiều mua/bán thì không dùng lại');
+  assert.equal(canReuseSearch(ready, { ...same, family: 'sco-query' }), false, 'khác nhóm hóa đơn thì không dùng lại');
+  assert.equal(canReuseSearch(ready, { ...same, formats: ['xml'] }), false, 'khác định dạng tải thì không dùng lại');
+  assert.equal(canReuseSearch(ready, { ...same, status: '1' }), false, 'khác trạng thái thì không dùng lại');
+  assert.equal(canReuseSearch({ phase: 'search', state: 'searching', params }, params), false, 'đang tra cứu thì không dùng lại');
+  assert.equal(canReuseSearch({ phase: 'search', state: 'partial', params }, params), false, 'tra cứu dở thì không dùng lại');
+  assert.equal(canReuseSearch({ phase: 'download', state: 'paused', params }, params), false, 'job tạm dừng thì không dùng lại (phải bấm Tải tiếp)');
+  assert.equal(canReuseSearch(null, params), false, 'chưa có lượt nào thì không dùng lại');
+});
+test('Mở lại EXE giữa lúc đang chạy: job chuyển "paused", KHÔNG tự chạy, không chiếm trạng thái bận', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hoadon-interrupt-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const store = path.join(dir, 'job.json');
+  fs.writeFileSync(store, JSON.stringify({ version: 1, id: 'x', account, output: dir, params, tasks: [], items: [], phase: 'download', state: 'downloading', mode: 'stream', message: 'Đang tải...' }));
+  let calls = 0;
+  const engine = new Engine({
+    store, identity: async () => account, request: async () => { calls += 1; return Buffer.from('{}'); },
+    emit: () => {}, pdf: async () => Buffer.alloc(0), excel: async () => Buffer.alloc(0),
+  });
+  assert.equal(engine.job.state, 'paused', 'lượt dở phải nằm ở trạng thái tạm dừng, không tự chạy');
+  assert.equal(engine.interrupted, true, 'phải ghi nhớ lượt bị ngắt để người dùng chủ động Tải tiếp');
+  assert.equal(engine.busy, false, 'không được chiếm trạng thái bận ⇒ form đăng nhập vẫn bấm được');
+  assert.equal(calls, 0, 'không được gọi mạng khi chưa có phiên đăng nhập');
+});
+
+test('Tải ngay: gối đầu TRANG KẾ trong lúc tải trang hiện tại (không ngồi chờ hết trang)', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hoadon-prefetch-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const calls = [];
+  const request = async query => {
+    const q = String(query);
+    if (q.includes('export-xml')) { calls.push('xml'); return Buffer.from('<?xml version="1.0" encoding="UTF-8"?><HDon/>'); }
+    const matched = /[?&]state=([^&]*)/.exec(q);
+    const cursor = matched ? decodeURIComponent(matched[1]) : '';
+    calls.push('page:' + (cursor || 'first'));
+    if (!cursor) return Buffer.from(JSON.stringify({ datas: [invoice(1), invoice(2)], total: 4, state: 'c1' }));
+    return Buffer.from(JSON.stringify({ datas: [invoice(3), invoice(4)], total: 4, state: '' }));
+  };
+  const engine = new Engine({
+    store: path.join(dir, 'job.json'), identity: async () => account, request,
+    emit: () => {}, pdf: async () => Buffer.alloc(0), excel: async () => Buffer.alloc(0),
+  });
+  await engine.stream(params, dir);
+  assert.deepEqual(calls.slice(0, 2), ['page:first', 'page:c1'], 'phải LẤY TRƯỚC trang kế (bằng cursor vừa nhận) ngay khi trang đầu xong');
+  assert.ok(calls.slice(2).every(x => x === 'xml'), 'chỉ sau khi đã lấy trước trang kế mới bắt đầu tải XML của trang hiện tại');
+  assert.equal(engine.job.stats.prefetched, 1, 'phải ghi nhận số trang đã gối đầu');
+  assert.equal(engine.job.state, 'completed');
+  assert.equal(engine.job.items.length, 4, 'không được mất hóa đơn nào');
 });

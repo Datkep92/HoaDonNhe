@@ -62,7 +62,7 @@
       const value = await call('/api/support/device');
       $('support-room').textContent = value.device.chatRoomId;
       $('support-license').textContent = licenseLabel(value.license && value.license.status);
-      $('support-mode').textContent = value.mode === 'gateway' ? 'Đã kết nối máy chủ hỗ trợ (Sheet · Telegram)' : 'Chế độ local — chưa kết nối máy chủ hỗ trợ';
+      $('support-mode').textContent = value.mode === 'gateway' ? 'Kết nối máy chủ' : 'Ngắt kết nối máy chủ';
     } catch { /* giữ nguyên nội dung cũ */ }
   }
   function renderMessages(list) {

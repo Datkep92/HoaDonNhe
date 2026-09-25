@@ -16,6 +16,7 @@ const path = require('node:path');
 
 const { parseInvoiceXml, buildImportRecord, detectDirection, toVietnamDate } = require('../src/data/xml-parser');
 const { scanXmlFolder, listMstXmlFiles } = require('../src/data/xml-scanner');
+const { createXmlWatcher } = require('../src/data/xml-watcher');
 const { runImport } = require('../src/data/xml-import');
 const { openDatabase, closeDatabase } = require('../src/data/sqlite');
 const { findInvoiceByKey, countInvoices, countItems, itemsOfInvoice } = require('../src/data/repository');
@@ -110,6 +111,14 @@ test('Test 7 – SELL: NBan/MST trùng MST hiện tại, NMua không có MST', a
   assert.equal(record.tenMua, 'Bán cho người tiêu dùng', 'đọc HVTNMHang khi không có Ten');
 });
 
+test('một hồ sơ nhận diện nhiều CCCD/MST khi xác định chiều hóa đơn', async () => {
+  const identifiers = [MST, '4500002040', '058168003130'];
+  const sold = parseInvoiceXml(buildXml({ sellerMst: '4500002040', buyerNoMst: true })).record;
+  const bought = parseInvoiceXml(buildXml({ sellerMst: OTHER, buyerMst: '058168003130' })).record;
+  assert.equal(detectDirection(sold, identifiers), 'SELL');
+  assert.equal(detectDirection(bought, identifiers), 'BUY');
+});
+
 test('Test 8 – XML không xác định được hướng ⇒ UNKNOWN, không đoán', async () => {
   const { record } = parseInvoiceXml(buildXml({ sellerMst: '0100000009', buyerMst: '0100000008' }));
   assert.equal(detectDirection(record, MST), 'UNKNOWN');
@@ -159,6 +168,42 @@ test('Test 1/2/3 – quét thư mục: import đủ, chạy lại thì bỏ qua,
     assert.equal(countInvoices(db), 1);
     assert.equal(countItems(db), 2);
   });
+});
+
+test('XML cùng đường dẫn thay đổi thì UPSERT hóa đơn và dòng hàng', async () => {
+  await withScannerDir(async ({ dir, db }) => {
+    const file = write(dir, 'Mua_vao', 'thay-doi.xml', buildXml({ items: [sampleItem(1)] }));
+    const first = await scanXmlFolder({ db, mst: MST, mstDir: dir });
+    assert.equal(first.imported, 1);
+    assert.equal(countItems(db), 1);
+
+    fs.writeFileSync(file, buildXml({ items: [sampleItem(1), sampleItem(2), sampleItem(3)] }));
+    const second = await scanXmlFolder({ db, mst: MST, mstDir: dir });
+    assert.equal(second.updated, 1);
+    assert.equal(second.duplicates, 0);
+    assert.equal(countInvoices(db), 1);
+    assert.equal(countItems(db), 3);
+    assert.equal(db.prepare('SELECT COUNT(*) AS c FROM imported_files WHERE file_path = ?').get(file).c, 2);
+  });
+});
+
+test('scanner nhập XML khớp MST bổ sung vào kho của MST chính', async () => {
+  await withScannerDir(async ({ dir, db }) => {
+    write(dir, 'Mua_vao', 'cccd-phu.xml', buildXml({ buyerMst: '058168003130', shDon: '00000888' }));
+    const result = await scanXmlFolder({ db, mst: MST, identifiers: [MST, '4500002040', '058168003130'], mstDir: dir });
+    assert.equal(result.imported, 1);
+    assert.equal(result.errors, 0);
+    assert.equal(db.prepare('SELECT direction FROM invoices').get().direction, 'BUY');
+  });
+});
+
+test('watcher chỉ nhận sự kiện XML nằm trong thư mục MST', () => {
+  const watcher = createXmlWatcher();
+  assert.equal(watcher.mstFromFilename('MST-0312345678\\Mua_vao\\a.xml'), MST);
+  assert.equal(watcher.mstFromFilename('MST-0312345678/Ban_ra/a.XML'), MST);
+  assert.equal(watcher.mstFromFilename('MST-0312345678/data.db'), '');
+  assert.equal(watcher.mstFromFilename('khac/a.xml'), '');
+  watcher.stop();
 });
 
 test('Test 9 + §71 – một XML lỗi KHÔNG làm dừng cả lượt quét', async () => {

@@ -5,6 +5,7 @@ const net = require('node:net');
 const { spawn } = require('node:child_process');
 const CDP = require('chrome-remote-interface');
 const pace = require('./pace');
+const mstFormat = require('./mst-format');
 const loginSource = fs.readFileSync(path.join(__dirname, 'tax-login.js'), 'utf8');
 const TAX_HOME = 'https://hoadondientu.gdt.gov.vn/';
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -14,6 +15,22 @@ function browserPath() {
   return '';
 }
 function availablePort() { return new Promise((resolve, reject) => { const server = net.createServer(); server.once('error', reject); server.listen(0, '127.0.0.1', () => { const port = server.address().port; server.close(error => error ? reject(error) : resolve(port)); }); }); }
+// Tắt trình quản lý mật khẩu của Chrome cho profile này.
+// Cờ dòng lệnh che được bong bóng "Lưu mật khẩu?", nhưng cờ có thể bị bỏ qua giữa các bản Chrome,
+// nên ghi thẳng vào Preferences của profile — đây là dữ liệu Chrome TỰ ĐỌC lúc khởi động:
+//   credentials_enable_service=false  → tắt dịch vụ lưu mật khẩu
+//   profile.password_manager_enabled=false → tắt tính năng quản lý mật khẩu
+//   profile.password_manager_leak_detection=false → tắt cảnh báo rò rỉ mật khẩu
+// Ghi kiểu GỘP (đọc → sửa → ghi) để không phá các thiết lập khác của profile; file hỏng thì tạo mới.
+function disablePasswordManager(profileDir) {
+  const file = path.join(profileDir, 'Default', 'Preferences');
+  let data = {};
+  try { const raw = JSON.parse(fs.readFileSync(file, 'utf8')); if (raw && typeof raw === 'object') data = raw; } catch { /* chưa có hoặc hỏng */ }
+  data.credentials_enable_service = false;
+  data.credentials_enable_autosignin = false;
+  data.profile = { ...(data.profile && typeof data.profile === 'object' ? data.profile : {}), password_manager_enabled: false, password_manager_leak_detection: false };
+  try { fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, JSON.stringify(data)); return true; } catch { return false; }
+}
 function jwtAccount(token) {
   try {
     const payload = JSON.parse(Buffer.from(String(token).split('.')[1], 'base64url').toString('utf8')); if (payload.exp && payload.exp * 1000 <= Date.now()) return null;
@@ -30,14 +47,18 @@ class TaxBrowser {
     if (this.process && !this.process.killed) this.process.kill(); this.process = null; this.port = 0; this.visible = false;
   }
   async open(mst, visible) {
-    if (!/^\d+$/.test(String(mst))) throw new Error('MST chỉ được gồm chữ số.');
+    if (!mstFormat.isValidMst(mst)) throw new Error(mstFormat.MST_HINT);
+
     if (this.client && this.mst === mst) {
       try { await this.eval('1'); if (visible) await this.show(); else await this.hide(); return; }
       catch { await this.close(); }
     }
     await this.close(); const executablePath = browserPath(); if (!executablePath) throw new Error('Không tìm thấy Google Chrome hoặc Microsoft Edge. Cài một trong hai trình duyệt rồi thử lại.');
     const port = await availablePort(); const profile = path.join(this.root, 'profiles', mst); fs.mkdirSync(profile, { recursive: true });
-    const args = [`--remote-debugging-port=${port}`, '--remote-debugging-address=127.0.0.1', '--remote-allow-origins=http://127.0.0.1', `--user-data-dir=${profile}`, '--no-first-run', '--no-default-browser-check', '--disable-background-networking', '--disable-component-update', '--disable-sync', '--new-window', TAX_HOME];
+    disablePasswordManager(profile);
+    // Không hỏi lưu mật khẩu trên cửa sổ cổng thuế: tắt bong bóng + các tính năng autofill/khe rò mật khẩu.
+    // Cần cho cả form đăng nhập trong app (UI) lẫn form đăng nhập của cổng thuế.
+    const args = [`--remote-debugging-port=${port}`, '--remote-debugging-address=127.0.0.1', '--remote-allow-origins=http://127.0.0.1', `--user-data-dir=${profile}`, '--no-first-run', '--no-default-browser-check', '--disable-background-networking', '--disable-component-update', '--disable-sync', '--disable-save-password-bubble', '--disable-features=PasswordManagerOnboarding,PasswordLeakDetection,AutofillServerCommunication,AutofillEnableAccountWalletStorage', '--new-window', TAX_HOME];
     if (!visible) args.push('--start-minimized'); this.process = spawn(executablePath, args, { windowsHide: !visible, stdio: 'ignore' }); this.port = port;
     let error; for (let n = 0; n < 80; n += 1) {
       try { const tabs = await CDP.List({ host: '127.0.0.1', port }); const tab = tabs.find(x => x.type === 'page' && x.url.includes('hoadondientu.gdt.gov.vn')) || tabs.find(x => x.type === 'page'); if (tab) { this.client = await CDP({ host: '127.0.0.1', port, target: tab }); break; } } catch (caught) { error = caught; }
@@ -89,7 +110,7 @@ class TaxBrowser {
       account.mst = await this.eval(`(() => { const s = window.__NEXT_REDUX_STORE__?.getState?.() || {}; const codes = new Set(); const seen = new WeakSet(); function visit(o, depth) { if (!o || typeof o !== 'object' || Array.isArray(o) || depth > 5 || seen.has(o)) return; seen.add(o); for (const [k,v] of Object.entries(o)) { if (/^(mst|maSoThue|ma_so_thue|taxCode|tax_code)$/i.test(k) && /^(\\d{10}(?:-\\d{3})?|\\d{13})$/.test(String(v))) codes.add(String(v)); else if (typeof v === 'object') visit(v,depth+1); } } for (const [k,v] of Object.entries(s)) if (/auth|user|profile|account|taxpayer|nnt/i.test(k)) visit(v,0); return codes.size === 1 ? [...codes][0] : ''; })()`);
     }
     if (!account.mst) throw new Error('Đã có token nhưng chưa xác định được MST từ tài khoản cổng thuế; chưa cho phép tải để tránh nhầm doanh nghiệp.');
-    if (account.mst !== expectedMst) throw new Error(`Phiên đang là MST ${account.mst}, không khớp MST ${expectedMst}.`);
+    if (!mstFormat.mstAliases(expectedMst).includes(String(account.mst))) throw new Error(`Phiên đang là MST ${account.mst}, không khớp hồ sơ ${expectedMst}.`);
     return account;
   }
   async request(route, action, check) {
@@ -107,4 +128,4 @@ class TaxBrowser {
     finally { try { await client.close(); } catch {}; try { await CDP.Close({ host: '127.0.0.1', port: this.port, id: target.id }); } catch {} }
   }
 }
-module.exports = { TaxBrowser, browserPath, jwtAccount };
+module.exports = { TaxBrowser, browserPath, jwtAccount, disablePasswordManager };

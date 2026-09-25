@@ -19,6 +19,12 @@ aside h2{margin:17px 0 22px}
 .mst-info{min-width:0;flex:1}
 .mst-info strong{display:block;font-size:12px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .mst-info small{display:block;font-size:10px;color:#93aec7;margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+/* Banner trạng thái Auto Sync ngay trên dòng MST: nhìn danh sách là biết MST nào đang làm gì. */
+.mst-banner{display:block;font-size:10px;font-weight:600;margin-top:4px;padding:2px 7px;border-radius:999px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.mst-banner.running{background:#1d3f5c;color:#7fd4ff}
+.mst-banner.done{background:#1c4436;color:#5fe0b0}
+.mst-banner.empty{background:#2a3b4d;color:#9db6ce}
+.mst-banner.error{background:#4a2230;color:#ff9db0}
 .row-menu{background:transparent;border:0;color:#9db6ce;padding:2px 6px;font-size:15px;line-height:1}
 .row-menu:hover{color:#fff;background:#2a4a68}
 .row-menu-panel{position:absolute;right:6px;top:calc(100% - 2px);z-index:12;background:#fff;border:1px solid #dfe7ef;border-radius:9px;box-shadow:0 12px 30px #102b3540;padding:5px;min-width:200px;display:flex;flex-direction:column}
@@ -28,6 +34,8 @@ aside h2{margin:17px 0 22px}
 .side-actions{display:flex;flex-direction:column;gap:8px;margin:14px 0 0}
 .side-actions button{width:100%;padding:11px 12px;background:#1f3a54;border-color:#2c4a67;color:#dcebf7}
 .side-actions button.primary{background:#087f70;border-color:#0a8f7e;color:#fff}
+.search-actions{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.search-actions button{width:100%}
 .side-license{display:flex;flex-direction:column;gap:7px;margin-top:12px;padding-top:12px;border-top:1px solid #263d55}
 .side-license strong{font-size:10px;letter-spacing:1px;text-transform:uppercase;color:#7df3d5;font-weight:700}
 .side-license button{width:100%;padding:9px 10px;font-size:11px}
@@ -132,3 +140,7 @@ tbody tr.clickable td:last-child::after{content:' ↗';color:#8a97a7}
 .account .account-mst{flex:0 0 auto;font-size:11px;font-weight:700;letter-spacing:.4px;background:#eef5f5;color:#517c78;border-radius:5px;padding:4px 9px;font-variant-numeric:tabular-nums}
 .account .account-name{font-size:15px;font-weight:700;color:#087f70;max-width:56ch;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 @media(max-width:900px){.account .account-name{max-width:32ch}}
+.mst-stop{background:transparent;border:0;color:#9db6ce;padding:4px 6px;font-size:0;line-height:1;border-radius:6px;flex:0 0 auto;display:inline-flex;align-items:center;justify-content:center}
+.mst-stop:hover{color:#fff;background:#2a4a68}
+.mst-stop:disabled{opacity:.35;cursor:not-allowed}
+.mst-stop:disabled:hover{background:transparent;color:#9db6ce}

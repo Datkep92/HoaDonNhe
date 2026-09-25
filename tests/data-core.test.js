@@ -11,7 +11,7 @@ const os = require('node:os');
 const path = require('node:path');
 
 const data = require('../src/data');
-const { openDatabase, closeDatabase, withTransaction, tableNames, schemaVersion, applySchema } = require('../src/data/sqlite');
+const { openDatabase, closeDatabase, withTransaction, tableNames, schemaVersion, applySchema, SCHEMA_VERSION } = require('../src/data/sqlite');
 const { insertInvoice, findInvoiceByKey, countInvoices, countItems, itemsOfInvoice, recordImportedFile, listInvoices, setSyncState, getSyncState } = require('../src/data/repository');
 const { buildInvoiceKey, parseInvoiceKey, stripLeadingZeros } = require('../src/data/invoice-key');
 const mstManager = require('../src/data/mst-manager');
@@ -81,19 +81,19 @@ test('khoá hoá đơn GIỮ NGUYÊN số 0 đầu của MST (MST Việt Nam th�
 
 test('mở data.db: tạo đủ 4 bảng + index và đặt schema version', () => {
   withDatabase((db, dir) => {
-    assert.equal(schemaVersion(db), 1);
+    assert.equal(schemaVersion(db), SCHEMA_VERSION, 'schema version phải theo đúng hằng số trong schema.js, không cứng số');
     const names = tableNames(db);
     for (const table of ['imported_files', 'invoice_items', 'invoices', 'sync_state']) {
       assert.ok(names.includes(table), `thiếu bảng ${table}`);
     }
     const indexes = db.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name NOT LIKE 'sqlite_%'").all().map(r => r.name);
-    for (const index of ['idx_invoice_key', 'idx_invoice_date', 'idx_invoice_direction', 'idx_invoice_sell_mst', 'idx_invoice_buy_mst', 'idx_invoice_number', 'idx_item_code', 'idx_item_invoice']) {
+    for (const index of ['idx_invoice_key', 'idx_invoice_date', 'idx_invoice_direction', 'idx_invoice_sell_mst', 'idx_invoice_buy_mst', 'idx_invoice_number', 'idx_invoice_direction_date', 'idx_invoice_symbol_number', 'idx_invoice_updated', 'idx_item_code', 'idx_item_invoice']) {
       assert.ok(indexes.includes(index), `thiếu index ${index}`);
     }
     assert.equal(db.prepare('PRAGMA journal_mode').get().journal_mode, 'wal');
     assert.ok(fs.existsSync(path.join(dir, 'data.db')));
     // Mở lại lần hai: không tạo lại schema, không lỗi.
-    assert.deepEqual(applySchema(db), { changed: false, version: 1 });
+    assert.deepEqual(applySchema(db), { changed: false, version: SCHEMA_VERSION });
   });
 });
 
@@ -213,7 +213,7 @@ test('MST manager: tạo vùng dữ liệu MST với data.db + sync.json + 2 th�
       const state = mstManager.readSyncState(syncFile);
       assert.equal(state.buy.status, 'idle');
       assert.equal(state.sell.status, 'idle');
-      assert.equal(schemaVersion(db), 1);
+      assert.equal(schemaVersion(db), SCHEMA_VERSION);
     } finally {
       closeDatabase(db);
     }
@@ -235,7 +235,7 @@ test('MST manager: tạo vùng dữ liệu MST với data.db + sync.json + 2 th�
 test('bộ tự kiểm tra tầng dữ liệu (dùng cho EXE) chạy đúng', () => {
   const result = runSelfCheck();
   assert.equal(result.ok, true, JSON.stringify(result));
-  assert.equal(result.schema_version, 1);
+  assert.equal(result.schema_version, SCHEMA_VERSION);
   assert.equal(result.invoices, 1);
   assert.equal(result.items, 1);
   assert.equal(result.duplicate_blocked, true);

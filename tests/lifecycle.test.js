@@ -80,12 +80,32 @@ test('helper khay gọi endpoint bằng .NET WebRequest (PowerShell 5.1 KHÔNG g
   assert.ok(tray.includes('$fails -ge 20'), 'chỉ tự đóng sau nhiều lần liên tiếp không phản hồi');
 });
 
-test('ensureTray: chỉ báo thành công SAU KHI kiểm chứng helper còn sống + tự phục hồi icon khay', () => {
+test('ensureTray: báo thành công SAU KHI kiểm chứng helper sống + phục hồi THEO SỰ KIỆN, không hỏi vòng', () => {
   const ensure = functionBody('ensureTray');
-  assert.ok(ensure.includes('superviseTray()'), 'phải bật cơ chế tự phục hồi icon khay');
   assert.ok(ensure.includes('child.exitCode === null'), 'phải kiểm chứng helper còn sống trước khi ghi log thành công');
-  const supervise = functionBody('superviseTray');
-  assert.ok(supervise.includes('setInterval'), 'superviseTray phải định kỳ dựng lại icon khay');
+  assert.ok(ensure.includes("child.on('exit'"), 'phải phục hồi icon khay khi helper thoát');
+  assert.ok(ensure.includes('scheduleTrayRetry()'), 'handler thoát phải hẹn dựng lại icon khay');
+  // Bỏ hẳn bộ quét định kỳ 20 giây: lúc bình thường không được có timer nào chạy.
+  assert.ok(!source.includes('superviseTray'), 'đã bỏ bộ đếm 20 giây — không còn superviseTray');
+  assert.ok(!source.includes('trayBusy'), 'đã bỏ biến timer định kỳ trayBusy');
+  assert.ok(!ensure.includes('setInterval'), 'ensureTray không được hỏi vòng định kỳ');
+  const retry = functionBody('scheduleTrayRetry');
+  assert.ok(!retry.includes('setInterval'), 'bộ hẹn lại cũng không được hỏi vòng định kỳ');
+  assert.ok(retry.includes('Math.max(5000'), 'chờ tối thiểu 5 giây giữa hai lần dựng lại');
+  assert.ok(retry.includes('trayStopped'), 'đã Thoát hoàn toàn thì không hẹn lại');
+  // Thiếu bước này thì helper chết sớm bị bỏ rơi vĩnh viễn (đã kiểm bằng mô phỏng).
+  assert.ok(retry.includes('if (!trayAlive()) scheduleTrayRetry()'), 'còn trong thời gian lùi thì phải hẹn lại, không bỏ rơi icon khay');
+  // Chết sớm thì lùi dần, chết sau khi đã sống đủ lâu thì chỉ chờ 5 giây.
+  assert.ok(ensure.includes('TRAY_STABLE_MS'), 'phải phân biệt chết sớm với đã sống đủ lâu');
+  assert.ok(ensure.includes('trayFailCount += 1'), 'chết sớm phải tăng số lần lỗi để lùi dần');
+  assert.ok(ensure.includes('Math.min(300000'), 'lùi tối đa 5 phút');
+  // Chỉ MỘT nơi quyết định lỗi/lùi — nếu bộ hẹn 2,5 giây cũng phạt thì bị trừ hai lần cho cùng lần hỏng.
+  const logCheck = ensure.slice(ensure.indexOf('setTimeout(() => {'), ensure.indexOf('}, TRAY_STABLE_MS)'));
+  assert.ok(!/trayFailCount \+= 1/.test(logCheck), 'bộ hẹn thành công KHÔNG được tăng số lần lỗi (tránh trừ hai lần)');
+  assert.ok(!/trayNextTry\s*=/.test(logCheck), 'bộ hẹn thành công KHÔNG được đặt thời gian lùi — chỉ child.exit() mới quyết định');
+  const stop = functionBody('stopTray');
+  assert.ok(stop.includes('trayStopped = true'), 'stopTray phải đánh dấu đã dừng để không dựng lại');
+  assert.ok(stop.includes('trayRetryTimer'), 'stopTray phải huỷ lần dựng lại đang chờ');
 });
 
 test('stop(): đóng cửa sổ giao diện + thoát tiến trình CHẮC CHẮN (không treo ở server.close)', () => {
@@ -139,7 +159,7 @@ test('cửa sổ app: tắt bong bóng dịch của Chrome (--disable-features=T
 
 test('không đụng nghiệp vụ: SQLite/API/updater/engine vẫn như cũ', () => {
   // Các dấu vết nghiệp vụ phải còn nguyên trong server.js
-  for (const marker of ['data.mst.ensureMst({ output, mst })', '/api/db/invoices', 'autoSync().run(', 'updater.status()']) {
+  for (const marker of ['data.mst.ensureMst({ output, mst })', '/api/db/invoices', 'runAutoSyncFor(', 'updater.status()']) {
     assert.ok(source.includes(marker), `mất dấu vết nghiệp vụ: ${marker}`);
   }
 });

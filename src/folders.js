@@ -6,22 +6,19 @@ const fs = require('node:fs');
 const path = require('node:path');
 const PROBE = '.hoa-don-thu-ghi.part';
 
-async function ensureFolder(folder) {
-  const value = String(folder ?? '').trim();
+async function ensureFolder(input) {
+  const value = String(input ?? '').trim();
   if (!value) throw new Error('Chưa chọn thư mục lưu. Bấm “Chọn thư mục…” rồi chọn một thư mục.');
   if (!path.isAbsolute(value)) throw new Error('Đường dẫn phải đầy đủ, ví dụ D:\\HoaDon\\2026.');
-  if (/^[A-Za-z]:[\\/]?$/.test(value)) {
-    const drive = value.replace(/[\\/]+$/, '') || value;
-    throw new Error(`"${value}" là ổ đĩa gốc nên không ghi trực tiếp được. Chọn một thư mục con, ví dụ ${drive}\\HoaDon\\2026.`);
-  }
-  try { await fs.promises.mkdir(value, { recursive: true }); }
-  catch (error) { throw new Error(`Không tạo được thư mục "${value}" (${error.code || error.message}). Kiểm tra ổ đĩa rồi chọn lại.`); }
-  const probe = path.join(value, PROBE);
+  const target = /^[A-Za-z]:[\\/]?$/.test(value) ? path.join(value.replace(/[\\/]+$/, '') + path.sep, 'CN-invoice') : value;
+  try { await fs.promises.mkdir(target, { recursive: true }); }
+  catch (error) { throw new Error(`Không tạo được thư mục "${target}" (${error.code || error.message}). Kiểm tra ổ đĩa rồi chọn lại.`); }
+  const probe = path.join(target, PROBE);
   try { await fs.promises.writeFile(probe, 'ok'); await fs.promises.unlink(probe); }
   catch (error) {
-    throw new Error(`Không ghi được vào thư mục "${value}" (${error.code || error.message}). Ổ đĩa có thể chỉ đọc (đĩa CD/DVD) hoặc bị chặn quyền — chọn thư mục khác.`);
+    throw new Error(`Không ghi được vào thư mục "${target}" (${error.code || error.message}). Ổ đĩa có thể chỉ đọc (đĩa CD/DVD) hoặc bị chặn quyền — chọn thư mục khác.`);
   }
-  return value;
+  return target;
 }
 
 module.exports = { ensureFolder, PROBE };

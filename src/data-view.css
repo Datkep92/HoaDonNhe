@@ -126,3 +126,49 @@
   #invoice-dialog.invoice-dialog { width: 98vw; max-width: 98vw; }
   .invoice-frame-wrap { height: calc(96vh - 160px); }
 }
+
+/* ---- Chọn nhanh Năm / Quý / Tháng trong bộ lọc Kho dữ liệu ---- */
+.data-period { display: flex; align-items: center; gap: 6px; flex: 0 0 auto; }
+.data-period select { height: 38px; margin-top: 0; width: auto; }
+.data-period-label {
+  font-size: 11.5px; font-weight: 700; color: #087f70; background: #e6f5f2;
+  border-radius: 999px; padding: 5px 11px; white-space: nowrap;
+}
+.data-period-label:empty { display: none; }
+
+/* ---- Menu "Xuất Excel": tất cả hoặc từng bảng riêng ---- */
+.data-export { position: relative; flex: 0 0 auto; }
+.data-export > summary {
+  list-style: none; cursor: pointer; display: inline-flex; align-items: center; gap: 6px;
+  padding: 9px 14px; border-radius: 8px; border: 1px solid #cfd8e3; background: #fff;
+  font-size: 13px; font-weight: 600; color: #24303f; user-select: none;
+}
+.data-export > summary::-webkit-details-marker { display: none; }
+.data-export > summary::after { content: "▾"; font-size: 11px; }
+.data-export[open] > summary { border-color: #087f70; color: #087f70; }
+.data-export > summary[aria-busy="true"] { opacity: .6; pointer-events: none; }
+.data-export-list {
+  position: absolute; z-index: 30; top: calc(100% + 6px); left: 0; min-width: 230px;
+  background: #fff; border: 1px solid #cfd8e3; border-radius: 10px; padding: 6px;
+  box-shadow: 0 12px 28px rgba(16, 32, 48, .18); display: flex; flex-direction: column; gap: 2px;
+}
+.data-export-list button {
+  text-align: left; background: none; border: 0; border-radius: 7px; padding: 9px 11px;
+  font-size: 13px; color: #24303f; cursor: pointer;
+}
+.data-export-list button:hover { background: #e6f5f2; color: #087f70; }
+.data-export-list button.all { font-weight: 700; }
+.data-export-list .sep { height: 1px; background: #e6ecf3; margin: 4px 2px; }
+
+/* Nhóm con: Hóa đơn / Hàng hóa / Đối tác → Mua vào · Bán ra (hoặc NCC · Khách hàng) */
+.data-export-list .group > summary {
+  list-style: none; cursor: pointer; display: flex; align-items: center; justify-content: space-between;
+  padding: 9px 11px; border-radius: 7px; font-size: 13px; font-weight: 600; color: #24303f;
+}
+.data-export-list .group > summary::-webkit-details-marker { display: none; }
+.data-export-list .group > summary::after { content: "›"; font-size: 15px; color: #8b98a8; transition: transform .12s; }
+.data-export-list .group[open] > summary { background: #f2f6fa; }
+.data-export-list .group[open] > summary::after { transform: rotate(90deg); color: #087f70; }
+.data-export-list .group > summary:hover { background: #e6f5f2; color: #087f70; }
+.data-export-list .sub { display: flex; flex-direction: column; gap: 2px; padding: 2px 0 4px 10px; border-left: 2px solid #e6ecf3; margin: 2px 0 2px 11px; }
+.data-export-list .sub button { font-size: 12.5px; padding: 7px 10px; }

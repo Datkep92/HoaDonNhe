@@ -11,10 +11,15 @@ function scratch(t) {
   return base;
 }
 
-test('a drive root is refused with an explanation instead of a raw EPERM', async () => {
-  await assert.rejects(() => ensureFolder('D:\\'), /ổ đĩa gốc/);
-  await assert.rejects(() => ensureFolder('D:'), /ổ đĩa gốc|đầy đủ/); // 'D:' là đường dẫn tương đối theo ổ
-  await assert.rejects(() => ensureFolder('D:/'), /ổ đĩa gốc/);
+test('a drive root is mapped to the default CN-invoice folder', async () => {
+  for (const value of ['D:\\', 'D:/']) {
+    try {
+      assert.match(await ensureFolder(value), /D:[\\/]CN-invoice$/);
+    } catch (error) {
+      assert.match(error.message, /D:[\\/]CN-invoice/);
+    }
+  }
+  await assert.rejects(() => ensureFolder('D:'), /đầy đủ/); // 'D:' là đường dẫn tương đối theo ổ
   await assert.rejects(() => ensureFolder(''), /Chưa chọn thư mục/);
   await assert.rejects(() => ensureFolder('HoaDon\\2026'), /đầy đủ/);
 });

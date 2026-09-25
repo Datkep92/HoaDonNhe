@@ -9,9 +9,10 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { DatabaseSync } = require('node:sqlite');
 
-const { openDatabase, closeDatabase } = require('../src/data/sqlite');
-const { insertInvoice } = require('../src/data/repository');
+const { openDatabase, closeDatabase, schemaVersion } = require('../src/data/sqlite');
+const { insertInvoice, upsertInvoice } = require('../src/data/repository');
 const queries = require('../src/data/queries');
 const importJob = require('../src/data/import-job');
 
@@ -218,4 +219,89 @@ test('partners: kind=all trả cả nhà cung cấp lẫn khách hàng, có cộ
     assert.equal(queries.partners(db, { kind: 'supplier' }).length, 1);
     assert.equal(queries.partners(db, { kind: 'buyer' }).length, 1);
   });
+});
+
+test('listInvoices: FTS5 tìm nhanh theo tên/ký hiệu, bỏ dấu tiếng Việt; fallback LIKE khi FTS trượt', () => {
+  withDb(db => {
+    seed(db);
+    // FTS-primary: chỉ khớp theo TOKEN (không phải substring) và bỏ dấu đầy đủ.
+    // 'cong ty' không có dấu mà vẫn ra 2 ⇒ chứng minh đi qua FTS (LIKE sẽ trả 0 vì dữ liệu có dấu).
+    assert.equal(queries.listInvoices(db, { q: 'cong ty' }).total, 2, 'FTS bỏ dấu đầy đủ (CÔNG TY)');
+    assert.equal(queries.listInvoices(db, { q: 'nguoi' }).total, 3, 'FTS bỏ dấu đầy đủ (NGƯỜI/người)');
+    assert.equal(queries.listInvoices(db, { q: 'nha cung cap' }).total, 3, 'FTS nhiều token, không dấu');
+    assert.equal(queries.listInvoices(db, { q: 'C26MTH' }).total, 1, 'FTS theo ký hiệu hoá đơn');
+    assert.equal(queries.listInvoices(db, { q: 'người tiêu dùng' }).total, 1, 'FTS nhiều token theo tên người mua');
+    // LIKE fallback: '6423' nằm GIỮA mã '00006423' nên FTS (tiền tố) trượt ⇒ LIKE bắt substring.
+    assert.equal(queries.listInvoices(db, { q: '6423' }).total, 1, 'fallback LIKE bắt substring giữa số hoá đơn');
+    // Kết hợp FTS với lọc chiều — phần cơ bản phải được AND đúng.
+    assert.equal(queries.listInvoices(db, { q: 'C26MTH', direction: 'BUY' }).total, 0);
+    assert.equal(queries.listInvoices(db, { q: 'C26MTH', direction: 'SELL' }).total, 1);
+    // Không có kết quả thì trả rỗng, không ném lỗi.
+    assert.equal(queries.listInvoices(db, { q: 'không-tồn-tại-xyz' }).total, 0);
+  });
+});
+
+test('ftsMatchOf: chuỗi toàn ký tự đặc biệt ⇒ rỗng (không ném lỗi MATCH)', () => {
+  assert.equal(queries.ftsMatchOf(''), '');
+  assert.equal(queries.ftsMatchOf('   '), '');
+  assert.equal(queries.ftsMatchOf('*** -- "" ():'), '', 'toàn ký tự đặc biệt ⇒ không có token');
+  assert.equal(queries.ftsMatchOf('C26MTH'), '"C26MTH"*');
+  assert.equal(queries.ftsMatchOf('bán cho'), '"bán"* "cho"*');
+  assert.equal(queries.ftsMatchOf('  a   b '), '"a"* "b"*');
+  assert.equal(queries.ftsMatchOf('không-tồn-tại'), '"không"* "tồn"* "tại"*', 'dấu gạch ngang tách token');
+});
+
+test('FTS5 external content: nhập lại/xoá hoá đơn thì index theo kịp, KHÔNG còn từ khoá cũ (chống kết quả "ma")', () => {
+  withDb(db => {
+    insertInvoice(db, sample({ soHd: '00000001', tenBan: 'CÔNG TY AN KHANG' }));
+    assert.equal(queries.listInvoices(db, { q: 'an khang' }).total, 1, 'index có từ khoá ban đầu');
+
+    // Đường cập nhật THẬT của app (nhập lại XML đã thay đổi) phải làm index theo kịp.
+    upsertInvoice(db, sample({ soHd: '00000001', tenBan: 'CÔNG TY HOÀNG GIA' }));
+    assert.equal(queries.listInvoices(db, { q: 'an khang' }).total, 0, 'từ khoá CŨ không còn khớp sau khi sửa');
+    assert.equal(queries.listInvoices(db, { q: 'hoang gia' }).total, 1, 'từ khoá MỚI khớp ngay');
+
+    // Xoá hoá đơn ⇒ index sạch.
+    db.prepare('DELETE FROM invoices WHERE so_hd = ?').run('00000001');
+    assert.equal(queries.listInvoices(db, { q: 'hoang gia' }).total, 0, 'đã xoá thì không còn khớp');
+    assert.equal(db.prepare('SELECT COUNT(*) AS c FROM invoice_fts').get().c, 0, 'index rỗng sau khi xoá');
+  });
+});
+
+test('nâng cấp DB cũ lên v3: tạo bảng FTS và backfill dữ liệu đã có (không nhân đôi)', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hoadon-migrate-'));
+  try {
+    const dbFile = path.join(dir, 'data.db');
+    // Tạo DB rồi hạ về trạng thái "DB cũ": có dữ liệu invoices, KHÔNG có bảng FTS/trigger.
+    let db = openDatabase(dbFile);
+    insertInvoice(db, sample({ soHd: '00000001' }));
+    insertInvoice(db, sample({ soHd: '00000002' }));
+    closeDatabase(db);
+
+    const raw = new DatabaseSync(dbFile);
+    try {
+      raw.exec('DROP TRIGGER IF EXISTS trg_invoice_fts_ai');
+      raw.exec('DROP TRIGGER IF EXISTS trg_invoice_fts_au');
+      raw.exec('DROP TRIGGER IF EXISTS trg_invoice_fts_ad');
+      raw.exec('DROP TABLE IF EXISTS invoice_fts');
+      raw.exec('PRAGMA user_version = 2');
+    } finally { raw.close(); }
+
+    // Mở lại ⇒ applySchema phải nâng lên v3 và backfill dữ liệu cũ vào FTS.
+    db = openDatabase(dbFile);
+    try {
+      assert.equal(schemaVersion(db), 3, 'phải nâng lên schema v3');
+      assert.equal(queries.listInvoices(db, { q: '00000001' }).total, 1, 'dữ liệu cũ vẫn truy vấn được');
+      assert.equal(queries.listInvoices(db, { q: 'nha cung cap' }).total, 2, 'backfill: FTS tìm thấy 2 hoá đơn cũ');
+      assert.equal(db.prepare('SELECT COUNT(*) AS c FROM invoice_fts').get().c, 2, 'index FTS có đúng 2 dòng');
+      // Mở lại lần nữa (đã ở v3) ⇒ KHÔNG backfill lại, không nhân đôi index.
+      const again = openDatabase(dbFile);
+      try {
+        assert.equal(schemaVersion(again), 3);
+        assert.equal(again.prepare('SELECT COUNT(*) AS c FROM invoice_fts').get().c, 2, 'không backfill lần hai');
+      } finally { closeDatabase(again); }
+    } finally { closeDatabase(db); }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });

@@ -17,6 +17,7 @@
 // ---------------------------------------------------------------------------
 
 const { buildInvoiceKey } = require('./invoice-key');
+const vnDate = require('../vn-date');
 
 const blockRe = tag => new RegExp(`<${tag}>([\\s\\S]*?)</${tag}>`);
 
@@ -50,24 +51,23 @@ function numberIn(container, tag, warnings, label) {
   return value;
 }
 
-// NLap của XML đã là ngày Việt Nam. Hàm này còn dùng cho tdlap (UTC ISO) của API.
-function toVietnamDate(value) {
-  const raw = String(value ?? '').trim();
-  if (!raw) return null;
-  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
-  const parsed = new Date(raw);
-  if (Number.isNaN(parsed.getTime())) return null;
-  return new Date(parsed.getTime() + 7 * 60 * 60 * 1000).toISOString().slice(0, 10);
-}
+// NLap của XML đã là ngày Việt Nam; tdlap của API là MỐC thời gian UTC. Quy đổi nằm ở MỘT chỗ
+// dùng chung (src/vn-date.js) để mọi đường đọc ngày — kho dữ liệu, Excel, HTML/PDF — không lệch nhau.
+const toVietnamDate = value => vnDate.isoDay(value);
 
 // §14: NBan/MST == MST hiện tại → SELL; NMua/MST == MST hiện tại → BUY; còn lại → UNKNOWN.
 // Không đoán. Hoá đơn bán ra cho người tiêu dùng không có MST người mua vẫn xác định được
 // nhờ nhánh NBan (đã kiểm chứng trên XML thật).
+function normalizeIdentifiers(currentMst) {
+  const values = Array.isArray(currentMst) ? currentMst : [currentMst];
+  return new Set(values.map(value => String(value ?? '').trim()).filter(Boolean));
+}
+
 function detectDirection({ mstBan, mstMua }, currentMst) {
-  const current = String(currentMst ?? '').trim();
-  if (!current) return 'UNKNOWN';
-  if (String(mstBan ?? '').trim() === current) return 'SELL';
-  if (String(mstMua ?? '').trim() === current) return 'BUY';
+  const identifiers = normalizeIdentifiers(currentMst);
+  if (!identifiers.size) return 'UNKNOWN';
+  if (identifiers.has(String(mstBan ?? '').trim())) return 'SELL';
+  if (identifiers.has(String(mstMua ?? '').trim())) return 'BUY';
   return 'UNKNOWN';
 }
 
@@ -141,10 +141,11 @@ function buildImportRecord(xml, { currentMst, fileXml } = {}) {
   const { record, warnings } = parseInvoiceXml(xml);
   const direction = detectDirection(record, currentMst);
   if (direction === 'UNKNOWN') {
-    throw Object.assign(new Error(`Không xác định được Mua vào/Bán ra: MST người bán (${record.mstBan || 'trống'}) và người mua (${record.mstMua || 'trống'}) đều khác MST hiện tại (${currentMst}).`), { unknownDirection: true });
+    const expected = [...normalizeIdentifiers(currentMst)].join(', ');
+    throw Object.assign(new Error(`Không xác định được Mua vào/Bán ra: MST người bán (${record.mstBan || 'trống'}) và người mua (${record.mstMua || 'trống'}) đều không thuộc mã nhận diện của hồ sơ (${expected || 'trống'}).`), { unknownDirection: true });
   }
   const invoiceKey = buildInvoiceKey({ mstBan: record.mstBan, khmshDon: record.khmsHd, khhDon: record.khhHd, shDon: record.soHd });
   return { record: { ...record, direction, invoiceKey, fileXml }, warnings, direction };
 }
 
-module.exports = { parseInvoiceXml, buildImportRecord, detectDirection, toVietnamDate };
+module.exports = { parseInvoiceXml, buildImportRecord, detectDirection, normalizeIdentifiers, toVietnamDate };

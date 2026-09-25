@@ -4,6 +4,9 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const JSZip = require('jszip');
 const invoiceExport = require('./invoice-excel');
+// Khoá hoá đơn của TẦNG DỮ LIỆU (MST người bán | KHMSHDon | KHHDon | SHDon, đã bỏ số 0 đầu).
+// Danh sách "hoá đơn bị thay thế" phải dùng ĐÚNG định dạng này để bộ nhập so khớp được.
+const { buildInvoiceKey } = require('./data/invoice-key');
 
 function safeName(value) {
   let result = String(value ?? '').replace(/[<>:"/\\|?*\x00-\x1f]/g, '_').replace(/[. ]+$/g, '').slice(0, 100);
@@ -20,6 +23,26 @@ function atomicWrite(file, data) {
   try { fs.renameSync(temp, file); return; } catch { /* thử đường lui bên dưới */ }
   try { fs.copyFileSync(temp, file); fs.unlinkSync(temp); return; } catch { /* ghi thẳng */ }
   fs.writeFileSync(file, data); try { fs.unlinkSync(temp); } catch {}
+}
+// Hoá đơn cổng thuế báo "Đã bị thay thế" (tthai = 4) KHÔNG thuộc kho dữ liệu. XML không mang
+// trạng thái, nên engine ghi lại danh sách khoá vào <thư mục lưu>/MST-<mst>/hoa-don-bi-thay-the.json
+// để bộ nhập (xml-scanner) bỏ qua và dọn những bản đã nhập trước đó.
+const SUPERSEDED_FILE = 'hoa-don-bi-thay-the.json';
+const SUPERSEDED_STATE = '4';
+function supersededFile(output, mst) {
+  return path.join(String(output || ''), `MST-${safeName(mst)}`, SUPERSEDED_FILE);
+}
+// Gộp khoá mới vào danh sách đã có rồi ghi lại (đọc–gộp–ghi để nhiều lượt không xoá lẫn nhau).
+function rememberSuperseded(job, keys) {
+  const file = supersededFile(job.output, job.account && (job.account.mst || job.account.label));
+  let existing = [];
+  try {
+    const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
+    existing = Array.isArray(raw) ? raw : (raw && Array.isArray(raw.keys) ? raw.keys : []);
+  } catch { /* chưa có file */ }
+  const merged = [...new Set([...existing.map(String), ...keys].filter(Boolean))];
+  try { atomicWrite(file, JSON.stringify({ updatedAt: new Date().toISOString(), keys: merged })); } catch { /* không ghi được thì lần sau thử lại */ }
+  return merged.length;
 }
 function dates(from, to) {
   const valid = x => /^\d{4}-\d{2}-\d{2}$/.test(x) && Number.isFinite(Date.parse(x)) && new Date(x).toISOString().slice(0, 10) === x;
@@ -65,6 +88,40 @@ const { invoiceHtml, withXmlFields } = require('./invoice-html');
 // Chặn an toàn: nếu cổng trả cursor MỚI mãi không dừng thì dừng task đó lại thay vì lặp vô hạn.
 // 400 trang × 50 dòng = 20.000 hóa đơn/tháng, cao hơn mọi tháng thực tế đã gặp.
 const MAX_PAGES_PER_TASK = 400;
+// Chỉ TÁI SỬ DỤNG danh sách đã tra cứu khi: lượt trước đã tra cứu XONG và sẵn sàng tải
+// (`phase='download'`, `state='ready'`) VÀ mọi điều kiện tra cứu trùng khớp (từ ngày, đến ngày,
+// chiều mua/bán, nhóm/family, định dạng, trạng thái). Khác một điều kiện bất kỳ ⇒ phải chạy
+// lượt cuốn chiếu mới, tránh tải nhầm danh sách của lượt khác.
+function canReuseSearch(job, requested) {
+  const comparable = value => JSON.stringify({ ...value, formats: [...(value.formats || [])].sort() });
+  return !!job && job.phase === 'download' && job.state === 'ready' && comparable(job.params) === comparable(requested);
+}
+function classifyDownloadError(error) {
+  const message = String(error?.message || error || 'Lỗi không xác định.');
+  if (error?.auth || /hết phiên|đăng nhập/i.test(message)) return { type: 'auth', retryable: true, message };
+  if (/429|quá nhiều yêu cầu|tạm từ chối|bị chặn/i.test(message)) return { type: 'rate_limited', retryable: true, message };
+  if (/timeout|không phản hồi|timed?\s*out/i.test(message)) return { type: 'timeout', retryable: true, message };
+  if (/XML|ZIP|gói tải/i.test(message)) return { type: 'invalid_xml', retryable: false, message };
+  if (/ECONN|ENOTFOUND|EAI_AGAIN|socket|network/i.test(message)) return { type: 'network', retryable: true, message };
+  return { type: 'portal', retryable: true, message };
+}
+
+function xmlTag(xml, name) {
+  const match = String(xml || '').match(new RegExp(`<(?:[\\w.-]+:)?${name}(?:\\s[^>]*)?>([^<]*)<\\/(?:[\\w.-]+:)?${name}>`, 'i'));
+  return match ? match[1].trim() : '';
+}
+
+function validateInvoiceXml(xml, invoice) {
+  const actual = { number: xmlTag(xml, 'SHDon'), symbol: xmlTag(xml, 'KHHDon'), form: xmlTag(xml, 'KHMSHDon') };
+  const expected = { number: String(invoice.shdon ?? '').trim(), symbol: String(invoice.khhdon ?? '').trim(), form: String(invoice.khmshdon ?? '').trim() };
+  const comparable = (key, value) => key === 'number' ? (String(value).replace(/^0+(?=\d)/, '') || '0') : String(value).trim().toUpperCase();
+  for (const key of Object.keys(expected)) {
+    if (actual[key] && expected[key] && comparable(key, actual[key]) !== comparable(key, expected[key])) {
+      throw new Error(`XML không khớp hóa đơn: ${key} nhận "${actual[key]}", cần "${expected[key]}".`);
+    }
+  }
+  return { ...actual, verified: !!(actual.number || actual.symbol || actual.form) };
+}
 class Engine {
   constructor({ store, request, identity, emit, pdf, excel, shouldSkip }) {
     Object.assign(this, { store, request, identity, emit, pdf, excel, shouldSkip });
@@ -89,7 +146,8 @@ class Engine {
   snapshot() {
     if (!this.job) return { state: 'idle', busy: this.busy, items: [], message: 'Đăng nhập để bắt đầu.' };
     const j = this.job;
-    return { state: j.state, busy: this.busy, message: j.message, params: j.params, output: j.output, account: j.account, stats: j.stats || null, total: j.items.length, done: j.items.filter(x => x.state === 'done' || x.state === 'skipped').length, failed: j.items.filter(x => x.state === 'failed').length, items: j.items.slice(0, 1000).map(({ invoice: i, state, error, files }) => ({ number: i.shdon, symbol: i.khhdon, seller: i.nbmst, name: i.nbten, date: i.tdlap, amount: i.tgtttbso, files: (files || []).slice(0, 3), state, error })) };
+    const visible = j.mode === 'stream' ? j.items.filter(item => item.state === 'done') : j.items;
+    return { state: j.state, busy: this.busy, mode: j.mode || 'search', message: j.message, params: j.params, output: j.output, account: j.account, stats: j.stats || null, total: j.items.length, done: j.items.filter(x => x.state === 'done' || x.state === 'skipped').length, failed: j.items.filter(x => x.state === 'failed').length, items: visible.slice(0, 1000).map(({ invoice: i, state, error, errorType, retryable, warning, files }) => ({ number: i.shdon, symbol: i.khhdon, seller: i.nbmst, name: i.nbten, date: i.tdlap, amount: i.tgtttbso, files: (files || []).slice(0, 3), state, error, errorType, retryable, warning })) };
   }
   pause() { this.cancelled = true; }
   check() { if (this.cancelled) throw Object.assign(new Error('Đã tạm dừng. Có thể tải tiếp.'), { paused: true }); }
@@ -116,12 +174,27 @@ class Engine {
       this.save(); await this.scan();
     });
   }
+  async stream(params, output) {
+    params = validateParams(params);
+    const account = await this.identity();
+    if (!account) throw new Error('Hãy đăng nhập cổng thuế trước.');
+    if (!output || !path.isAbsolute(output)) throw new Error('Chọn thư mục lưu hóa đơn.');
+    return this.run(async () => {
+      this.job = {
+        version: 1, id: crypto.randomUUID(), mode: 'stream', account, output, params,
+        tasks: tasksFor(params), items: [], phase: 'search', state: 'searching',
+        stats: { total: 0, existed: 0, queued: 0, downloaded: 0, skipped: 0, failed: 0 },
+        message: 'Đang tra cứu và tải cuốn chiếu...',
+      };
+      this.save(); await this.scan();
+    });
+  }
   async scan() {
     const j = this.job; j.state = 'searching';
     const keys = new Set(j.items.map(x => invoiceKey(x.invoice)));
     // GIAI ĐOẠN 1 — chạy song song vài task để che độ trễ cổng thuế. Nhịp gửi KHÔNG tăng:
     // pace.wait() đặt chỗ trước khi bắn nên dù nhiều task cùng bay, request vẫn cách nhau >= MIN_GAP.
-    const concurrency = Math.max(1, Math.min(4, Number(process.env.HOADON_SCAN_CONCURRENCY) || 2));
+    const concurrency = j.mode === 'stream' ? 1 : Math.max(1, Math.min(4, Number(process.env.HOADON_SCAN_CONCURRENCY) || 2));
     const startIndex = j.items.length; // item cũ giữ nguyên chỗ; chỉ sắp lại phần thêm trong lượt này
     const order = new Map();           // invoiceKey -> [thứ tự task, thứ tự trong task]
     const queue = j.tasks.map((task, index) => ({ task, index })).filter(x => !x.task.done);
@@ -130,12 +203,18 @@ class Engine {
       // cursor/count/pages/seen giữ nguyên nên vẫn tiếp đúng chỗ đã dừng.
       task.error = ''; task.warning = '';
       let seq = 0;
+      const superseded = new Set();
+      let supersededSaved = 0;
+      // GỐI ĐẦU (chỉ ở "Tải ngay"): lấy trước TRANG KẾ trong lúc đang tải trang hiện tại, để không còn
+      // khoảng nghỉ giữa hai trang. Nhịp cổng vẫn xếp hàng tuần tự ⇒ KHÔNG tăng áp lực lên cổng thuế.
+      const queryFor = cursor => `/${task.family}/invoices/${j.params.direction}?sort=tdlap:desc&size=50&search=${searchExpression(task.from, task.to, task.variant)}${cursor ? '&state=' + encodeURIComponent(cursor) : ''}`;
+      let prefetched = null;
       try {
         while (!task.done) {
           await this.checkAccount();
-          const query = `/${task.family}/invoices/${j.params.direction}?sort=tdlap:desc&size=50&search=${searchExpression(task.from, task.to, task.variant)}${task.cursor ? '&state=' + encodeURIComponent(task.cursor) : ''}`;
           const action = `Tìm kiếm (hóa đơn ${task.family === 'sco-query' ? 'máy tính tiền ' : ''}${j.params.direction === 'sold' ? 'bán ra' : 'mua vào'})`;
-          const response = await this.request(query, action, () => this.check());
+          let response;
+          if (prefetched) { response = await prefetched; prefetched = null; } else response = await this.request(queryFor(task.cursor), action, () => this.check());
           this.check();
           const data = JSON.parse(response.toString('utf8'));
           if (!data || typeof data !== 'object' || !Array.isArray(data.datas)) throw new Error('API trả danh sách không hợp lệ; giữ tiến độ để thử lại.');
@@ -143,8 +222,18 @@ class Engine {
           for (const invoice of data.datas) {
             const inv = { ...invoice, family: task.family, direction: j.params.direction };
             const key = invoiceKey(inv);
-            if (!keys.has(key) && (!j.params.status || String(inv.tthai) === j.params.status)) { keys.add(key); j.items.push({ invoice: inv, state: 'queued', files: [] }); order.set(key, [index, seq]); seq += 1; }
+            const state = String(inv.tthai ?? '');
+            // tthai = 4 ("Đã bị thay thế") không thuộc kho dữ liệu: CHỈ lấy khi người dùng chọn
+            // đúng trạng thái này; còn lại ghi khoá lại để bộ nhập bỏ qua và dọn bản đã có.
+            const blocked = state === SUPERSEDED_STATE && j.params.status !== SUPERSEDED_STATE;
+            if (blocked) {
+              // Ghi khoá theo đúng định dạng tầng dữ liệu; thiếu trường thì bỏ qua, KHÔNG làm hỏng lượt tìm.
+              try { superseded.add(buildInvoiceKey({ mstBan: inv.nbmst, khmshDon: inv.khmshdon, khhDon: inv.khhdon, shDon: inv.shdon })); }
+              catch { /* cổng trả thiếu trường ⇒ không ghi được khoá */ }
+            }
+            if (!keys.has(key) && !blocked && (!j.params.status || state === j.params.status)) { keys.add(key); j.items.push({ invoice: inv, state: 'queued', files: [] }); order.set(key, [index, seq]); seq += 1; }
           }
+          if (superseded.size > supersededSaved) { rememberSuperseded(j, superseded); supersededSaved = superseded.size; }
           const count = task.count + data.datas.length;
           const cursor = data.state === undefined || data.state === null ? '' : String(data.state);
           // Cổng thuế trả `total` KHÔNG nhất quán (đo thực tế: 295 vs 287 cho cùng một tháng;
@@ -165,6 +254,22 @@ class Engine {
           if (task.done && Number.isFinite(total) && count !== total) task.warning = `Cổng báo tổng ${total} nhưng nhận được ${count} bản ghi (API trả tổng không nhất quán).`;
           j.message = `Đã tìm ${j.items.length} hóa đơn · ${task.from} → ${task.to}`;
           this.save();
+          if (j.mode === 'stream' && j.items.length > before) {
+            j.phase = 'search';
+            // Gối đầu TRANG KẾ (dùng cursor vừa nhận) chạy song song với việc tải trang hiện tại.
+            // Không còn trang nữa thì không lấy thừa request nào.
+            if (!task.done) {
+              j.stats = j.stats || {};
+              const pending = this.request(queryFor(task.cursor), action, () => this.check());
+              pending.catch(() => {}); // lỗi thật được ném ra ở vòng lặp sau, tránh unhandledRejection
+              prefetched = pending;
+              j.stats.prefetched = (j.stats.prefetched || 0) + 1;
+            }
+            await this.download({ incremental: true, finalize: false });
+            j.phase = 'search'; j.state = 'searching';
+            j.message = `Đã tìm ${j.items.length} · tải thành công ${j.stats.downloaded} · đang tra cứu tiếp${j.stats.prefetched ? ` · gối đầu ${j.stats.prefetched} trang` : ''}`;
+            this.save();
+          }
         }
       } catch (error) {
         // Tạm dừng / cần đăng nhập vẫn phải dừng cả lượt như trước.
@@ -191,8 +296,19 @@ class Engine {
       tail.sort((a, b) => { const x = slotOf(a); const y = slotOf(b); return x[0] - y[0] || x[1] - y[1]; });
       j.items = j.items.slice(0, startIndex).concat(tail);
     }
-    j.stats = { total: j.items.length, existed: 0, queued: 0, downloaded: 0, skipped: 0, failed: 0 };
     const unfinished = j.tasks.filter(t => !t.done);
+    if (j.mode === 'stream') {
+      if (unfinished.length) {
+        j.phase = 'search'; j.state = 'partial';
+        j.message = `Tải cuốn chiếu tạm dừng: đã tìm ${j.items.length}, tải thành công ${j.stats.downloaded}. Còn ${unfinished.length} khoảng chưa hoàn tất.`;
+        this.save();
+      } else {
+        j.phase = 'download';
+        await this.download({ incremental: true, finalize: true });
+      }
+      return;
+    }
+    j.stats = { total: j.items.length, existed: 0, queued: 0, downloaded: 0, skipped: 0, failed: 0 };
     // Còn task dở thì GIỮ phase 'search' để nút "Tải tiếp" vào lại scan(); scan() bỏ qua task đã done
     // nên chỉ chạy tiếp đúng tháng còn thiếu, từ cursor đã lưu — không quét lại tháng đã hoàn tất.
     j.phase = unfinished.length ? 'search' : 'download';
@@ -215,6 +331,7 @@ class Engine {
     return this.run(async () => {
       await this.checkAccount();
       if (this.job.phase === 'search') await this.scan();
+      else if (this.job.mode === 'stream') await this.download({ incremental: true, finalize: true });
       else if (download || this.job.phase === 'download') await this.download();
     });
   }
@@ -252,17 +369,36 @@ class Engine {
     if (formats.includes('pdf')) present.pdf = size(find(`${base}.pdf`));
     return present;
   }
-  async download() {
+  async download({ incremental = false, finalize = true } = {}) {
     const j = this.job; j.state = 'downloading';
     // Cây thư mục: <thư mục lưu>/MST-<số MST>/<Mua_vao|Ban_ra>/tên file — chỉ 2 thư mục con
     // (mua vào / bán ra), KHÔNG chia thêm thư mục theo xml/pdf/html/zip.
     const root = path.join(j.output, `MST-${safeName(j.account.mst || j.account.label)}`);
     const jobDirection = j.params.direction === 'sold' ? 'Ban_ra' : 'Mua_vao';
     // Bước 1 – quét thư mục đích trước khi tải (1 lần), rồi đối chiếu từng hóa đơn.
-    const onDisk = this.scanFolder(root, jobDirection);
-    j.stats = { total: j.items.length, existed: 0, queued: 0, downloaded: 0, skipped: 0, failed: 0 };
+    if (!incremental || this.downloadCacheJob !== j.id || !this.downloadFiles) {
+      this.downloadCacheJob = j.id;
+      this.downloadFiles = this.scanFolder(root, jobDirection);
+    }
+    const onDisk = this.downloadFiles;
+    if (!incremental || !j.stats) j.stats = { total: j.items.length, existed: 0, queued: 0, downloaded: 0, skipped: 0, failed: 0 };
+    else j.stats.total = j.items.length;
+    const recount = () => {
+      const count = state => j.items.filter(item => item.state === state).length;
+      const skipped = count('skipped');
+      Object.assign(j.stats, {
+        total: j.items.length,
+        existed: skipped,
+        queued: j.items.filter(item => ['running', 'done', 'failed'].includes(item.state)).length,
+        downloaded: count('done'),
+        skipped,
+        failed: count('failed'),
+      });
+    };
+    recount();
     this.save();
-    for (const item of j.items) {
+    const pendingItems = j.items.filter(item => !incremental || ['queued', 'failed'].includes(item.state));
+    const processItem = async item => {
       await this.checkAccount();
       const inv = item.invoice;
       const suffix = crypto.createHash('sha256').update(invoiceKey(inv)).digest('hex').slice(0, 10);
@@ -276,9 +412,9 @@ class Engine {
         try { known = !!(await this.shouldSkip(inv)); } catch { known = false; }
         if (known) {
           item.state = 'skipped'; item.error = '';
-          j.stats.existed += 1; j.stats.skipped += 1;
+          recount();
           j.message = `${j.stats.existed}/${j.items.length} hóa đơn đã có trong dữ liệu · đã tải ${j.stats.downloaded} · lỗi ${j.stats.failed}`;
-          this.save(); continue;
+          this.save(); return;
         }
       }
       // Bước 2+3 – file đã tồn tại thì bỏ qua ngay trước khi tải: không request, không ghi đè, không đổi tên.
@@ -288,20 +424,19 @@ class Engine {
         if (perFile.every(kind => present[kind])) {
           item.state = 'skipped'; item.error = '';
           for (const file of Object.values(present)) if (file && !item.files.includes(file)) item.files.push(file);
-          j.stats.existed += 1; j.stats.skipped += 1;
+          recount();
           j.message = `${j.stats.existed}/${j.items.length} hóa đơn đã có sẵn · đã tải ${j.stats.downloaded} · lỗi ${j.stats.failed}`;
-          this.save(); continue;
+          this.save(); return;
         }
       }
-      j.stats.queued += 1;
       const query = new URLSearchParams(Object.fromEntries(['nbmst', 'khhdon', 'shdon', 'khmshdon'].map(k => [k, String(inv[k] ?? '')]))).toString();
-      item.state = 'running'; item.error = ''; this.save();
+      item.state = 'running'; item.error = ''; recount(); this.save();
       // File hóa đơn nằm trong <Mua_vao|Ban_ra>/<xml|pdf|html|zip>/; tên file giữ MST người bán, mẫu số,
       // ký hiệu, số hóa đơn và hậu tố chống trùng nên không lẫn nhau. File đã có thì không ghi lại.
       const write = (kind, ext, bytes) => {
         const file = path.join(root, direction, kind, base + ext);
         try { if (fs.existsSync(file) && fs.statSync(file).size > 0) { if (!item.files.includes(file)) item.files.push(file); return; } } catch {}
-        atomicWrite(file, bytes); if (!item.files.includes(file)) item.files.push(file);
+        atomicWrite(file, bytes); onDisk.set(path.basename(file).toLowerCase(), file); if (!item.files.includes(file)) item.files.push(file);
       };
       // XML gốc của hóa đơn này (chỉ có khi lượt tải chọn xml/zip) — cũng là nguồn MCCQT/NLap cho
       // HTML/PDF, đúng như luồng API của dự án extension.
@@ -316,6 +451,8 @@ class Engine {
           const entries = Object.values(zip.files).filter(x => !x.dir && /\.xml$/i.test(x.name));
           if (!entries.length) throw new Error('Gói tải không có XML.');
           sourceXml = await entries[0].async('string');
+          item.xmlIdentity = validateInvoiceXml(sourceXml, inv);
+          item.warning = item.xmlIdentity.verified ? '' : 'XML không công bố bộ nhận diện để đối chiếu; file vẫn được lưu.';
           if (j.params.formats.includes('xml')) {
             for (let n = 0; n < entries.length; n++) {
               const xml = await entries[n].async('nodebuffer');
@@ -332,15 +469,39 @@ class Engine {
           if (j.params.formats.includes('html')) write('html', '.html', html);
           if (j.params.formats.includes('pdf')) write('pdf', '.pdf', await this.pdf(html));
         }
-        item.state = 'done'; j.stats.downloaded += 1;
+        item.state = 'done'; item.errorType = ''; item.retryable = false; recount();
       } catch (e) {
-        item.state = 'failed'; item.error = e.message; j.stats.failed += 1;
+        const failure = classifyDownloadError(e);
+        item.state = 'failed'; item.error = failure.message; item.errorType = failure.type; item.retryable = failure.retryable; recount();
+        if (failure.type === 'rate_limited') { this.downloadConcurrency = 1; e.paused = true; }
         if (e.auth || e.paused) throw e;
       }
       j.message = `Đã xử lý ${j.items.filter(x => ['done', 'failed'].includes(x.state)).length}/${j.items.length}`;
       this.save();
-    }
+    };
+    // Hai worker giúp che độ trễ phản hồi của cổng. Mọi request vẫn đi qua pace.wait(), vì vậy
+    // thời điểm bắt đầu request luôn cách nhau theo nhịp an toàn chung và không tạo burst.
+    const concurrency = Math.max(1, Math.min(3, Number(process.env.HOADON_DOWNLOAD_CONCURRENCY) || 2));
+    this.downloadConcurrency = concurrency;
+    let nextItem = 0;
+    const worker = async workerIndex => {
+      for (;;) {
+        if (workerIndex >= this.downloadConcurrency) return;
+        const index = nextItem; nextItem += 1;
+        if (index >= pendingItems.length) return;
+        await processItem(pendingItems[index]);
+      }
+    };
+    const settled = await Promise.allSettled(Array.from({ length: Math.min(concurrency, pendingItems.length) }, (_, index) => worker(index)));
+    const fatal = settled.find(result => result.status === 'rejected');
+    if (fatal) throw fatal.reason;
     this.check();
+    if (!finalize) {
+      j.state = 'searching';
+      j.message = `Đã tìm ${j.items.length} · tải thành công ${j.stats.downloaded} · đang tra cứu tiếp`;
+      this.save();
+      return;
+    }
     if (j.params.formats.includes('xlsx')) {
       // Bảng tổng hợp nằm luôn trong thư mục nhánh 2 (Mua_vao/Ban_ra), không tạo thư mục riêng.
       const file = path.join(root, jobDirection, `HD-EXCEL-${j.params.from}-${j.params.to}-${j.id.slice(0, 8)}.xlsx`);
@@ -366,4 +527,4 @@ class Engine {
     return { file, rows: j.items.length, columns: invoiceExport.columnNames().length };
   }
 }
-module.exports = { Engine, safeName, atomicWrite, dates, invoiceKey, tasksFor, searchExpression, validateParams, invoiceHtml };
+module.exports = { Engine, safeName, atomicWrite, dates, invoiceKey, tasksFor, searchExpression, validateParams, invoiceHtml, canReuseSearch, classifyDownloadError, validateInvoiceXml };

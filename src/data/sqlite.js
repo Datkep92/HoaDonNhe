@@ -13,6 +13,9 @@ const { DatabaseSync } = require('node:sqlite');
 const { SCHEMA_VERSION, DDL } = require('./schema');
 
 function withTransaction(db, fn) {
+  // Scanner có thể gom nhiều file trong một transaction lớn. Repository vẫn gọi helper này cho
+  // từng hóa đơn; nếu đã ở trong transaction thì dùng transaction ngoài, tránh BEGIN lồng nhau.
+  if (db.isTransaction) return fn();
   db.exec('BEGIN IMMEDIATE');
   try {
     const result = fn();
@@ -29,7 +32,8 @@ function schemaVersion(db) {
   return Number(row && row.user_version) || 0;
 }
 
-// Nâng schema theo bước. Hiện chỉ có v0 (file mới) → v1.
+// Nâng schema theo bước: v0 (file mới) → v1 → v2 → v3.
+// v3 thêm bảng FTS5 `invoice_fts`; với DB cũ phải đổ dữ liệu invoices đã có vào index.
 function applySchema(db) {
   const current = schemaVersion(db);
   if (current === SCHEMA_VERSION) return { changed: false, version: current };
@@ -38,9 +42,19 @@ function applySchema(db) {
   }
   withTransaction(db, () => {
     for (const sql of DDL) db.exec(sql);
+    // Backfill FTS cho DB tạo trước v3 (câu lệnh này chạy sau khi trigger đã tạo).
+    // INSERT vào invoice_fts không kích trigger trên invoices nên KHÔNG bị ghi trùng;
+    // chỉ chạy khi nâng cấp thật (< 3) để không nhân đôi index mỗi lần mở app.
+    if (current < 3) backfillFts(db);
     db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
   });
   return { changed: true, version: SCHEMA_VERSION };
+}
+
+// Đổ toàn bộ hoá đơn hiện có vào index FTS5 (dùng cho nâng cấp schema).
+// Bảng FTS dùng content='invoices' nên 'rebuild' dựng lại index từ chính bảng invoices.
+function backfillFts(db) {
+  db.exec(`INSERT INTO invoice_fts(invoice_fts) VALUES('rebuild')`);
 }
 
 // Mở (và tạo nếu chưa có) data.db. Lỗi thì đóng kết nối trước khi ném ra ngoài.
@@ -53,6 +67,10 @@ function openDatabase(file) {
     db.exec('PRAGMA journal_mode = WAL');
     db.exec('PRAGMA foreign_keys = ON');
     db.exec('PRAGMA busy_timeout = 5000');
+    db.exec('PRAGMA synchronous = NORMAL');
+    db.exec('PRAGMA temp_store = MEMORY');
+    db.exec('PRAGMA cache_size = -20000');
+    db.exec('PRAGMA mmap_size = 134217728');
     applySchema(db);
   } catch (error) {
     try { db.close(); } catch { /* đã đóng */ }
@@ -71,4 +89,4 @@ function tableNames(db) {
     .all().map(row => row.name);
 }
 
-module.exports = { openDatabase, closeDatabase, withTransaction, applySchema, schemaVersion, tableNames, SCHEMA_VERSION };
+module.exports = { openDatabase, closeDatabase, withTransaction, applySchema, schemaVersion, tableNames, backfillFts, SCHEMA_VERSION };

@@ -16,5 +16,7 @@ module.exports = {
   backfill: require('./backfill'),
   xmlParser: require('./xml-parser'),
   xmlScanner: require('./xml-scanner'),
+  xmlWatcher: require('./xml-watcher'),
   xmlImport: require('./xml-import'),
+  excelExport: require('./excel-export'),
 };

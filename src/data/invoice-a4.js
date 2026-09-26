@@ -14,7 +14,7 @@
 const { invoiceHtml } = require('../invoice-html');
 const { parseInvoiceXml } = require('./xml-parser');
 
-function toInvoiceShape(record) {
+function toInvoiceShape(record, state) {
   const inv = {
     hdon: '01',
     khmshdon: record.khmsHd || '',
@@ -31,7 +31,10 @@ function toInvoiceShape(record) {
     tgtcthue: record.tienTruocThue || 0,
     tgtthue: record.tienThue || 0,
     tgtttbso: record.tongTien || 0,
-    tthai: 1,
+    // Trạng thái hoá đơn KHÔNG có trong XML — nguồn duy nhất là kết quả tra cứu. Bản trước
+    // hard-code 1 ("Hóa đơn mới"): giá trị BỊA. Nay lấy từ tham số; không biết thì để null,
+    // KHÔNG đoán là "mới".
+    tthai: state ?? null,
   };
   const items = (record.items || []).map(item => ({
     tchat: item.tchat,
@@ -57,10 +60,11 @@ function toInvoiceShape(record) {
   return { inv, detail };
 }
 
-// xmlText: nội dung 1 file XML hoá đơn. Trả về chuỗi HTML của tờ A4.
-function buildInvoiceA4(xmlText) {
+// xmlText: nội dung 1 file XML hoá đơn. options.state = tthai (từ sổ trạng thái tra cứu) — KHÔNG
+// có trong XML nên phải truyền vào; thiếu thì bỏ trống, không đoán.
+function buildInvoiceA4(xmlText, options = {}) {
   const { record } = parseInvoiceXml(xmlText);
-  const { inv, detail } = toInvoiceShape(record);
+  const { inv, detail } = toInvoiceShape(record, options.state);
   return invoiceHtml(inv, detail);
 }
 
@@ -70,11 +74,23 @@ const FIT_STYLE = `<meta name="viewport" content="width=device-width, initial-sc
 <style id="hd-fit">
   html, body { margin: 0; padding: 8px; background: #eef1f4; }
   body { -webkit-text-size-adjust: 100%; }
+  .hd-state { max-width: 1150px; margin: 0 auto 8px; padding: 6px 10px; box-sizing: border-box; text-align: center;
+    background: #fff6dc; border: 1px solid #e0b451; border-radius: 4px;
+    font-family: "Times New Roman", Times, serif; font-size: 13px; font-weight: 700; color: #7a4a00; }
+  .hd-state.hd-warn { background: #fde4e4; border-color: #d98b8b; color: #8a1f1f; }
   @media (max-width: 1160px) { body { zoom: .95; } }
   @media (max-width: 1020px) { body { zoom: .86; } }
   @media (max-width: 900px)  { body { zoom: .76; } }
   @media (max-width: 780px)  { body { zoom: .64; } }
   @media (max-width: 660px)  { body { zoom: .54; } }
+  /* Khung xem RỘNG thì PHÓNG TO tờ hoá đơn — nếu không, nới hộp thoại chỉ thêm khoảng trắng:
+     bề rộng tờ giấy là 210mm (~794px) và .main-page KHÔNG tự lớn lên (xem invoice-html.js).
+     Ngưỡng tính theo BỀ RỘNG CỦA IFRAME (media query trong iframe đo chính nó), nên đúng cho cả
+     hai hộp thoại xem trước dù chúng rộng khác nhau, và luôn đủ chỗ (794 x 1.3 = 1032 < 1161;
+     794 x 1.6 = 1270 < 1440) nên không bị cắt vì overflow:hidden.
+     CHỈ áp cho màn hình: bản In / Lưu PDF đi theo media "print" nên không bị phóng to lệch khổ. */
+  @media screen and (min-width: 1161px) { body { zoom: 1.3; } }
+  @media screen and (min-width: 1440px) { body { zoom: 1.6; } }
 </style>`;
 
 function withFitStyle(html) {
@@ -89,8 +105,29 @@ function withFitStyle(html) {
   return `${FIT_STYLE}${source}`;
 }
 
-function buildInvoiceA4Document(xmlText) {
-  return withFitStyle(buildInvoiceA4(xmlText));
+// Tờ A4 phải GIỐNG bản của cổng thuế, nên dòng trạng thái do ứng dụng thêm được đặt NGOÀI khối
+// .main-page (không sửa vào bản sao) nhưng vẫn in ra PDF để người xem biết ngay hoá đơn này là bản
+// thay thế / đã bị thay thế. Không biết trạng thái thì KHÔNG thêm gì.
+const STATE_NOTE = { 1: 'Hóa đơn mới', 2: 'Hóa đơn thay thế', 3: 'Hóa đơn điều chỉnh', 4: 'Đã bị thay thế', 5: 'Đã bị điều chỉnh', 6: 'Đã bị hủy' };
+function statusNote(state) {
+  const text = STATE_NOTE[String(state ?? '')];
+  if (!text) return '';
+  const warn = ['4', '5', '6'].includes(String(state)) ? ' hd-warn' : '';
+  return `<div class="hd-state${warn}">Trạng thái hoá đơn: ${text}</div>`;
+}
+function withStatusNote(html, state) {
+  const note = statusNote(state);
+  const source = String(html || '');
+  if (!note) return source;
+  const body = source.indexOf('<body');
+  if (body < 0) return note + source;
+  const end = source.indexOf('>', body);
+  if (end < 0) return note + source;
+  return `${source.slice(0, end + 1)}${note}${source.slice(end + 1)}`;
 }
 
-module.exports = { buildInvoiceA4, buildInvoiceA4Document, withFitStyle, toInvoiceShape };
+function buildInvoiceA4Document(xmlText, options = {}) {
+  return withStatusNote(withFitStyle(buildInvoiceA4(xmlText, options)), options.state);
+}
+
+module.exports = { buildInvoiceA4, buildInvoiceA4Document, withFitStyle, withStatusNote, statusNote, toInvoiceShape };

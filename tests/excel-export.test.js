@@ -167,3 +167,17 @@ test('fileName: đúng MST và phần mở rộng .xlsx', () => {
   const name = excelExport.fileName(MST, new Date(2026, 8, 25, 14, 5));
   assert.equal(name, `kho-du-lieu-${MST}-20260925-1405.xlsx`);
 });
+
+test('buildExcelBuffer LUÔN settle: worker báo lỗi + đường đồng bộ cũng lỗi ⇒ REJECT, không treo promise', async () => {
+  // `[null]` làm summaryWorkbook ném lỗi ở CẢ hai phía: worker trả ok:false, rơi về đường đồng bộ
+  // rồi cũng ném. Đây ĐÚNG nhánh đã sửa: bản cũ đặt `settled = true` rồi mới gọi fallback (mà fallback
+  // lại `if (settled) return`) ⇒ promise TREO VĨNH VIỄN ⇒ lượt tải kẹt `busy = true`, nút cứ ở
+  // "Ngưng tải" dù mọi hoá đơn đã tải xong.
+  const { buildExcelBuffer } = require('../src/excel-worker');
+  const outcome = await Promise.race([
+    buildExcelBuffer([null]).then(() => 'resolved', error => `rejected: ${error && error.message}`),
+    new Promise(resolve => { const timer = setTimeout(() => resolve('TREO'), 8000); if (timer.unref) timer.unref(); }),
+  ]);
+  assert.notEqual(outcome, 'TREO', 'buildExcelBuffer phải settle — không được treo promise');
+  assert.ok(String(outcome).startsWith('rejected'), `phải reject để lượt tải báo lỗi thay vì treo, nhận: ${outcome}`);
+});

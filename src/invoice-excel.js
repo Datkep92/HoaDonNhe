@@ -60,6 +60,20 @@ function rowOf(item, index) {
 const rows = items => items.map(rowOf);
 const columnNames = () => [...HEADERS];
 
+// ---- Bảng TỔNG HỢP "HD-EXCEL-…" (13 cột) ----
+// Trước đây nằm trong server.js (makeExcel); chuyển sang đây để (a) ngày vẫn đi qua ĐÚNG bộ quy đổi
+// chung (isoToDmy = vnDate.dmy) và (b) dựng workbook đẩy được xuống worker thread (excel-worker.js).
+// Đầu ra phải GIỐNG HỆT bản cũ: tên sheet "Hoa don", thứ tự + độ rộng cột, kiểu dữ liệu giữ nguyên.
+const SUMMARY_WIDTHS = [16, 16, 12, 24, 20, 40, 20, 40, 20, 20, 20, 18, 50];
+function summaryRows(items) {
+  return items.map(({ invoice: i, state, error }) => ({ 'Số hóa đơn': String(i.shdon ?? ''), 'Ký hiệu': String(i.khhdon ?? ''), 'Mẫu số': String(i.khmshdon ?? ''), 'Ngày lập': isoToDmy(i.tdlap), 'MST người bán': String(i.nbmst ?? ''), 'Người bán': String(i.nbten ?? ''), 'MST người mua': String(i.nmmst ?? ''), 'Người mua': String(i.nmten ?? ''), 'Tiền trước thuế': i.tgtcthue, 'Tiền thuế': i.tgtthue, 'Tổng tiền': i.tgtttbso, 'Trạng thái tải': state, 'Lỗi': error || '' }));
+}
+function summaryWorkbook(items) {
+  const book = XLSX.utils.book_new(); const sheet = XLSX.utils.json_to_sheet(summaryRows(items));
+  sheet['!cols'] = SUMMARY_WIDTHS.map(wch => ({ wch }));
+  XLSX.utils.book_append_sheet(book, sheet, 'Hoa don'); return XLSX.write(book, { type: 'buffer', bookType: 'xlsx' });
+}
+
 function workbook(items, meta = {}) {
   const sheet = XLSX.utils.aoa_to_sheet([
     [],
@@ -81,4 +95,4 @@ function workbook(items, meta = {}) {
   return XLSX.write(book, { type: 'buffer', bookType: 'xlsx' });
 }
 
-module.exports = { workbook, rows, rowOf, columnNames, HEADERS, WIDTHS, SHEET_NAME, TITLE, NOTES, INVOICE_STATE, CHECK_RESULT, isoToDmy };
+module.exports = { workbook, rows, rowOf, columnNames, summaryRows, summaryWorkbook, HEADERS, WIDTHS, SHEET_NAME, TITLE, NOTES, INVOICE_STATE, CHECK_RESULT, isoToDmy };

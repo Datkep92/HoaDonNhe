@@ -182,7 +182,7 @@ test('license_status: dùng thử luôn tính từ First Install Time của máy
   assert.equal(trial.value.trial, true);
 
   const expired = load([
-    makeSheet('Devices', DEVICE_HEADERS, [[DEVICE.installationId, DEVICE.chatRoomId, '', 'Unactivated', '', days(-10), days(-10), DEVICE.hardwareHash]]),
+    makeSheet('Devices', DEVICE_HEADERS, [[DEVICE.installationId, DEVICE.chatRoomId, '', 'Unactivated', '', days(-31), days(-31), DEVICE.hardwareHash]]),
     makeSheet('Licenses', LICENSE_HEADERS, []),
   ]);
   const after = post(expired, { gatewaySecret: SECRET, action: 'license_status', ...DEVICE });

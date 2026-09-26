@@ -78,9 +78,11 @@ function invoiceRows(db, direction, filters) {
 }
 
 // Hàng hóa MỘT chiều: gộp theo (mã + tên + ĐVT + thuế suất) — giống hệt tab Hàng hóa.
+// Hoá đơn không còn hiệu lực (4/5/6) KHÔNG được cộng — dùng CHUNG mệnh đề với queries.js để số
+// trên màn hình và số trong file Excel không bao giờ lệch nhau.
 function productRows(db, direction, filters) {
   const range = rangeConditions(filters, 'v.ngay_lap');
-  const where = ['v.direction = ?', ...range.where];
+  const where = ['v.direction = ?', ...range.where, queries.activeSql('v')];
   const params = [direction, ...range.params];
   const text = String(filters.q || '').trim();
   const having = text ? 'HAVING (i.ma_hang LIKE ? OR i.ten_hang LIKE ?)' : '';
@@ -112,7 +114,7 @@ function partnerRows(db, kind) {
   const spec = PARTNER_KIND[kind];
   const rows = db.prepare(`SELECT ${spec.mst} AS mst, ${spec.ten} AS ten,
       COUNT(*) AS so_hoa_don, SUM(tong_tien) AS tong_tien, SUM(tien_thue) AS tong_thue
-    FROM invoices WHERE direction = ?
+    FROM invoices WHERE direction = ? AND ${queries.activeSql()}
     GROUP BY ${spec.mst}, ${spec.ten}
     ORDER BY tong_tien DESC`).all(spec.direction);
   return rows.map(row => [

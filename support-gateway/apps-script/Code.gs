@@ -27,7 +27,7 @@ const DEVICE_SHEET = 'Devices';
 const LICENSE_SHEET = 'Licenses';
 const BINDING_SHEET = 'Bindings';
 const SETTINGS_SHEET = 'Settings';
-const TRIAL_DAYS = 3;
+const TRIAL_DAYS = 30;
 
 function doPost(e) {
   try {

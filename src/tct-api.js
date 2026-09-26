@@ -8,6 +8,11 @@ const pace = require('./pace');
 const HOST = 'https://hoadondientu.gdt.gov.vn';
 const END_POINT = '/tra-cuu/tra-cuu-hoa-don';
 const DEFAULT_CHROME = '153.0.0.0';
+// Hạn chót TỔNG cho một request HTTP (tính từ lúc bắn, mặc định 30 giây). Timeout idle 30s của
+// https.request chỉ đếm khi socket IM LẶNG — server giữ connection "nhỏ giọt" (gửi vài byte mỗi
+// lúc < 30s) thì không bao giờ kích hoạt, vòng tải kẹt vĩnh viễn ở một hóa đơn và giao diện kẹt
+// "Đang tải" dù dữ liệu đã về hết. Hạn chót tổng bảo đảm request nào cũng phải kết thúc.
+const HTTP_TIMEOUT_MS = (() => { const value = Number(process.env.HOADON_HTTP_TIMEOUT_MS); return Number.isFinite(value) && value > 0 ? value : 30000; })();
 // Cookies handed out by the portal (WAF session + captcha session) are kept and sent back the
 // way a browser would, so a saved session can be reused on the next run.
 //
@@ -85,11 +90,13 @@ function decodeBody(result) {
 function restRemaining() { return pace.restRemaining(); }
 function resetRest() { pace.resetRest(); }
 function noteRest(status, text, retryAfter) { return pace.note(status, text, retryAfter); }
-async function call(pathname, { method = 'GET', body, headers, scope = '' } = {}) {
+async function call(pathname, { method = 'GET', body, headers, scope = '', signal } = {}) {
+  signal?.throwIfAborted();
   await pace.wait();
+  signal?.throwIfAborted();
   return new Promise((resolve, reject) => {
     const data = body === undefined ? null : Buffer.from(JSON.stringify(body));
-    const request = https.request(HOST + pathname, { method, timeout: 30000, headers: portalHeaders({ ...(data ? { 'Content-Type': 'application/json', 'Content-Length': data.length } : {}), ...headers }, scope) }, res => {
+    const request = https.request(HOST + pathname, { method, signal, timeout: HTTP_TIMEOUT_MS, headers: portalHeaders({ ...(data ? { 'Content-Type': 'application/json', 'Content-Length': data.length } : {}), ...headers }, scope) }, res => {
       const chunks = []; res.on('data', x => chunks.push(x));
       res.on('end', () => {
         const status = res.statusCode || 0; const body = decodeBody({ headers: res.headers, body: Buffer.concat(chunks) }); const text = body.toString('utf8');
@@ -97,7 +104,11 @@ async function call(pathname, { method = 'GET', body, headers, scope = '' } = {}
         noteRest(status, text, res.headers['retry-after']); pace.mark(); resolve({ status, body, text });
       });
     });
-    request.on('timeout', () => request.destroy(new Error('TCT không phản hồi sau 30 giây.'))); request.on('error', reject); if (data) request.write(data); request.end();
+    request.on('timeout', () => request.destroy(new Error('TCT không phản hồi sau 30 giây.')));
+    // Hạn chót TỔNG THỜI GIAN: kể cả server vẫn "nhỏ giọt" dữ liệu cho qua timeout idle thì hết
+    // hạn chót vẫn hủy request — vòng tải không thể kẹt vĩnh viễn, nút Ngưng luôn có hiệu lực.
+    const deadline = setTimeout(() => request.destroy(new Error(`TCT không trả xong dữ liệu sau ${Math.round(HTTP_TIMEOUT_MS / 1000)} giây (không phản hồi).`)), HTTP_TIMEOUT_MS);
+    request.on('close', () => clearTimeout(deadline)); request.on('error', reject); if (data) request.write(data); request.end();
   });
 }
 function parse(result) { try { return JSON.parse(result.text); } catch { return null; } }
@@ -111,8 +122,8 @@ async function authenticate(input, scope = '') {
   if (result.status < 200 || result.status >= 300 || !value?.token) throw new Error(value?.message || value?.error || `TCT trả HTTP ${result.status}.`);
   return value.token;
 }
-async function request(token, route, action, scope = '') {
-  const result = await call('/api' + route, { headers: { Authorization: `Bearer ${token}`, Action: encodeURIComponent(action), 'End-Point': END_POINT }, scope });
+async function request(token, route, action, scope = '', signal) {
+  const result = await call('/api' + route, { headers: { Authorization: `Bearer ${token}`, Action: encodeURIComponent(action), 'End-Point': END_POINT }, scope, signal });
   if (result.status >= 200 && result.status < 300) return result.body;
   const value = parse(result);
   const rest = pace.blocked();

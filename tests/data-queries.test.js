@@ -12,6 +12,7 @@ const path = require('node:path');
 const { DatabaseSync } = require('node:sqlite');
 
 const { openDatabase, closeDatabase, schemaVersion } = require('../src/data/sqlite');
+const { SCHEMA_VERSION } = require('../src/data/schema');
 const { insertInvoice, upsertInvoice } = require('../src/data/repository');
 const queries = require('../src/data/queries');
 const importJob = require('../src/data/import-job');
@@ -268,7 +269,7 @@ test('FTS5 external content: nhập lại/xoá hoá đơn thì index theo kịp,
   });
 });
 
-test('nâng cấp DB cũ lên v3: tạo bảng FTS và backfill dữ liệu đã có (không nhân đôi)', () => {
+test('nâng cấp DB cũ lên schema hiện hành: tạo bảng FTS và backfill dữ liệu đã có (không nhân đôi)', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hoadon-migrate-'));
   try {
     const dbFile = path.join(dir, 'data.db');
@@ -287,19 +288,50 @@ test('nâng cấp DB cũ lên v3: tạo bảng FTS và backfill dữ liệu đã
       raw.exec('PRAGMA user_version = 2');
     } finally { raw.close(); }
 
-    // Mở lại ⇒ applySchema phải nâng lên v3 và backfill dữ liệu cũ vào FTS.
+    // Mở lại ⇒ applySchema phải nâng lên schema hiện hành và backfill dữ liệu cũ vào FTS.
     db = openDatabase(dbFile);
     try {
-      assert.equal(schemaVersion(db), 3, 'phải nâng lên schema v3');
+      assert.equal(schemaVersion(db), SCHEMA_VERSION, 'phải nâng lên schema hiện hành');
       assert.equal(queries.listInvoices(db, { q: '00000001' }).total, 1, 'dữ liệu cũ vẫn truy vấn được');
       assert.equal(queries.listInvoices(db, { q: 'nha cung cap' }).total, 2, 'backfill: FTS tìm thấy 2 hoá đơn cũ');
       assert.equal(db.prepare('SELECT COUNT(*) AS c FROM invoice_fts').get().c, 2, 'index FTS có đúng 2 dòng');
-      // Mở lại lần nữa (đã ở v3) ⇒ KHÔNG backfill lại, không nhân đôi index.
+      // Mở lại lần nữa (đã ở schema hiện hành) ⇒ KHÔNG backfill lại, không nhân đôi index.
       const again = openDatabase(dbFile);
       try {
-        assert.equal(schemaVersion(again), 3);
+        assert.equal(schemaVersion(again), SCHEMA_VERSION);
         assert.equal(again.prepare('SELECT COUNT(*) AS c FROM invoice_fts').get().c, 2, 'không backfill lần hai');
       } finally { closeDatabase(again); }
+    } finally { closeDatabase(db); }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('nâng cấp DB v3 lên v4: tự thêm cột tthai, GIỮ dữ liệu cũ, không tự điền trạng thái', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hoadon-migrate-state-'));
+  try {
+    const dbFile = path.join(dir, 'data.db');
+    const raw = new DatabaseSync(dbFile);
+    try {
+      // Đúng hình dạng bảng `invoices` của v3 — CHƯA có cột tthai.
+      raw.exec(`CREATE TABLE invoices (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, invoice_key TEXT NOT NULL UNIQUE, direction TEXT NOT NULL,
+        mst_ban TEXT, mst_mua TEXT, ten_ban TEXT, ten_mua TEXT, ngay_lap TEXT, khms_hd TEXT, khh_hd TEXT,
+        so_hd TEXT, loai_hoa_don TEXT, tien_truoc_thue REAL DEFAULT 0, tien_thue REAL DEFAULT 0,
+        tong_tien REAL DEFAULT 0, file_xml TEXT NOT NULL, created_at TEXT, updated_at TEXT)`);
+      raw.exec("INSERT INTO invoices (invoice_key, direction, file_xml, tong_tien, tien_thue) VALUES ('k|1|A|1','BUY','x.xml',100,10)");
+      raw.exec('PRAGMA user_version = 3');
+    } finally { raw.close(); }
+
+    // Cột tthai phải được thêm TRƯỚC index idx_invoice_state — nếu không, CREATE INDEX trên cột
+    // chưa có sẽ làm cả transaction nâng cấp ném lỗi và app không mở được data.db.
+    const db = openDatabase(dbFile);
+    try {
+      assert.equal(schemaVersion(db), SCHEMA_VERSION, 'phải nâng lên schema hiện hành');
+      assert.ok(db.prepare('PRAGMA table_info(invoices)').all().map(row => row.name).includes('tthai'), 'cột tthai phải được thêm vào DB cũ');
+      const row = db.prepare('SELECT tong_tien, tthai FROM invoices WHERE invoice_key = ?').get('k|1|A|1');
+      assert.equal(row.tong_tien, 100, 'dữ liệu cũ còn nguyên');
+      assert.equal(row.tthai, null, 'hoá đơn cũ chưa biết trạng thái ⇒ null, KHÔNG tự điền 1');
     } finally { closeDatabase(db); }
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });

@@ -33,3 +33,14 @@ support-gateway/README.md
 # Tool runtime state (not source)
 .codewhale/
 .reasonix/
+.freebuff/
+
+# Thư mục tải về khi build — không đưa vào repo:
+#   onnx/   ~99 MB runtime ONNX (lấy lại bằng: npm run fetch-onnx)
+#   backup/ đầu ra của tools/backup-ui.cjs
+onnx/
+backup/
+
+# Scratch của phiên làm việc (script dò, thư mục dữ liệu thử) — không phải mã dự án
+*.tmp.cjs
+du_lieu_*_tmp/

@@ -33,18 +33,28 @@
   let range = { from: '', to: '', chip: 'all' };
   let periodLabel = '';
   // Mỗi bảng có lựa chọn chiều riêng, không dùng chung một ô lọc.
-  const tabState = { products: { dir: '' }, list: { dir: '' }, partners: { kind: 'all' } };
+  const tabState = { products: { dir: '' }, list: { dir: '', state: 'all' }, partners: { kind: 'all' } };
   let importPoll = null;
   let autosyncPoll = null;
   let backfillPoll = null;
   let seenImportRunning = false;
   let autoRunning = false;
+  // Cờ "đang sửa trong hộp Auto Sync": bật khi người dùng đụng vào ô cấu hình, tắt khi lưu/đóng.
+  // loadAutoSync dùng cờ này để không ghi đè giá trị người dùng đang gã (xem loadAutoSync).
+  let syncEditing = false;
   let newInvoices = 0;
   let activeDataTab = 'products';
   let changeRevision = -1;
   let changePollBusy = false;
   const requests = new Map();
 
+  // Phản hồi tức thì + chống bấm đúp cho nút gọi máy chủ (lưu cấu hình, chạy ngay…): khoá nút và
+  // đổi nhãn NGAY lúc bấm — cùng cơ chế busyButton của renderer.js/app-settings.js/chat-widget.js.
+  function busyButton(button, label) {
+    const original = button.textContent;
+    button.disabled = true; button.textContent = label;
+    return () => { button.disabled = false; if (button.textContent === label) button.textContent = original; };
+  }
   const fail = error => {
     if (window.noticeFail) window.noticeFail(error.message);
     else if (window.notice) window.notice(error.message);
@@ -125,10 +135,27 @@
     if (next === 'data') refreshAll();
   }
 
+  // ------------------------------------------------------------------ Mã định danh của "cùng một người" (MST gốc ↔ CCCD) — chỉ THÔNG BÁO
+  // KHÔNG có panel hỏi/gán tay: hệ thống TỰ SO TÊN (bỏ dấu, bỏ "HỘ KINH DOANH"…) giữa mã lạ
+  // trong XML với tên hồ sơ/kho; trùng thì TỰ GÁN vào định danh hồ sơ + nhập lại hoá đơn đang
+  // bỏ qua, và CHỈ hiện MỘT thông báo. Không trùng ⇒ im lặng hoàn toàn (mã lạ vẫn ghi vết
+  // trong ma-chua-xac-dinh.json để chẩn đoán, nhưng UI không hiện gì).
+  const announcedAutoAssign = new Set(); // không nhắc lại mỗi nhịp poll cho cùng một mã
+  async function loadCandidates() {
+    const value = await api('/api/db/identity-candidates');
+    const assigned = (value.autoAssigned || []).filter(code => !announcedAutoAssign.has(code));
+    if (assigned.length && window.notice) {
+      for (const code of assigned) announcedAutoAssign.add(code);
+      window.notice(`Đã phát hiện trùng MST/CCCD của cùng một người: ${assigned.join(', ')} — đã gán vào hồ sơ và nhập lại các hoá đơn còn bỏ qua.`);
+    }
+  }
+
   async function refreshAll() {
     try {
       const visible = activeDataTab === 'products' ? loadProducts() : (activeDataTab === 'list' ? loadList() : loadPartners());
       await Promise.all([loadSummary(), visible, loadImportStatus(), loadAutoSync(), loadBackfill()]);
+      // Panel mã chưa gán chỉ cần khi vào tab; lỗi của nó không được làm sập refreshAll.
+      await loadCandidates().catch(() => {});
     } catch (error) { if (!isAbort(error)) fail(error); }
   }
 
@@ -272,9 +299,18 @@
   }
 
   // ------------------------------------------------------------------ danh sách hoá đơn
+  // Hiệu ứng "đang tải" trên BẢNG ĐANG MỞ: mờ + khoá tương tác. Chỉ hiệu ứng vẽ — dữ liệu vẫn do
+  // AbortController của latestApi đảm bảo là của lần bấm mới nhất (không đổi logic tải).
+  function paintTableLoading(loading) {
+    const table = document.querySelector('#data-tab-' + activeDataTab + ' table');
+    if (table) table.classList.toggle('loading', !!loading);
+  }
+
   async function loadList() {
+    paintTableLoading(true);
+    try {
     const filters = activeFilters();
-    const params = new URLSearchParams({ ...filters, direction: tabState.list.dir, limit: String(size), offset: String(page * size) });
+    const params = new URLSearchParams({ ...filters, direction: tabState.list.dir, state: tabState.list.state === 'all' ? '' : tabState.list.state, limit: String(size), offset: String(page * size) });
     const value = await latestApi('list', `/api/db/invoices?${params.toString()}`);
     total = value.total || 0;
     rows = value.rows || [];
@@ -295,6 +331,8 @@
       tr.append(numberCell);
       tr.append(td(inv.ten_ban || inv.mst_ban || ''));
       tr.append(td(inv.ten_mua || inv.mst_mua || ''));
+      // Trạng thái đến từ kết quả tra cứu (XML không mang) — server gắn nhãn sẵn, cùng nguồn với Excel.
+      tr.append(td(inv.stateLabel || ''));
       tr.append(td(inv.tien_truoc_thue == null ? '—' : num.format(inv.tien_truoc_thue), 'num'));
       tr.append(td(inv.tien_thue == null ? '—' : num.format(inv.tien_thue), 'num'));
       tr.append(td(inv.tong_tien == null ? '—' : num.format(inv.tong_tien), 'num'));
@@ -312,6 +350,8 @@
     $('data-page').textContent = `Trang ${page + 1} / ${pages}`;
     $('data-prev').disabled = page <= 0;
     $('data-next').disabled = page + 1 >= pages;
+    }
+    finally { paintTableLoading(false); }
   }
 
   function moveSelection(step) {
@@ -369,6 +409,8 @@
 
   // ------------------------------------------------------------------ hàng hóa tổng hợp
   async function loadProducts() {
+    paintTableLoading(true);
+    try {
     const filters = activeFilters();
     const params = new URLSearchParams({ ...filters, direction: tabState.products.dir, limit: '200' });
     const value = await latestApi('products', `/api/db/products?${params.toString()}`);
@@ -386,10 +428,14 @@
       ]));
     }
     $('data-products-count').textContent = `${num.format(products.length)} mặt hàng`;
+    }
+    finally { paintTableLoading(false); }
   }
 
   // ------------------------------------------------------------------ đối tác
   async function loadPartners() {
+    paintTableLoading(true);
+    try {
     // Tab Đối tác là DANH BẠ đối tác: tổng hợp mọi hoá đơn đã nhập, KHÔNG lọc theo kỳ
     // — đúng như sheet "Nhà cung cấp"/"Khách hàng" trong file Excel xuất ra.
     const value = await latestApi('partners', `/api/db/partners?kind=${encodeURIComponent(tabState.partners.kind)}&limit=200`);
@@ -404,15 +450,20 @@
         [num.format(partner.tong_tien || 0), 'num'],
       ]));
     }
+    }
+    finally { paintTableLoading(false); }
   }
 
   // Xuất Excel "Kho dữ liệu" — máy chủ dựng workbook từ SQLite, tôn trọng ĐÚNG bộ lọc đang xem
   // (q + khoảng ngày). part = 'all' (6 bảng) hoặc một mã bảng để xuất RIÊNG bảng đó.
+  let exportBusy = false; // chống bấm đúp: một lượt xuất Excel đang chạy thì cú bấm thêm bị bỏ qua
   async function exportExcel(part) {
     const summary = $('data-export');
     const chosen = part || 'all';
+    if (exportBusy) return;
+    exportBusy = true;
     const filters = activeFilters();
-    const params = new URLSearchParams({ q: filters.q || '', from: filters.from || '', to: filters.to || '' });
+    const params = new URLSearchParams({ q: filters.q || '', from: filters.from || '', to: filters.to || '', state: tabState.list.state === 'all' ? '' : (tabState.list.state || '') });
     if (chosen !== 'all') params.set('parts', chosen);
     const label = summary.textContent;
     summary.setAttribute('aria-busy', 'true');
@@ -450,6 +501,7 @@
     } finally {
       summary.removeAttribute('aria-busy');
       summary.textContent = label;
+      exportBusy = false;
     }
   }
 
@@ -457,19 +509,20 @@
   function renderImport(status) {
     const bar = $('data-import-bar');
     const line = $('data-import-status');
-    // Hoá đơn "Đã bị thay thế" (tthai = 4) bị loại khỏi kho — chỉ hiện khi có để không rối dòng trạng thái.
-    const dropped = status.superseded ? ` · loại ${num.format(status.superseded)} HĐ bị thay thế` : '';
+    // Hoá đơn không còn hiệu lực (bị thay thế / bị điều chỉnh / đã huỷ) VẪN nằm trong kho — chỉ
+    // không cộng vào hàng hoá và tổng tiền. Hiện số ra đây để hiểu vì sao tổng lệch số hoá đơn.
+    const inactive = status.inactive ? ` · ${num.format(status.inactive)} HĐ không còn hiệu lực (không cộng vào hàng hóa)` : '';
     if (status.running) {
       bar.hidden = false;
       bar.value = status.total ? Math.round(100 * status.scanned / status.total) : 0;
-      line.textContent = `Đang nhập ${num.format(status.scanned)}/${num.format(status.total)} file · mới ${status.imported} · cập nhật ${status.updated || 0} · trùng ${status.duplicates} · bỏ qua ${status.skipped}${dropped} · lỗi ${status.errors}${status.current ? ` · ${status.current}` : ''}`;
+      line.textContent = `Đang nhập ${num.format(status.scanned)}/${num.format(status.total)} file · mới ${status.imported} · cập nhật ${status.updated || 0} · trùng ${status.duplicates} · bỏ qua ${status.skipped}${inactive} · lỗi ${status.errors}${status.current ? ` · ${status.current}` : ''}`;
       return;
     }
     if (status.finishedAt) {
       bar.hidden = false;
       bar.value = 100;
       line.textContent = status.total
-        ? `Nhập xong ${num.format(status.total)} file · mới ${status.imported}, cập nhật ${status.updated || 0}, trùng ${status.duplicates}, bỏ qua ${status.skipped}${dropped}, lỗi ${status.errors} · ${num.format(status.itemsTotal)} dòng hàng hóa.`
+        ? `Nhập xong ${num.format(status.total)} file · mới ${status.imported}, cập nhật ${status.updated || 0}, trùng ${status.duplicates}, bỏ qua ${status.skipped}${inactive}, lỗi ${status.errors} · ${num.format(status.itemsTotal)} dòng hàng hóa.`
         : `Không tìm thấy file XML nào cho MST ${status.mst || '…'} trong ${status.dir || '…'} (đã tìm cả thư mục con Mua_vao / Ban_ra).`;
       return;
     }
@@ -481,6 +534,7 @@
   function startImportPolling() {
     if (importPoll) return;
     importPoll = setInterval(async () => {
+      if (document.hidden) return; // trang ẩn: không fetch, giữ timer để cập nhật khi hiện lại
       try {
         const status = await api('/api/db/import/status');
         renderImport(status);
@@ -511,14 +565,20 @@
   function stopAutoSyncPolling() { if (autosyncPoll) { clearInterval(autosyncPoll); autosyncPoll = null; } }
   function startAutoSyncPolling() {
     if (autosyncPoll) return;
-    autosyncPoll = setInterval(() => loadAutoSync().catch(() => {}), 1500);
+    autosyncPoll = setInterval(() => { if (!document.hidden) loadAutoSync().catch(() => {}); }, 1500);
   }
 
   async function loadAutoSync() {
     const value = await api('/api/db/autosync/status');
-    $('autosync-enabled').checked = !!value.settings.enabled;
-    $('autosync-days').value = value.settings.days;
-    $('autosync-interval').value = value.settings.intervalMinutes;
+    // Người dùng đang gã/sửa trong hộp thoại thì KHÔNG ghi đè ô nhập bằng giá trị server (nếu không
+    // gã của họ biến mất giữa chừng sau mỗi nhịp poll). Chỉ áp giá trị khi hộp thoại vừa mở hoặc
+    // sau khi lưu — hộp đóng là không ai đang xem, áp tự do để cấu hình mới từ nơi khác vẫn tới.
+    const dialogOpen = $('autosync-dialog').open;
+    if (!dialogOpen || !syncEditing) {
+      $('autosync-enabled').checked = !!value.settings.enabled;
+      $('autosync-days').value = value.settings.days;
+      $('autosync-interval').value = value.settings.intervalMinutes;
+    }
     $('autosync-mst').textContent = value.mst ? `MST ${value.mst} · tự tra cứu → tải XML còn thiếu → nhập vào kho dữ liệu.` : 'Chọn một MST ở cột bên trái trước.';
     // Trạng thái cuối LUÔN kèm mốc thời gian đã ghi; mốc này được ghi lại mỗi lượt Auto Sync.
     const line = (label, state) => {
@@ -561,31 +621,38 @@
   }
 
   async function saveAutoSync() {
+    // Khoá nút + nhãn "Đang lưu…" NGAY lúc bấm (busyButton) — chống bấm đúp và cho phản hồi tức thì.
+    const restore = busyButton($('autosync-save'), 'Đang lưu…');
     try {
       await post('/api/db/autosync/settings', {
         enabled: $('autosync-enabled').checked,
         days: Number($('autosync-days').value) || 7,
         intervalMinutes: Number($('autosync-interval').value) || 30,
       });
+      syncEditing = false; // đã lưu: giá trị server giờ là mới nhất, cho áp lại bình thường
       if (window.notice) window.notice('Đã lưu cấu hình Auto Sync.');
       await loadAutoSync();
     } catch (error) { fail(error); }
+    finally { restore(); }
   }
 
   async function runAutoSyncNow() {
+    // Khoá nút + nhãn "Đang khởi động…" NGAY lúc bấm — chống bấm đúp gửi lệnh chạy 2 lần.
+    const restore = busyButton($('autosync-run'), 'Đang khởi động…');
     try {
       const value = await post('/api/db/autosync/run', {});
       if (window.notice) window.notice(`Auto Sync đang chạy: ${value.phase || 'bắt đầu'}…`);
       startAutoSyncPolling();
       await loadAutoSync();
     } catch (error) { fail(error); }
+    finally { restore(); }
   }
 
   // ------------------------------------------------------------------ Tải lịch sử
   function stopBackfillPolling() { if (backfillPoll) { clearInterval(backfillPoll); backfillPoll = null; } }
   function startBackfillPolling() {
     if (backfillPoll) return;
-    backfillPoll = setInterval(() => loadBackfill().catch(() => {}), 1500);
+    backfillPoll = setInterval(() => { if (!document.hidden) loadBackfill().catch(() => {}); }, 1500);
   }
 
   function syncBackfillFields() {
@@ -625,6 +692,9 @@
 
   async function startBackfill() {
     const directions = $('backfill-directions').value;
+    // busyButton khoá nút + nhãn "Đang khởi động…" NGAY lúc bấm: trước đây chỉ disable SAU khi
+    // fetch trả về nên cú bấm đúp trong khe hở ấy gửi 2 lệnh chạy (máy chủ phải tự lọc).
+    const restore = busyButton($('backfill-start'), 'Đang khởi động…');
     try {
       const value = await post('/api/db/backfill', {
         mode: $('backfill-mode').value,
@@ -638,6 +708,7 @@
       if (window.notice) window.notice(`Bắt đầu tải lịch sử ${value.plan.label}…`);
       await loadBackfill();
     } catch (error) { fail(error); }
+    finally { restore(); }
   }
 
   async function cancelBackfill() {
@@ -653,7 +724,13 @@
     $('view-download').onclick = () => showView('download');
     $('view-data').onclick = () => showView('data');
 
-    $('data-refresh').onclick = () => { savePrefs(); refreshAll(); };
+    // "Tải lại": nhãn "Đang tải…" NGAY lúc bấm — 5 request song song dưới đây mất vài trăm ms
+    // tới vài giây, trước đây bấm xong nút đứng im khiến người dùng bấm thêm nhiều lần.
+    $('data-refresh').onclick = () => {
+      const restore = busyButton($('data-refresh'), 'Đang tải…');
+      savePrefs();
+      void refreshAll().finally(restore);
+    };
     $('data-import').onclick = startImport;
     // Menu "Xuất Excel": "Tải toàn bộ" hoặc mở từng nhóm (Hóa đơn / Hàng hóa / Đối tác)
     // rồi chọn Mua vào · Bán ra (hoặc Nhà cung cấp · Khách hàng).
@@ -680,8 +757,10 @@
       range = { from: '', to: '', chip: 'all' };
       tabState.products.dir = '';
       tabState.list.dir = '';
+      tabState.list.state = 'all';
       tabState.partners.kind = 'all';
       for (const id of ['data-seg-products', 'data-seg-list']) for (const button of $(id).querySelectorAll('button')) button.classList.toggle('active', button.dataset.dir === 'all');
+      for (const button of $('data-seg-state').querySelectorAll('button')) button.classList.toggle('active', button.dataset.state === 'all');
       for (const button of $('data-seg-partners').querySelectorAll('button')) button.classList.toggle('active', button.dataset.kind === 'all');
       paintRange();
       reloadAll();
@@ -697,11 +776,19 @@
     $('data-tab-partners-btn').onclick = () => showDataTab('partners');
     bindSegment('data-seg-products', button => { tabState.products.dir = button.dataset.dir === 'all' ? '' : button.dataset.dir; loadProducts().catch(ignoreAbort); });
     bindSegment('data-seg-list', button => { tabState.list.dir = button.dataset.dir === 'all' ? '' : button.dataset.dir; page = 0; loadList().catch(ignoreAbort); loadSummary().catch(ignoreAbort); });
+    // Lọc theo trạng thái hoá đơn (1..6). Đổi bộ lọc thì quay về trang 1 để không đứng ở trang rỗng.
+    bindSegment('data-seg-state', button => { tabState.list.state = button.dataset.state; page = 0; loadList().catch(ignoreAbort); });
     bindSegment('data-seg-partners', button => { tabState.partners.kind = button.dataset.kind; loadPartners().catch(ignoreAbort); });
 
     $('invoice-close').onclick = closeInvoice;
     $('invoice-print').onclick = printInvoice;
     $('invoice-dialog').addEventListener('close', () => { $('invoice-frame').src = 'about:blank'; });
+
+    // Dialog xem trước A4 của tab Tra cứu (renderer.js điều khiển nội dung) — gắn đóng/in tại đây
+    // vì cùng một trang; tồn tại rồi thì mọi lượt mở sau dùng lại.
+    if ($('preview-close')) $('preview-close').onclick = () => window.HD_PREVIEW && window.HD_PREVIEW.close();
+    if ($('preview-print')) $('preview-print').onclick = () => window.HD_PREVIEW && window.HD_PREVIEW.print();
+    if ($('preview-dialog')) $('preview-dialog').addEventListener('close', () => { $('preview-frame').src = 'about:blank'; });
 
     $('autosync-close').onclick = () => $('autosync-dialog').close();
     $('autosync-save').onclick = saveAutoSync;
@@ -742,11 +829,14 @@
 
   restorePrefs();
   bind();
-  fetch('/api/state').then(response => response.json()).then(result => { if (result && result.ok) app = result.value; }).catch(() => {});
+  // ?items=0: /api/state không còn kèm bảng 1.000 dòng (nó nằm ở /api/state/items riêng) — tab này
+  // chỉ cần tổng hợp.
+  fetch('/api/state?items=0').then(response => response.json()).then(result => { if (result && result.ok) app = result.value; }).catch(() => {});
 
   // Auto Sync / tự nhập có thể bắt đầu NGOÀI tab này (ví dụ ngay sau khi bấm Tải hóa đơn).
+  // Trang ẩn (cửa sổ thu nhỏ/khoá màn hình) thì bỏ nhịp — không fetch vô ích, quay lại là chạy tiếp.
   setInterval(async () => {
-    if (view === 'data') return;
+    if (document.hidden || view === 'data') return;
     try {
       const status = await api('/api/db/import/status');
       if (status.running && !seenImportRunning) {
@@ -762,7 +852,7 @@
 
   // Scanner nền phát hiện XML mới/thay đổi; chỉ làm mới thống kê và bảng con đang mở.
   setInterval(async () => {
-    if (view !== 'data' || changePollBusy || !app.selected) return;
+    if (document.hidden || view !== 'data' || changePollBusy || !app.selected) return;
     changePollBusy = true;
     try {
       const status = await api('/api/db/changes');
@@ -771,6 +861,8 @@
         changeRevision = status.revision || 0;
         announceNew((status.imported || 0) + (status.updated || 0));
         await refreshVisibleData();
+        // Scanner vừa gặp mã lạ/hồ sơ vừa gán mã ⇒ danh sách mã chưa gán có thể đã đổi.
+        await loadCandidates().catch(() => {});
       }
     } catch { /* lần sau thử lại */ }
     finally { changePollBusy = false; }

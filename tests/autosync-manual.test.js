@@ -186,7 +186,7 @@ test('banner dòng MST: có đủ trạng thái đang chạy / xong / trống / 
   const start = renderer.indexOf('function syncBanner(');
   assert.ok(start > -1, 'phải có hàm syncBanner');
   const body = renderer.slice(start, renderer.indexOf('\n}', start));
-  for (const need of ['Đang tải', 'Đang tra cứu', 'Xong', 'Không có hóa đơn mới', 'Lỗi']) {
+  for (const need of ['Đang tải', 'Đang tra cứu', 'Xong', 'Không có HĐ mới', 'Lỗi']) {
     assert.ok(body.includes(need), `banner phải có trạng thái "${need}"`);
   }
   // Trạng thái CUỐI phải kèm MỐC THỜI GIAN đã ghi trong sync.json. Mốc này được ghi lại mỗi lượt
@@ -248,7 +248,11 @@ test('kho cookie cổng thuế TÁCH THEO MST — nhiều MST chạy song song k
 });
 
 test('server truyền MST làm phạm vi cookie cho mọi đường gọi cổng thuế', () => {
-  for (const call of ['tct.request(token, route, action, mst)', 'tct.setCookies(stored.cookies, mst)', 'tct.cookies(mst)', 'tct.clearCookies(mst)']) {
+  // Lời gọi hiện tại là `tct.request(token, route, action, mst, check.signal)` — mst vẫn là phạm vi
+  // cookie (tham số thứ 4), thêm tham số thứ 5 là tín hiệu huỷ của lượt chạy (nút Ngưng ăn ngay).
+  const requestScoped = /tct\.request\(token, route, action, mst[,)]/;
+  assert.ok(requestScoped.test(serverSource), 'tct.request phải truyền mst làm phạm vi cookie');
+  for (const call of ['tct.setCookies(stored.cookies, mst)', 'tct.cookies(mst)', 'tct.clearCookies(mst)']) {
     assert.ok(serverSource.includes(call), `thiếu phạm vi MST ở lời gọi: ${call}`);
   }
   assert.ok(!/tct\.request\(token, route, action\)/.test(serverSource), 'còn lời gọi tct.request thiếu phạm vi MST');

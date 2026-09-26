@@ -24,6 +24,11 @@ function asNumber(value, field) {
   return number;
 }
 
+function normalizeState(value) {
+  if (value === null || value === undefined || value === '') return null;
+  return String(value).trim() || null;
+}
+
 function normalizeRecord(record) {
   if (!record || typeof record !== 'object') throw new Error('Thiếu bản ghi hoá đơn.');
   const direction = String(record.direction ?? '').trim().toUpperCase();
@@ -33,7 +38,8 @@ function normalizeRecord(record) {
   const invoiceKey = String(record.invoiceKey ?? '').trim() || buildInvoiceKey({
     mstBan: record.mstBan, khmshDon: record.khmsHd, khhDon: record.khhHd, shDon: record.soHd,
   });
-  return { ...record, direction, fileXml, invoiceKey };
+  // tthai đến từ kết quả tra cứu (XML không mang). Không có thì để null — KHÔNG suy đoán là '1'.
+  return { ...record, direction, fileXml, invoiceKey, tthai: normalizeState(record.tthai) };
 }
 
 function normalizeItems(items) {
@@ -89,8 +95,8 @@ function insertInvoice(db, record) {
     try {
       info = db.prepare(`INSERT INTO invoices
         (invoice_key, direction, mst_ban, mst_mua, ten_ban, ten_mua, ngay_lap, khms_hd, khh_hd, so_hd,
-         loai_hoa_don, tien_truoc_thue, tien_thue, tong_tien, file_xml, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+         loai_hoa_don, tthai, tien_truoc_thue, tien_thue, tong_tien, file_xml, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
         value.invoiceKey,
         value.direction,
         value.mstBan ?? null,
@@ -102,6 +108,7 @@ function insertInvoice(db, record) {
         value.khhHd ?? null,
         value.soHd ?? null,
         value.loaiHoaDon ?? null,
+        value.tthai ?? null,
         asNumber(value.tienTruocThue, 'invoices.tien_truoc_thue'),
         asNumber(value.tienThue, 'invoices.tien_thue'),
         asNumber(value.tongTien, 'invoices.tong_tien'),
@@ -139,7 +146,7 @@ function upsertInvoice(db, record) {
   return withTransaction(db, () => {
     db.prepare(`UPDATE invoices SET
       direction = ?, mst_ban = ?, mst_mua = ?, ten_ban = ?, ten_mua = ?, ngay_lap = ?,
-      khms_hd = ?, khh_hd = ?, so_hd = ?, loai_hoa_don = ?, tien_truoc_thue = ?,
+      khms_hd = ?, khh_hd = ?, so_hd = ?, loai_hoa_don = ?, tthai = ?, tien_truoc_thue = ?,
       tien_thue = ?, tong_tien = ?, file_xml = ?, updated_at = ? WHERE id = ?`).run(
       value.direction,
       value.mstBan ?? null,
@@ -151,6 +158,7 @@ function upsertInvoice(db, record) {
       value.khhHd ?? null,
       value.soHd ?? null,
       value.loaiHoaDon ?? null,
+      value.tthai ?? null,
       asNumber(value.tienTruocThue, 'invoices.tien_truoc_thue'),
       asNumber(value.tienThue, 'invoices.tien_thue'),
       asNumber(value.tongTien, 'invoices.tong_tien'),

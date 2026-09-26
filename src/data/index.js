@@ -6,6 +6,7 @@
 
 module.exports = {
   invoiceKey: require('./invoice-key'),
+  invoiceState: require('./invoice-state'),
   schema: require('./schema'),
   sqlite: require('./sqlite'),
   repository: require('./repository'),
@@ -19,4 +20,5 @@ module.exports = {
   xmlWatcher: require('./xml-watcher'),
   xmlImport: require('./xml-import'),
   excelExport: require('./excel-export'),
+  identityCandidates: require('./identity-candidates'),
 };

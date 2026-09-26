@@ -8,11 +8,11 @@ const os = require('node:os');
 const path = require('node:path');
 const { SupportStore, formatExpiry } = require('../src/support');
 
-const TRIAL_DAYS = 3;
+const TRIAL_DAYS = 30; // phải khớp src/support.js và Code.gs
 const DAY = 24 * 60 * 60 * 1000;
 const tempDir = prefix => fs.mkdtempSync(path.join(os.tmpdir(), prefix));
 
-test('Bước 2: máy mới được dùng thử 3 ngày mà không cần key', async () => {
+test('Bước 2: máy mới được dùng thử 30 ngày mà không cần key', async () => {
   const store = new SupportStore(tempDir('hd-trial-'));
   const license = store.publicLicense();
   assert.equal(license.status, 'Trial');
@@ -168,13 +168,13 @@ test('Mất mạng khi cài mới: vẫn dùng thử theo đồng hồ cục b�
   fs.writeFileSync(path.join(dir, 'support-gateway.json'), JSON.stringify({ url: 'http://127.0.0.1:1' }));
   const store = new SupportStore(dir);
 
-  // Chưa từng kiểm tra được máy chủ nhưng vẫn phải chạy trong 3 ngày dùng thử.
+  // Chưa từng kiểm tra được máy chủ nhưng vẫn phải chạy trong hạn dùng thử.
   const trial = await store.enforceLicense();
   assert.equal(trial.status, 'Trial');
   assert.equal(trial.offline, true);
 
   // Quá hạn dùng thử cục bộ -> chặn bằng đúng câu dùng thử, không phải câu mất mạng.
-  store.data.device.firstInstallAt = Date.now() - 5 * DAY;
+  store.data.device.firstInstallAt = Date.now() - (TRIAL_DAYS + 1) * DAY;
   store.save();
-  await assert.rejects(() => store.enforceLicense(), /3 ngày dùng thử/);
+  await assert.rejects(() => store.enforceLicense(), new RegExp(`${TRIAL_DAYS} ngày dùng thử`));
 });

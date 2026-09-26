@@ -150,11 +150,34 @@ async function telegram(env, method, value) {
 
 async function topic(env, room) {
   const meta = await firebase(env, '/chats/' + encodeURIComponent(room) + '/meta');
-  if (meta?.telegramThreadId) return meta.telegramThreadId;
+  if (meta?.telegramThreadId) {
+    // TỰ CHỮA CHỈ MỤC NGƯỢC: nếu /telegramTopics bị mất (admin xoá Firebase, hoặc xoá tay node đó)
+    // mà /chats/<room>/meta còn thì ghi lại — không có nó, tin từ Telegram sẽ rơi im lặng.
+    const map = await firebase(env, '/telegramTopics/' + meta.telegramThreadId);
+    if (map?.chatRoomId !== room) {
+      await firebase(env, '/telegramTopics/' + meta.telegramThreadId, 'PUT', { chatRoomId: room, createdAt: Date.now() });
+    }
+    return meta.telegramThreadId;
+  }
   const created = await telegram(env, 'createForumTopic', { chat_id: env.TELEGRAM_CHAT_ID, name: ('Support · ' + room).slice(0, 128) });
   await firebase(env, '/chats/' + encodeURIComponent(room) + '/meta', 'PATCH', { telegramThreadId: created.message_thread_id, telegramTopicCreatedAt: Date.now() });
   await firebase(env, '/telegramTopics/' + created.message_thread_id, 'PUT', { chatRoomId: room, createdAt: Date.now() });
   return created.message_thread_id;
+}
+
+// Gửi tin vào topic của phòng. Topic đã bị XOÁ trên Telegram thì tự tạo lại rồi gửi lại MỘT lần —
+// không có bước này, tin cứ gửi vào số topic chết và lỗi bị nuốt thành "pending_telegram" mãi mãi.
+async function sendToRoom(env, room, text) {
+  const metaPath = '/chats/' + encodeURIComponent(room) + '/meta';
+  let thread = await topic(env, room);
+  try {
+    return await telegram(env, 'sendMessage', { chat_id: env.TELEGRAM_CHAT_ID, message_thread_id: thread, text });
+  } catch (error) {
+    console.log('Telegram thread ' + thread + ' không gửi được, tạo lại topic: ' + (error && error.message ? error.message : String(error)));
+    await firebase(env, metaPath, 'PATCH', { telegramThreadId: null });
+    thread = await topic(env, room);
+    return telegram(env, 'sendMessage', { chat_id: env.TELEGRAM_CHAT_ID, message_thread_id: thread, text });
+  }
 }
 
 // Bỏ ký tự định dạng Markdown trong dữ liệu khách nhập để Telegram không trả 400.
@@ -197,6 +220,26 @@ async function webhook(env, request) {
   if (!message || message.from?.is_bot || !message.message_thread_id || !String(message.text || '').trim()) return reply({ ok: true, ignored: true });
   const map = await firebase(env, '/telegramTopics/' + message.message_thread_id);
   const text = String(message.text).trim().slice(0, 2000);
+  const threadId = message.message_thread_id;
+
+  // CẦU NỐI GẮN LẠI: dùng khi Firebase bị xoá (mapping mất) mà topic trên Telegram còn.
+  // Gõ trong chính topic đó:  /link ROOM_WIN_XXXXXXXXXXXX
+  // Ghi CẢ HAI chiều nên tin user → Telegram và Telegram → user chạy lại ngay.
+  if (/^\/link(\s|$)/i.test(text)) {
+    const room = String(text.split(/\s+/)[1] || '').trim().toUpperCase();
+    let answer;
+    if (!/^ROOM_WIN_[A-Z0-9]{8,40}$/.test(room)) {
+      answer = '⚠️ Cú pháp: /link ROOM_WIN_XXXXXXXXXXXX';
+    } else if (map?.chatRoomId && map.chatRoomId !== room) {
+      answer = '⚠️ Topic này đang gắn với ' + map.chatRoomId + '. Không ghi đè tự động — kiểm tra lại cho đúng.';
+    } else {
+      await firebase(env, '/telegramTopics/' + threadId, 'PUT', { chatRoomId: room, createdAt: Date.now() });
+      await firebase(env, '/chats/' + encodeURIComponent(room) + '/meta', 'PATCH', { telegramThreadId: threadId, telegramTopicCreatedAt: Date.now() });
+      answer = '✅ Đã gắn topic này với ' + room + '. Hai chiều chạy lại ngay.';
+    }
+    await telegram(env, 'sendMessage', { chat_id: env.TELEGRAM_CHAT_ID, message_thread_id: threadId, text: answer.slice(0, 4000) });
+    return reply({ ok: true, value: { link: room } });
+  }
 
   // Lệnh quản trị: Gateway nhận từ Telegram rồi chuyển sang CRM bằng action admin_command
   // (Apps Script không tự gửi tin Telegram), và lệnh không lọt vào chat của khách.
@@ -218,7 +261,17 @@ async function webhook(env, request) {
     return reply({ ok: true, value: { command } });
   }
 
-  if (!map?.chatRoomId) return reply({ ok: true, ignored: true });
+  if (!map?.chatRoomId) {
+    // KHÔNG im lặng nữa. Trước đây dòng này là `reply({ ok: true, ignored: true })` nên tin rơi mất
+    // mà không để lại dấu vết nào — đúng hiện tượng "Telegram trả lời, app không nhận".
+    await telegram(env, 'sendMessage', {
+      chat_id: env.TELEGRAM_CHAT_ID, message_thread_id: threadId,
+      text: '⚠️ Topic này chưa gắn với thiết bị nào (Firebase không có mapping).\n'
+        + '• Khách mở app một lần là Gateway tự tạo topic + gắn mapping, hoặc\n'
+        + '• Gõ `/link ROOM_WIN_…` trong topic này để gắn lại chính topic đang dùng.',
+    });
+    return reply({ ok: true, value: { unlinked: true } });
+  }
   const value = { sender: 'admin', text, timestamp: (message.date || Math.floor(Date.now() / 1000)) * 1000, source: 'telegram', telegramMessageId: message.message_id, telegramThreadId: message.message_thread_id, deliveryStatus: 'firebase' };
   const result = await firebase(env, '/chats/' + encodeURIComponent(map.chatRoomId) + '/messages', 'POST', value);
   return reply({ ok: true, value: { id: result.name } });
@@ -282,9 +335,8 @@ export default {
       if (!message.text) throw Error('Invalid message.');
       const result = await firebase(env, '/chats/' + encodeURIComponent(d.chatRoomId) + '/messages', 'POST', message);
       try {
-        const thread = await topic(env, d.chatRoomId);
-        const sent = await telegram(env, 'sendMessage', { chat_id: env.TELEGRAM_CHAT_ID, message_thread_id: thread, text: message.text });
-        await firebase(env, '/chats/' + encodeURIComponent(d.chatRoomId) + '/messages/' + result.name, 'PATCH', { deliveryStatus: 'delivered', telegramMessageId: sent.message_id, telegramThreadId: thread });
+        const sent = await sendToRoom(env, d.chatRoomId, message.text);
+        await firebase(env, '/chats/' + encodeURIComponent(d.chatRoomId) + '/messages/' + result.name, 'PATCH', { deliveryStatus: 'delivered', telegramMessageId: sent.message_id, telegramThreadId: sent.message_thread_id || 0 });
       } catch (error) { console.log('Telegram delivery pending: ' + error.message); }
       return reply({ ok: true, value: { id: result.name, ...message } });
     } catch (error) {

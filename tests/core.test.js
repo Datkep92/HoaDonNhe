@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const JSZip = require('jszip');
-const { Engine, dates, safeName, invoiceHtml, canReuseSearch, classifyDownloadError, validateInvoiceXml } = require('../src/core');
+const { Engine, dates, safeName, invoiceHtml, canReuseSearch, classifyDownloadError, validateInvoiceXml, companyNameFromItems } = require('../src/core');
 const account = { key: '123|user', mst: '0123456789', label: 'user' };
 const params = { from: '2026-01-01', to: '2026-01-31', direction: 'sold', family: 'query', formats: ['xml'], status: '' };
 function setup(t, request) {
@@ -14,6 +14,89 @@ function setup(t, request) {
   return { dir, options, engine: new Engine(options) };
 }
 const invoice = n => ({ shdon: String(n), nbmst: '0123456789', khhdon: 'C26TAA', khmshdon: '1', tthai: 1 });
+
+test('companyNameFromItems: lấy tên công ty NGAY từ kết quả tra cứu (chưa cần nhập XML)', t => {
+  const items = [
+    { invoice: { nbmst: '0100000001', nbten: 'CÔNG TY NGƯỜI BÁN', nmmst: '4500677693', nmten: 'CÔNG TY NGƯỜI MUA' }, state: 'queued' },
+    { invoice: { nbmst: '0300000003', nbten: 'BÊN BÁN KHÁC' }, state: 'done' },
+  ];
+  assert.equal(companyNameFromItems(items, '0100000001'), 'CÔNG TY NGƯỜI BÁN', 'MST là người bán ⇒ lấy nbten');
+  assert.equal(companyNameFromItems(items, '4500677693'), 'CÔNG TY NGƯỜI MUA', 'MST là người mua (tra mua vào) ⇒ lấy nmten');
+  assert.equal(companyNameFromItems(items, '9999999999'), '', 'không có hoá đơn nào của MST đó ⇒ rỗng, KHÔNG đoán');
+  assert.equal(companyNameFromItems([], '0100000001'), '', 'danh sách rỗng ⇒ rỗng');
+  assert.equal(companyNameFromItems(null, '0100000001'), '', 'chưa có lượt tra cứu ⇒ rỗng');
+  assert.equal(companyNameFromItems(items, ''), '', 'chưa chọn MST ⇒ rỗng');
+  // Bản ghi thiếu tên thì bỏ qua và thử bản kế tiếp, không để chuỗi rỗng chen vào kết quả.
+  const sparse = [{ invoice: { nbmst: '0100000001', nbten: '   ' } }, { invoice: { nbmst: '0100000001', nbten: 'TÊN THẬT' } }];
+  assert.equal(companyNameFromItems(sparse, '0100000001'), 'TÊN THẬT', 'bỏ qua tên rỗng / toàn khoảng trắng');
+});
+
+test('itemsPage: MỚI NHẤT TRƯỚC, có tổng số, và cắt được theo offset/limit', t => {
+  const { engine } = setup(t, async () => Buffer.from('{}'));
+  engine.job = {
+    mode: 'search', state: 'searching',
+    items: Array.from({ length: 250 }, (_, i) => ({
+      invoice: { shdon: String(i), nbmst: 'A', nmmst: 'B', nmten: 'Người mua', tdlap: '2026-01-0' + ((i % 9) + 1) },
+      state: 'done', files: [],
+    })),
+  };
+  const first = engine.itemsPage({ offset: 0, limit: 100 });
+  assert.equal(first.total, 250, 'phải trả TỔNG số dòng để giao diện biết có mấy trang');
+  assert.equal(first.rows.length, 100);
+  assert.equal(first.rows[0].number, '249', 'MỚI NHẤT ở đầu trang 1 — người dùng không phải cuộn xuống');
+  assert.equal(first.rows[99].number, '150');
+  const lastPage = engine.itemsPage({ offset: 200, limit: 100 });
+  assert.equal(lastPage.rows.length, 50, 'trang cuối chỉ còn phần dư');
+  assert.equal(lastPage.rows[49].number, '0');
+  assert.equal(engine.itemsPage({ offset: 0, limit: 100, newestFirst: false }).rows[0].number, '0', 'vẫn lấy được thứ tự gốc khi cần');
+  const row = first.rows[0];
+  assert.ok(row.date, 'dòng phải có NGÀY LẬP cho bảng kết quả');
+  assert.equal(row.buyer, 'B', 'dòng phải có MST người mua');
+  assert.equal(row.buyerName, 'Người mua', 'dòng phải có tên người mua');
+  assert.equal(row.stateLabel, '', 'chưa biết trạng thái ⇒ nhãn rỗng, KHÔNG bịa "Hóa đơn mới"');
+});
+
+test('itemsPage: chế độ "Tải ngay" trả hoá đơn đã xong VÀ đã có sẵn, không trả cái còn chờ', t => {
+  const { engine } = setup(t, async () => Buffer.from('{}'));
+  engine.job = {
+    mode: 'stream', state: 'downloading',
+    items: [
+      { invoice: invoice(1), state: 'done', files: [] },
+      { invoice: invoice(2), state: 'queued', files: [] },
+      { invoice: invoice(3), state: 'done', files: [] },
+      { invoice: invoice(4), state: 'skipped', files: [] },
+    ],
+  };
+  const page = engine.itemsPage({ offset: 0, limit: 100 });
+  // `skipped` = đã có sẵn trên đĩa / đã có trong kho — cũng là XONG. Nếu bỏ nó ra, chạy lại một kỳ
+  // đã tải đủ sẽ cho bảng TRỐNG dù tìm thấy đủ hoá đơn.
+  assert.equal(page.total, 3, 'hoá đơn chưa xong không lọt vào bảng, còn đã có sẵn thì phải có mặt');
+  assert.deepEqual(page.rows.map(r => r.number), ['4', '3', '1'], 'mới nhất trước');
+  assert.equal(page.rows[0].stateLabel, 'Hóa đơn mới', 'nhãn trạng thái lấy từ nguồn dùng chung');
+});
+test('pause releases a blocked request for only its own engine and allows resume', async t => {
+  let finishA, finishB, startedA, startedB;
+  const readyA = new Promise(resolve => { startedA = resolve; });
+  const readyB = new Promise(resolve => { startedB = resolve; });
+  const a = setup(t, () => { startedA(); return new Promise(resolve => { finishA = resolve; }); }).engine;
+  const b = setup(t, () => { startedB(); return new Promise(resolve => { finishB = resolve; }); }).engine;
+  a.job = { state: 'downloading', items: [], mode: 'stream' };
+  b.job = { state: 'downloading', items: [], mode: 'stream' };
+  let lateWrite = false;
+  const runA = a.run(async () => { await a.request('/test'); lateWrite = true; });
+  const runB = b.run(async () => { await b.request('/test'); });
+  await Promise.all([readyA, readyB]);
+  a.pause();
+  const result = await Promise.race([runA, new Promise((_, reject) => {
+    const timer = setTimeout(() => reject(new Error('pause did not release request')), 500);
+    timer.unref();
+  })]);
+  assert.equal(result.state, 'paused'); assert.equal(a.busy, false);
+  assert.equal(b.busy, true); assert.equal(b.cancelled, false);
+  finishA(Buffer.from('late')); finishB(Buffer.from('ok')); await runB;
+  assert.equal(lateWrite, false);
+  await a.run(async () => { assert.equal(a.cancelled, false); await a.identity(); });
+});
 test('calendar month split handles leap day and invalid dates', () => {
   assert.deepEqual(dates('2024-02-28', '2024-03-02'), [['2024-02-28', '2024-02-29'], ['2024-03-01', '2024-03-02']]);
   assert.throws(() => dates('2026-02-29', '2026-03-01'));
@@ -263,7 +346,12 @@ test('downloaded files are grouped by MST, direction and format only', async t =
   assert(relative.every(x => /^MST-0123456789\/Ban_ra\/(xml|zip)\/[^/]+$/.test(x)), relative.join(', '));
   assert(!relative.some(x => path.dirname(x).includes('C26TAA')), 'the invoice symbol must not become a folder (only part of the file name)');
   const summaryDir = path.join(dir, 'MST-0123456789');
-  assert.deepEqual(fs.readdirSync(summaryDir).sort(), ['Ban_ra', 'bao-cao-' + engine.job.id + '.json'], 'only Mua_vao/Ban_ra below the MST folder');
+  const summaryEntries = fs.readdirSync(summaryDir).sort();
+  // Điều cần giữ: hoá đơn KHÔNG sinh thêm THƯ MỤC con nào ngoài Mua_vao/Ban_ra. Còn file ở cấp
+  // MST là chuyện bình thường: báo cáo lượt chạy và sổ trạng thái hoá đơn (do engine ghi).
+  assert.deepEqual(summaryEntries.filter(name => fs.statSync(path.join(summaryDir, name)).isDirectory()), ['Ban_ra'], 'chỉ Mua_vao/Ban_ra là thư mục con của MST');
+  assert.ok(summaryEntries.includes('bao-cao-' + engine.job.id + '.json'), 'báo cáo lượt chạy nằm ở MST-.../');
+  assert.ok(summaryEntries.includes('trang-thai-hoa-don.json'), 'sổ trạng thái hoá đơn nằm ở MST-.../');
   const directionFiles = fs.readdirSync(path.join(summaryDir, 'Ban_ra')).sort();
   const xlsx = directionFiles.filter(x => x.endsWith('.xlsx'));
   assert.equal(xlsx.length, 1, 'bảng Excel nằm ngay trong Ban_ra');
@@ -488,4 +576,139 @@ test('Tải ngay: gối đầu TRANG KẾ trong lúc tải trang hiện tại (k
   assert.equal(engine.job.stats.prefetched, 1, 'phải ghi nhận số trang đã gối đầu');
   assert.equal(engine.job.state, 'completed');
   assert.equal(engine.job.items.length, 4, 'không được mất hóa đơn nào');
+});
+
+test('Ngắt mạch tải cuốn chiếu: trang mới không tải được cái nào thì DỪNG lượt, không quét tháng kế', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hoadon-circuit-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  // 2 tháng, mỗi tháng 1 trang. Trang tháng 1 tải XML lỗi tạm thời (không phải 429); nếu vòng lặp
+  // cứ quét tiếp thì tháng 2 sẽ được tra cứu — ngắt mạch phải ngăn điều đó.
+  let pages = 0;
+  const request = async query => {
+    const q = String(query);
+    if (q.includes('export-xml')) throw new Error('TCT trả HTTP 500.');
+    const matched = /[?&]state=([^&]*)/.exec(q);
+    const cursor = matched ? decodeURIComponent(matched[1]) : '';
+    if (!cursor) { pages += 1; return Buffer.from(JSON.stringify({ datas: [invoice(1), invoice(2)], total: 2, state: '' })); }
+    throw new Error('không được quét tiếp trang kế');
+  };
+  const engine = new Engine({
+    store: path.join(dir, 'job.json'), identity: async () => account, request,
+    emit: () => {}, pdf: async () => Buffer.alloc(0), excel: async () => Buffer.alloc(0),
+  });
+  await engine.stream({ ...params, to: '2026-02-28' }, dir); // 2 tháng: 01 + 02/2026
+  assert.equal(pages, 1, `chỉ được tra cứu 1 trang (dừng ngay sau trang lỗi), thực tế ${pages}`);
+  assert.equal(engine.job.state, 'partial');
+  assert.equal(engine.job.items.length, 2);
+  assert.match(engine.job.message, /Tải tiếp/);
+});
+
+test('Trang mới toàn file đã có sẵn: lượt chạy vẫn kết thúc HOÀN TẤT, không đòi bấm "Tải tiếp"', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hoadon-circuit-skip-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  let pages = 0;
+  let xmlCalls = 0;
+  const request = async query => {
+    const q = String(query);
+    if (q.includes('export-xml')) { xmlCalls += 1; return Buffer.from('<?xml version="1.0" encoding="UTF-8"?><HDon/>'); }
+    const matched = /[?&]state=([^&]*)/.exec(q);
+    const cursor = matched ? decodeURIComponent(matched[1]) : '';
+    if (!cursor) {
+      pages += 1;
+      return Buffer.from(JSON.stringify({ datas: [invoice(1), invoice(2)], total: 2, state: '' }));
+    }
+    throw new Error('không được quét tiếp trang kế');
+  };
+  const engine = new Engine({
+    store: path.join(dir, 'job.json'), identity: async () => account, request,
+    emit: () => {}, pdf: async () => Buffer.alloc(0), excel: async () => Buffer.alloc(0),
+  });
+  await engine.stream(params, dir); // lượt 1: tải đủ 2 hóa đơn
+  assert.equal(engine.job.state, 'completed');
+  const pagesAfterFirst = pages;
+  // Lượt 2 — cùng điều kiện nhưng xóa job trong RAM để ép quét lại từ đầu; file vẫn còn trên đĩa.
+  engine.job = null; engine.interrupted = false;
+  await engine.stream(params, dir);
+  assert.equal(pages, pagesAfterFirst + 1, `lượt 2 vẫn chỉ tra cứu 1 trang (cổng hết cursor), thực tế ${pages}`);
+  // "Đã có sẵn" KHÔNG phải lỗi ⇒ phải là HOÀN TẤT. Bản cũ trả 'partial' + "Bấm Tải tiếp" ở đây,
+  // nên bấm lại chỉ ra ĐÚNG kết quả cũ: lượt chạy không bao giờ xong, người dùng phải tự bấm mãi.
+  assert.equal(engine.job.state, 'completed', 'toàn bộ đã có sẵn ⇒ HOÀN TẤT, không phải "còn dở"');
+  assert.doesNotMatch(engine.job.message, /Tải tiếp/, 'không còn gì để tải thì không được đòi bấm "Tải tiếp"');
+  assert.match(engine.job.message, /Hoàn tất/);
+  assert.ok(xmlCalls > 0, 'lượt 1 phải tải XML thật để tạo file trên đĩa');
+});
+
+test('Bước Excel TREO không giữ lượt tải: hết hạn thì bỏ qua, lượt vẫn kết thúc và nhả busy', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hoadon-excel-deadline-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const request = async route => {
+    const q = String(route);
+    if (q.includes('export-xml')) {
+      const query = new URLSearchParams(q.split('?')[1] || '');
+      const zip = new JSZip();
+      zip.file('invoice.xml', `<?xml version="1.0"?><HDon><DLHDon><TTChung><SHDon>${query.get('shdon') || '1'}</SHDon><KHMSHDon>1</KHMSHDon><KHHDon>C26TAA</KHHDon></TTChung></DLHDon></HDon>`);
+      return zip.generateAsync({ type: 'nodebuffer' });
+    }
+    return Buffer.from(JSON.stringify({ datas: [invoice(1)], total: 1 }));
+  };
+  const engine = new Engine({
+    store: path.join(dir, 'job.json'), identity: async () => account, request,
+    emit: () => {}, pdf: async () => Buffer.alloc(0),
+    excel: () => new Promise(() => {}), // giả lập worker Excel TREO: promise không bao giờ settle
+  });
+  // Hạn chót thật là 90 giây — ép xuống nhỏ cho test chạy nhanh.
+  const previous = process.env.HOADON_EXCEL_TIMEOUT_MS;
+  process.env.HOADON_EXCEL_TIMEOUT_MS = '80';
+  try {
+    const started = Date.now();
+    await engine.stream({ ...params, formats: ['xml', 'xlsx'] }, dir);
+    assert.ok(Date.now() - started < 10000, 'phải bỏ qua Excel theo hạn chót, không chờ vô hạn');
+    assert.equal(engine.busy, false, 'lượt tải PHẢI nhả busy dù Excel treo — đây là lỗi đã gặp thật');
+    assert.equal(engine.job.state, 'completed', 'hoá đơn đã tải xong thì lượt phải HOÀN TẤT');
+    assert.match(engine.job.message, /Không dựng được bảng tổng hợp Excel/, 'phải báo ra, không im lặng');
+    assert.equal(engine.job.items[0].state, 'done', 'hoá đơn vẫn tải xong bình thường');
+  } finally {
+    if (previous === undefined) delete process.env.HOADON_EXCEL_TIMEOUT_MS;
+    else process.env.HOADON_EXCEL_TIMEOUT_MS = previous;
+  }
+});
+
+test('Trang toàn file đã có sẵn KHÔNG ngắt lượt: vẫn đi tới hết cursor nên không bỏ sót trang cũ', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hoadon-circuit-continue-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  let pages = 0;
+  let phase2 = false;
+  const request = async query => {
+    const q = String(query);
+    if (q.includes('export-xml')) {
+      const query2 = new URLSearchParams(q.split('?')[1] || '');
+      const zip = new JSZip();
+      zip.file('invoice.xml', `<?xml version="1.0"?><HDon><DLHDon><TTChung><SHDon>${query2.get('shdon') || '1'}</SHDon><KHMSHDon>1</KHMSHDon><KHHDon>C26TAA</KHHDon></TTChung></DLHDon></HDon>`);
+      return zip.generateAsync({ type: 'nodebuffer' });
+    }
+    const matched = /[?&]state=([^&]*)/.exec(q);
+    const cursor = matched ? decodeURIComponent(matched[1]) : '';
+    pages += 1;
+    if (!phase2) return Buffer.from(JSON.stringify({ datas: [invoice(1), invoice(2)], total: 2, state: '' }));
+    // Lượt 2: trang 1 TOÀN hoá đơn đã có sẵn nhưng cổng vẫn còn cursor ⇒ phải đi tiếp sang trang 2,
+    // nơi có hoá đơn CHƯA tải. Bản cũ ngắt ở trang 1 ⇒ hoá đơn này bị bỏ sót mà không ai biết.
+    if (!cursor) return Buffer.from(JSON.stringify({ datas: [invoice(1), invoice(2)], total: 3, state: 'c1' }));
+    if (cursor === 'c1') return Buffer.from(JSON.stringify({ datas: [invoice(3)], total: 3, state: '' }));
+    throw new Error('cursor lạ: ' + cursor);
+  };
+  const engine = new Engine({
+    store: path.join(dir, 'job.json'), identity: async () => account, request,
+    emit: () => {}, pdf: async () => Buffer.alloc(0), excel: async () => Buffer.alloc(0),
+  });
+  await engine.stream(params, dir);
+  assert.equal(engine.job.state, 'completed');
+  const pagesAfterFirst = pages;
+  phase2 = true;
+  engine.job = null; engine.interrupted = false;
+  await engine.stream(params, dir);
+  assert.equal(pages, pagesAfterFirst + 2, `lượt 2 phải tra cứu ĐỦ 2 trang, thực tế ${pages}`);
+  const soBa = engine.job.items.find(item => item.invoice.shdon === '3');
+  assert.ok(soBa, 'hoá đơn ở trang 2 không được bỏ sót');
+  assert.equal(soBa.state, 'done', 'hoá đơn trang 2 phải được tải về');
+  assert.equal(engine.job.state, 'completed');
 });

@@ -23,7 +23,9 @@ test('UI: tác vụ DÀI không giữ `pending` ⇒ bấm sang MST khác đượ
   // work() phải phân biệt tác vụ dài: dài thì KHÔNG đặt pending.
   assert.ok(renderer.includes('async function work(url, data, options = {})'), 'work() phải nhận options');
   assert.ok(renderer.includes('if (isLong) longMst = '), 'tác vụ dài phải ghi nhớ MST riêng, không dùng `pending`');
-  assert.ok(renderer.includes('else pending = true;'), 'chỉ yêu cầu UI ngắn mới giữ `pending`');
+  // else { pending = true; selectingMst = ... } — nhánh UI ngắn giữ `pending` (kèm ghi nhớ MST vừa
+  // bấm cho hiệu ứng chọn tức thì; selectingMst chỉ để VẼ, không chặn bấm — xem ui-wiring.test.js).
+  assert.ok(renderer.includes('else { pending = true;'), 'chỉ yêu cầu UI ngắn mới giữ `pending`');
   // Tra cứu và tải cuốn chiếu là hai đường dài.
   assert.ok(renderer.includes('}, { long: true });'), 'tra cứu/tải phải được đánh dấu là tác vụ dài');
   assert.ok(renderer.includes("work('/api/resume', { mst: current.selected }, { long: true })"), 'nút Tải tiếp cũng là tác vụ dài của đúng MST đó');
@@ -50,6 +52,15 @@ test('server: endpoint thủ công chạy ĐÚNG engine của MST được yêu 
     assert.ok(server.includes(`url.pathname === '${name}'`), `thiếu ${name}`);
   }
   assert.equal((server.match(/const target = engineOf\(String\(\(await readBody\(req\)\)\.mst/g) || []).length, 3, 'download/resume/export-excel đều phải nhận mst');
+});
+
+test('server: tra cứu/tải TRẢ LỜI NGAY — tác vụ chạy nền, app tắt vẫn tạm dừng đúng lượt', () => {
+  // Bấm là UI có phản hồi: server trả snapshot ngay, tác vụ dài chạy nền (fire-and-forget có sổ sách).
+  const server = read('src/server.js');
+  assert.ok(server.includes('function runDetached(target, jobId, label, fn)'), 'phải có runDetached');
+  // Regex cũng khớp đúng dòng khai báo hàm — bỏ khai báo ra trước khi đếm 4 lời gọi.
+  assert.equal((server.replace('function runDetached(target, jobId, label, fn)', '').match(/runDetached\(target/g) || []).length, 4, 'search/stream/download/resume đều phải chạy nền');
+  assert.ok(server.includes('for (const item of detachedTasks) { try { item.target.pause(); } catch {} }'), 'thoát app phải tạm dừng mọi tác vụ nền');
 });
 
 test('server: ensureIdle chỉ kiểm tra engine của ĐÚNG MST đích', () => {

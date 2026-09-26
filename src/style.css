@@ -1,4 +1,4 @@
-:root{font-family:Segoe UI,Arial,sans-serif;color:#20324a;background:#f3f6fa;font-size:14px}*{box-sizing:border-box}body{margin:0;display:flex;min-height:100vh}aside{width:250px;background:#14283f;color:#fff;padding:26px 18px 92px;position:fixed;inset:0 auto 0 0;display:flex;flex-direction:column}.brand{display:flex;align-items:center;gap:12px;margin:0 0 18px}.brand-logo{display:block;height:56px;width:auto;object-fit:contain;flex:0 0 auto}.brand h2{font-size:19px;margin:0;line-height:1.2;white-space:nowrap;color:#ffb020;font-weight:800;letter-spacing:.5px}aside h2{font-size:19px;margin:12px 0 24px}.nav{padding:13px 12px;border-radius:8px;font-weight:600;font-size:13px;background:#27425b;color:#7df3d5}.side-bottom{position:absolute;bottom:28px;font-size:11px;color:#b1c3d4;line-height:2}.side-bottom small{color:#7693ae}main{margin-left:250px;padding:22px 26px 14px;width:calc(100% - 250px)}main>header{display:flex;justify-content:space-between;align-items:center;position:sticky;top:0;z-index:11;background:#f3f6fa;padding:22px 26px 10px;margin:-22px -26px 5px}.eyebrow{font-size:10px;font-weight:700;letter-spacing:2px;color:#7a8b9e}h1{font-size:24px;margin:5px 0}header p{margin:0;color:#76869a;font-size:13px}button{font:600 12px Segoe UI,Arial;cursor:pointer;border-radius:7px;padding:11px 15px;border:1px solid #d6e0eb;background:#fff;color:#29415d}button:disabled{opacity:.45;cursor:not-allowed}.primary{background:#087f70;border-color:#087f70;color:#fff}.link{background:transparent;border-color:transparent;color:#187e73}.danger{color:#b14b3c}.account{background:#fff;border:1px solid #e1e7ef;border-radius:10px;padding:9px 14px;display:flex;align-items:center;justify-content:space-between;margin-bottom:15px}.account strong{font-size:12px}.account #account-hint{margin-left:14px;color:#8492a4;font-size:11px}.account-actions{display:flex;align-items:center;gap:4px}.account-actions select{width:220px;margin:0;padding:7px 9px;height:34px}.dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:#91a2b5;margin-right:8px}.dot.active{background:#13b990}.workspace{display:grid;grid-template-columns:312px minmax(0,1fr);gap:16px}.card{background:#fff;border:1px solid #e0e7ef;border-radius:11px}.filters{padding:15px}h3{font-size:13px;margin:0 0 12px}.filters>label,.date-grid label{display:block;color:#6c7d91;font-size:11px;font-weight:600;margin-bottom:15px}input,select{font:12px Segoe UI;color:#2c425a;background:#fafcfe;border:1px solid #dce4ee;border-radius:6px;width:100%;padding:10px;margin-top:7px;min-width:0}select{height:38px}.date-grid{display:grid;grid-template-columns:1fr 1fr;gap:9px}.formats{display:flex;gap:8px;flex-wrap:wrap}.formats label{font-size:11px;display:flex;align-items:center;gap:4px}.formats input{width:auto;margin:0;accent-color:#087f70}.hint{font-size:10px;color:#8b98a9;line-height:1.6}.folder{display:flex;gap:6px;align-items:end}.folder button{padding:8px 12px;height:36px}.wide{width:100%;margin-top:5px}.results{min-width:0;display:flex;flex-direction:column;gap:13px}.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:13px}.stats .card{padding:12px 15px}.stats span{font-size:9px;letter-spacing:1px;color:#8392a4;font-weight:700}.stats strong{display:block;font-size:22px;margin-top:5px}.stats .card:nth-child(2) strong,.done{color:#078a76}.stats .card:nth-child(3) strong,.failed{color:#be853a}.table-card{flex:1;overflow:hidden;min-height:230px}.table-head{display:flex;align-items:center;justify-content:space-between;padding:13px 16px}.table-head h3{margin:0}.badge{font-size:10px;background:#eef5f5;color:#517c78;padding:5px 9px;border-radius:5px}.table-scroll{max-height:280px;overflow:auto}table{width:100%;border-collapse:collapse;font-size:11px}th{background:#f8fafc;text-align:left;font-weight:600;color:#8995a5;padding:8px 12px;position:sticky;top:0}td{padding:9px 12px;border-top:1px solid #edf1f5;max-width:200px;overflow-wrap:anywhere}td small{display:block;color:#8a97a7;margin-top:4px}#empty{text-align:center;padding:26px;color:#8b9caf}#empty h3{color:#52677e;margin:12px 0 8px;font-size:13px}#empty p{font-size:11px;line-height:1.8}.empty-icon{font-size:38px;color:#a8c7ce}.progress-card{padding:13px 16px}.progress-heading{display:flex;justify-content:space-between;font-size:11px;gap:12px}progress{width:100%;height:6px;border:0;border-radius:6px;margin:9px 0 11px;accent-color:#0b9e87}.actions{display:flex;gap:8px;flex-wrap:wrap}.actions button{font-size:11px;padding:9px 12px}footer{font-size:10px;color:#9aa7b6;margin-top:20px;text-align:center}#notice{position:fixed;bottom:30px;right:30px;max-width:520px;background:#fff4ed;color:#973d20;border:1px solid #f0bda2;border-radius:8px;padding:16px;box-shadow:0 8px 30px #0002;z-index:10}#limit{padding:0 16px}@media(max-width:1100px){aside{width:214px;padding:20px 16px 92px}main{margin-left:214px;width:calc(100% - 214px);padding:18px 16px}.workspace{grid-template-columns:276px minmax(0,1fr);gap:14px}.account #account-hint{display:none}}
+:root{font-family:Segoe UI,Arial,sans-serif;color:#20324a;background:#f3f6fa;font-size:14px}*{box-sizing:border-box}body{margin:0;display:flex;min-height:100vh}aside{width:250px;background:#14283f;color:#fff;padding:26px 18px 92px;position:fixed;inset:0 auto 0 0;display:flex;flex-direction:column}.brand{display:flex;align-items:center;gap:12px;margin:0 0 18px}.brand-logo{display:block;height:56px;width:auto;object-fit:contain;flex:0 0 auto}aside h2{font-size:19px;margin:12px 0 24px}.nav{padding:13px 12px;border-radius:8px;font-weight:600;font-size:13px;background:#27425b;color:#7df3d5}.side-bottom{position:absolute;bottom:28px;font-size:11px;color:#b1c3d4;line-height:2}.side-bottom small{color:#7693ae}main{margin-left:250px;padding:22px 26px 14px;width:calc(100% - 250px)}main>header{display:flex;justify-content:space-between;align-items:center;position:sticky;top:0;z-index:11;background:#f3f6fa;padding:22px 26px 10px;margin:-22px -26px 5px}.eyebrow{font-size:10px;font-weight:700;letter-spacing:2px;color:#7a8b9e}h1{font-size:24px;margin:5px 0}header p{margin:0;color:#76869a;font-size:13px}button{font:600 12px Segoe UI,Arial;cursor:pointer;border-radius:7px;padding:11px 15px;border:1px solid #d6e0eb;background:#fff;color:#29415d}button:disabled{opacity:.45;cursor:not-allowed}.primary{background:#087f70;border-color:#087f70;color:#fff}.link{background:transparent;border-color:transparent;color:#187e73}.danger{color:#b14b3c}.account{background:#fff;border:1px solid #e1e7ef;border-radius:10px;padding:9px 14px;display:flex;align-items:center;justify-content:space-between;margin-bottom:15px}.account strong{font-size:12px}.account #account-hint{margin-left:14px;color:#8492a4;font-size:11px}.account-actions{display:flex;align-items:center;gap:4px}.account-actions select{width:220px;margin:0;padding:7px 9px;height:34px}.dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:#91a2b5;margin-right:8px}.dot.active{background:#13b990}.workspace{display:grid;grid-template-columns:312px minmax(0,1fr);gap:16px}.card{background:#fff;border:1px solid #e0e7ef;border-radius:11px}.filters{padding:15px}h3{font-size:13px;margin:0 0 12px}.filters>label,.date-grid label{display:block;color:#6c7d91;font-size:11px;font-weight:600;margin-bottom:15px}input,select{font:12px Segoe UI;color:#2c425a;background:#fafcfe;border:1px solid #dce4ee;border-radius:6px;width:100%;padding:10px;margin-top:7px;min-width:0}select{height:38px}.date-grid{display:grid;grid-template-columns:1fr 1fr;gap:9px}.formats{display:flex;gap:8px;flex-wrap:wrap}.formats label{font-size:11px;display:flex;align-items:center;gap:4px}.formats input{width:auto;margin:0;accent-color:#087f70}.hint{font-size:10px;color:#8b98a9;line-height:1.6}.folder{display:flex;gap:6px;align-items:end}.folder button{padding:8px 12px;height:36px}.wide{width:100%;margin-top:5px}.results{min-width:0;display:flex;flex-direction:column;gap:13px}.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:13px}.stats .card{padding:12px 15px}.stats span{font-size:9px;letter-spacing:1px;color:#8392a4;font-weight:700}.stats strong{display:block;font-size:22px;margin-top:5px}.stats .card:nth-child(2) strong,.done{color:#078a76}.stats .card:nth-child(3) strong,.failed{color:#be853a}.table-card{flex:1;overflow:hidden;min-height:230px}.table-head{display:flex;align-items:center;justify-content:space-between;padding:13px 16px}.table-head h3{margin:0}.badge{font-size:10px;background:#eef5f5;color:#517c78;padding:5px 9px;border-radius:5px}.table-scroll{max-height:280px;overflow:auto}table{width:100%;border-collapse:collapse;font-size:11px}th{background:#f8fafc;text-align:left;font-weight:600;color:#8995a5;padding:8px 12px;position:sticky;top:0}td{padding:9px 12px;border-top:1px solid #edf1f5;max-width:200px;overflow-wrap:anywhere}td small{display:block;color:#8a97a7;margin-top:4px}#empty{text-align:center;padding:26px;color:#8b9caf}#empty h3{color:#52677e;margin:12px 0 8px;font-size:13px}#empty p{font-size:11px;line-height:1.8}.empty-icon{font-size:38px;color:#a8c7ce}.progress-card{padding:13px 16px}.progress-heading{display:flex;justify-content:space-between;font-size:11px;gap:12px}progress{width:100%;height:6px;border:0;border-radius:6px;margin:9px 0 11px;accent-color:#0b9e87}.actions{display:flex;gap:8px;flex-wrap:wrap}.actions button{font-size:11px;padding:9px 12px}footer{font-size:10px;color:#9aa7b6;margin-top:20px;text-align:center}#notice{position:fixed;bottom:30px;right:30px;max-width:520px;background:#fff4ed;color:#973d20;border:1px solid #f0bda2;border-radius:8px;padding:16px;box-shadow:0 8px 30px #0002;z-index:10}#limit{padding:0 16px}@media(max-width:1100px){aside{width:214px;padding:20px 16px 92px}main{margin-left:214px;width:calc(100% - 214px);padding:18px 16px}.workspace{grid-template-columns:276px minmax(0,1fr);gap:14px}.account #account-hint{display:none}}
 /* ---- Danh sách MST ở cột trái ---- */
 aside h2{margin:17px 0 22px}
 .srch{position:relative;display:block;margin-bottom:14px}
@@ -146,3 +146,250 @@ tbody tr.clickable td:last-child::after{content:' ↗';color:#8a97a7}
 .mst-stop:hover{color:#fff;background:#2a4a68}
 .mst-stop:disabled{opacity:.35;cursor:not-allowed}
 .mst-stop:disabled:hover{background:transparent;color:#9db6ce}
+
+/* ============================================================================
+   LỚP TỐI ƯU DESKTOP (2026-09) — nối thêm, KHÔNG đụng các quy tắc phía trên.
+   Mục tiêu: mượt (chuyển cảnh nhẹ tay), dùng lâu không mỏi mắt (độ tương phản,
+   số bảng căn đều, tiêu đề bảng dính đầu khi cuộn), không bị quên đang ở đâu
+   (vòng focus bàn phím rõ ràng, dòng chọn đậm hơn). Tôn trọng prefers-reduced-motion.
+   ========================================================================== */
+:root{
+  --ct-ink:#24384f;          /* chữ chính: đậm hơn chút so #20324a cho dễ đọc */
+  --ct-muted:#64758a;        /* chữ phụ: đậm hơn #76869a — đọc lâu không mờ */
+  --ct-line:#dde5ee;
+  --ct-accent:#087f70;
+  --ct-accent-ink:#0b6b5c;
+  --ct-focus:#0aa08c;
+  --ct-row-hover:#f2f8f7;
+  --ct-row-select:#e5f3ef;
+}
+html{color-scheme:light}
+body{-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
+::selection{background:#bfe9e0;color:#123c34}
+
+/* Nút & ô nhập: phản hồi nhẹ 0.12s — đủ thấy, không lê thê */
+button,input,select{transition:background-color .12s ease,border-color .12s ease,color .12s ease,box-shadow .12s ease}
+button:hover:not(:disabled){box-shadow:0 1px 4px rgba(20,40,63,.08)}
+button:active:not(:disabled){transform:translateY(1px)}
+button:focus-visible,input:focus-visible,select:focus-visible,summary:focus-visible,[tabindex]:focus-visible{
+  outline:2px solid var(--ct-focus);outline-offset:2px;border-radius:7px;
+}
+input:hover:not(:disabled),select:hover:not(:disabled){border-color:#c4d2e2}
+
+/* Bảng: tiêu đề dính đầu bảng KHI CUỘN (đã có sticky, gia cố nền + kẻ đáy);
+   dòng căn đều số, hover/select đậm hơn để không quên dòng đang xem */
+th{box-shadow:inset 0 -1px 0 var(--ct-line);z-index:1}
+tbody tr{transition:background-color .1s ease}
+tbody tr.clickable:hover td{background:var(--ct-row-hover)}
+tbody tr.selected td{background:var(--ct-row-select)!important;box-shadow:inset 3px 0 0 var(--ct-accent)}
+td,th{font-variant-numeric:tabular-nums}
+
+/* Thanh cuộn mảnh, nhẹ nhàng — bàn làm việc sạch sẽ */
+*::-webkit-scrollbar{width:10px;height:10px}
+*::-webkit-scrollbar-track{background:transparent}
+*::-webkit-scrollbar-thumb{background:#c3cfdc;border-radius:8px;border:2px solid transparent;background-clip:content-box}
+*::-webkit-scrollbar-thumb:hover{background:#a4b4c6;border:2px solid transparent;background-clip:content-box}
+*{scrollbar-width:thin;scrollbar-color:#c3cfdc transparent}
+
+/* Hộp thoại mở lên: trượt nhẹ + mờ nền dịu */
+dialog[open]{animation:ctDialog .16s ease-out}
+@keyframes ctDialog{from{opacity:0;transform:translateY(8px) scale(.985)}to{opacity:1;transform:none}}
+dialog::backdrop{background:#12283fb0}
+
+/* Thông báo: vào/ra mượt, không giật */
+#notice{animation:ctNotice .18s ease-out}
+@keyframes ctNotice{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
+
+/* Giảm chuyển động khi hệ điều hành yêu cầu */
+@media(prefers-reduced-motion:reduce){
+  *,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important}
+}
+
+/* Cột trái: dòng MST phản hồi nhẹ, không đổi cấu trúc */
+.mst-row{transition:background-color .12s ease,border-color .12s ease}
+.mst-row.active{box-shadow:inset 3px 0 0 #2bd4ae}
+
+/* ============================================================================
+   TOAST GÓC PHẢI TRÊN (2026-09) — xếp chồng, rõ - gọn - mượt.
+   Thay cho #notice cũ (một ô duy nhất ở góc phải dưới, thông báo sau đè thông báo trước).
+   ========================================================================== */
+.notice-stack {
+  position: fixed; top: 14px; right: 18px; z-index: 60;
+  display: flex; flex-direction: column; gap: 8px; align-items: flex-end;
+  width: min(440px, calc(100vw - 40px));
+  pointer-events: none; /* chỉ các toast con bấm được — không che vùng làm việc */
+}
+.toast {
+  pointer-events: auto;
+  display: flex; align-items: flex-start; gap: 10px; flex-wrap: wrap;
+  max-width: 100%;
+  background: #eaf7f3; color: #0b6b5c; border: 1px solid #b7e3d6;
+  border-radius: 10px; padding: 10px 12px; box-shadow: 0 10px 30px rgba(16, 32, 48, .16);
+  font-size: 12.5px; line-height: 1.5;
+  animation: toastIn .22s cubic-bezier(.2, .8, .3, 1);
+}
+.toast .toast-text { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+.toast button.link { border: 1px solid #b7e3d6; background: #fff; padding: 5px 10px; border-radius: 7px; font-size: 11.5px; flex: 0 0 auto; }
+.toast button.link:hover { background: #f2fbf8; }
+.toast .notice-close { margin-left: auto; border: 0; background: transparent; color: #0b6b5c; font-size: 13px; line-height: 1; padding: 3px 7px; border-radius: 6px; cursor: pointer; flex: 0 0 auto; }
+.toast .notice-close:hover { background: #d6f0e8; }
+.toast.notice-error { background: #fdecea; color: #a4342a; border-color: #f2c3bc; }
+.toast.notice-error button.link { border-color: #f2c3bc; }
+.toast.notice-error button.link:hover { background: #fdf3f1; }
+.toast.notice-error .notice-close { color: #a4342a; }
+.toast.notice-error .notice-close:hover { background: #fadbd6; }
+.toast.toast-leave { animation: toastOut .2s ease-in forwards; }
+@keyframes toastIn { from { opacity: 0; transform: translateX(24px); } to { opacity: 1; transform: none; } }
+@keyframes toastOut { to { opacity: 0; transform: translateX(24px) scale(.96); } }
+
+/* ============================================================================
+   DÒNG MST GỌN GÀNG — NÚT ▶/⏹ VÀ ⋯ LUÔN SÁT PHẢI, KHÔNG TRÀN (2026-09)
+   Trước đây banner trạng thái (flex trong .mst-info) đẩy nút ⋯ tràn khỏi dòng khi
+   tên dài. Giờ: nút giữ chỗ cố định, chữ và banner co giãn, cắt dấu "…".
+   ========================================================================== */
+/* KHÔNG đặt overflow:hidden trên .mst-row: menu ⋯ (.row-menu-panel) là con của dòng nhưng treo
+   XUỐNG DƯỚI dòng (position:absolute) — overflow:hidden sẽ cắt cụt menu đúng một dòng cao (lỗi
+   thật: "modal cài đặt của MST bị kẹt trong mst-row-menu-panel"). Chống tràn chữ đã chắc ở cấp
+   .mst-info / .mst-banner phía dưới: chữ cắt "…", nút giữ chỗ cố định nên dòng không bao giờ tràn. */
+.mst-info { min-width: 0; flex: 1 1 auto; }    /* cho phép co, chữ cắt "…" */
+.mst-info strong, .mst-info small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: block; }
+.mst-stop, .row-menu { flex: 0 0 auto; }       /* nút play/stop + menu ⋯ KHÔNG bao giờ bị ép co */
+.row-menu { margin-left: 2px; }
+/* Banner trạng thái: nằm trên dòng riêng, tràn chữ thì cắt "…" — không đẩy lệch nút */
+.mst-banner { max-width: 100%; display: block; }
+
+/* Menu ⋯ MỞ RA NGOÀI CỘT TRÁI (2026-09): panel là con của dòng nhưng dùng position:fixed nên
+   thoát hẳn khung cuộn .mst-items (overflow:auto) và KHÔNG bị nhét trong bề rộng 200–250px của
+   sidebar — toạ độ do renderer.js đặt: neo mép trái panel vào sát mép phải sidebar, bung sang
+   vùng nội dung nên nhãn dài vẫn đọc trọn. Hover dòng giữ nền lúc menu mở: không lấp lánh. */
+.mst-row.menu-open { background: #1b3149; }
+.mst-row.menu-open:hover { background: #1b3149; }
+/* Panel nằm trong stacking context của aside: aside phải cao hơn sticky header (z-index:11),
+   nếu không menu bung sang phải sẽ bị header che mất một khúc. */
+aside { z-index: 20; }
+.row-menu-panel {
+  position: fixed; top: 0; left: 0; right: auto;   /* renderer.js đặt left/top thật khi mở */
+  min-width: 240px; width: max-content;            /* rộng rãi vì đã ra ngoài cột hẹp */
+  max-width: min(360px, calc(100vw - 32px));
+}
+.row-menu-panel button { white-space: nowrap; }    /* nhãn menu không xuống dòng lộn xộn */
+
+/* ============================================================================
+   HEADER & SIDE-BOTTOM GỌN GÀNG KHI THU NHỎ CỬA SỔ (2026-09)
+   Trước đây header tràn sang trái đè sidebar khi cửa sổ hẹp. Giờ: header co đúng,
+   badge gói licence rời xuống dòng riêng khi hẹp, side-bottom thành hàng ngang.
+   ========================================================================== */
+main > header { min-width: 0; gap: 14px; flex-wrap: nowrap; }
+main > header .view-switch { flex: 0 0 auto; }
+main > header > div { min-width: 0; flex: 1 1 auto; }
+main > header h1 {
+  font-size: clamp(17px, 2.2vw, 24px);       /* co chữ theo bề rộng, không đùn tràn */
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.license-badge { flex: 0 0 auto; }
+/* Badge gói licence: hẹp quá thì tự rời xuống dòng dưới tiêu đề, không đè sidebar */
+main > header h1 { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+/* side-bottom: hàng ngang — Cài đặt | phiên bản | nút cập nhật, cách đều, không xuống dòng lộn xộn */
+.side-bottom {
+  position: static; margin-top: auto; padding-top: 14px;
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  border-top: 1px solid #263d55;
+}
+.side-bottom small { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.side-bottom #update-available { flex: 0 0 auto; }
+/* aside là cột flex: phần danh sách MST co đúng, side-bottom luôn nằm đáy */
+aside { gap: 0; }
+
+/* Hoàn thiện bố cục cột trái + chống tràn cửa sổ hẹp */
+aside { padding-bottom: 18px; }   /* side-bottom giờ là phần tử thường — bỏ đệm 92px của bản absolute */
+.mst-items { min-height: 0; }     /* cho phép co trong cột flex, cuộn riêng */
+
+/* Cửa sổ rất hẹp (máy cấu hình thấp, snap 2 cửa sổ): xếp chồng filter lên bảng,
+   sidebar hẹp lại — KHÔNG có gì tràn sang trái đè sidebar nữa */
+@media (max-width: 860px) {
+  aside { width: 200px; padding: 16px 12px 14px; }
+  main { margin-left: 200px; width: calc(100% - 200px); padding: 16px 14px 10px; }
+  .workspace { grid-template-columns: minmax(0, 1fr); }  /* một cột: filter trên, bảng dưới */
+  main > header { flex-wrap: wrap; }                      /* view-switch xuống dòng riêng khi hẹp */
+}
+
+/* ============================================================================
+   PHẢN HỒI TỨC THÌ KHI CHỌN MST (2026-09) — chỉ hiệu ứng, KHÔNG đổi logic chọn.
+   Dòng vừa bấm (đang chờ máy chủ xác nhận /api/account/select) tô sáng nhẹ + nút
+   ▶/⏹ xoay. Xác nhận xong render() vẽ lại theo state.selected như cũ — dòng bấm
+   không còn "đứng im" trong lúc request đi về.
+   ========================================================================== */
+.mst-row.selecting { background: #1b3149; border-color: #2bd4ae40; }
+.mst-row.selecting .mst-info { opacity: .75; }
+.mst-row.selecting .mst-stop { color: #7fd4ff; animation: mstStopSpin .8s linear infinite; }
+@keyframes mstStopSpin { to { transform: rotate(360deg); } }
+
+/* ============================================================================
+   CỤM THƯƠNG HIỆU ĐẦU SIDEBAR — LOGO + WORDMARK 2 DÒNG (2026-09)
+   Chữ cũ "CN Tax Tools": 19px, màu CAM — sắc độ DUY NHẤT nằm ngoài palette app (navy
+   #14283f, mint #2bd4ae/#7df3d5, teal #087f70, chữ phụ #7b93ab) nên nhìn lệch tông; thêm nữa
+   .brand h2 đặt white-space:nowrap mà không có min-width:0 nên tràn biên khi sidebar co về
+   214px/200px. Giờ: logo 44px, "CN" mint + "Tax Tools" trắng 17px, dòng phụ 9px uppercase,
+   kẻ chân #263d55 (cùng kiểu .side-bottom); chữ cắt "…" an toàn, dòng phụ tự ẩn ở ≤860px.
+   ========================================================================== */
+.brand { gap: 10px; margin: 0 0 16px; padding-bottom: 13px; border-bottom: 1px solid #263d55; }
+.brand-logo { height: 44px; }
+.brand-text { min-width: 0; }
+.brand h2 { font-size: 17px; margin: 0; line-height: 1.25; font-weight: 700; letter-spacing: .2px; color: #fff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.brand h2 b { color: #2bd4ae; font-weight: 800; }
+.brand-tag { display: block; font-size: 9px; font-weight: 700; letter-spacing: 1.2px; text-transform: uppercase; color: #7b93ab; margin-top: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+@media (max-width: 860px) { .brand-tag { display: none; } }
+
+/* ============================================================================
+   4 THẺ SỐ KẾT QUẢ (2026-09) — thay 3 thẻ cũ vì trùng số
+   TÌM THẤY = TỔNG HÓA ĐƠN, ĐÃ HOÀN TẤT = ĐÃ TẢI + ĐÃ CÓ SẴN, CẦN THỬ LẠI = LỖI. Giờ chỉ còn
+   TỔNG HÓA ĐƠN / ĐÃ TẢI / ĐÃ CÓ SẴN / LỖI (đọc state.stats, xem renderer.js paintStatBreakdown).
+   Lưới cũ 3 cột đổi sang tự co: 4 cột khi rộng, 2 cột khi hẹp — không dồn/cắt chữ.
+   Phải ghi .card.xxx: hai rule cũ `.stats .card:nth-child(2|3) strong` có cùng độ ưu tiên nên
+   đứng trước là bị ăn theo thứ tự con (thẻ "ĐÃ CÓ SẴN" từng bị nhuộm cam của thẻ lỗi).
+   ========================================================================== */
+/* ============================================================================
+   DÒNG MST BỐ CỤC 2 TẦNG (2026-09) — banner trải hết bề ngang, 2 nút xếp dọc sát phải
+   Trước đây cả dòng là một hàng ngang: chấm · chữ · ▶/⏹ · ⋯, và banner nằm TRONG .mst-info
+   nên chỉ còn ~65px ⇒ chữ luôn bị cắt "…". Giờ: tầng 1 = chấm + chữ + cột nút dọc bên phải;
+   tầng 2 = banner trải hết bề ngang dòng (vẫn 1 dòng, quá dài thì cắt "…" như cũ).
+   Chiều cao mỗi dòng gần như không đổi vì banner vốn đã nằm trên dòng riêng trong khối chữ.
+   ========================================================================== */
+.mst-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  column-gap: 9px;
+  row-gap: 5px;
+}
+.mst-dot { grid-column: 1; grid-row: 1; }
+.mst-info { grid-column: 2; grid-row: 1; }
+.mst-actions { grid-column: 3; grid-row: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; }
+.mst-actions .mst-stop, .mst-actions .row-menu { margin: 0; }   /* bỏ margin trái của .row-menu cũ */
+.mst-banner { grid-column: 1 / -1; grid-row: 2; margin-top: 0; }  /* khe cách do row-gap lo */
+
+/* ============================================================================
+   CHỮ THƯƠNG HIỆU DÙNG LẠI Ở 2 CHỖ KHÁC (2026-09)
+   Hộp Hỗ trợ và dòng phiên bản ở đáy sidebar dùng đúng kiểu chữ của wordmark đầu sidebar:
+   "CN" mint #2bd4ae + đậm, phần còn lại màu trắng, 17px/700. Chữ "Hỗ trợ" hạ xuống xám nhạt để
+   thương hiệu nổi lên; dòng phiên bản trước đây là xám 11px nên lẫn vào các dòng phụ của sidebar.
+   ========================================================================== */
+.brand-mark { font-size: 17px; font-weight: 700; letter-spacing: .2px; color: #fff; }
+.brand-mark b { color: #2bd4ae; font-weight: 800; }
+.support-header .support-label { font-size: 12px; font-weight: 600; color: #adbfce; letter-spacing: .3px; }
+/* Đáy sidebar: dòng phiên bản phải NHỎ và im như các dòng phụ cạnh nút “Cài đặt” — 17px từng
+   làm nó to hơn cả nút bên cạnh. Vẫn giữ "CN" mint để liền mạch thương hiệu. */
+#app-version { color: #b1c3d4; font-size: 11px; font-weight: 600; letter-spacing: 0; }
+#app-version b { color: #2bd4ae; font-weight: 700; }
+#app-version .app-version-tag { font-size: 11px; font-weight: 600; color: #7693ae; letter-spacing: 0; }
+
+/* Modal chọn cách đăng nhập (hiện khi bấm dòng MST chưa có phiên): nhỏ gọn, 3 nút xếp dọc dễ bấm. */
+#login-choice-dialog { width: min(420px, 92vw); }
+.login-choice-actions { display: flex; flex-direction: column; gap: 8px; }
+.login-choice-actions button { width: 100%; }
+#login-choice-status { min-height: 16px; margin: 12px 0 0; }
+
+.stats { grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); }
+.stats .card.downloaded strong { color: #078a76; }
+.stats .card.existed strong { color: #517c78; }
+.stats .card.errors strong { color: #be853a; }

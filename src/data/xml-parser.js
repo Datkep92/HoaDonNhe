@@ -71,6 +71,23 @@ function detectDirection({ mstBan, mstMua }, currentMst) {
   return 'UNKNOWN';
 }
 
+// TÓM Mã ĐỊNH DANH CHƯA NHẬN DIỆN trong hoá đơn UNKNOWN (mục 14 mở rộng):
+// Bối cảnh thật: hồ sơ MST gốc 4500487170 nhưng người bán lập hoá đơn cho người mua bằng
+// CCCD 058168004258 (cùng một người, khác loại mã). detectDirection() từ chối đúng nguyên
+// tắc "không đoán", nhưng phải GHI LẠI mã lạ để UI hỏi người dùng gán (CCCD/MST bổ sung)
+// thay vì chỉ ném một câu lỗi. Trả về tối đa 2 mã (một bên NBan, một bên NMua).
+function unknownParties({ record }, currentMst) {
+  const identifiers = normalizeIdentifiers(currentMst);
+  const parties = [];
+  if (record.mstBan && !identifiers.has(String(record.mstBan).trim())) {
+    parties.push({ code: String(record.mstBan).trim(), ten: record.tenBan || '', side: 'ban' });
+  }
+  if (record.mstMua && !identifiers.has(String(record.mstMua).trim())) {
+    parties.push({ code: String(record.mstMua).trim(), ten: record.tenMua || '', side: 'mua' });
+  }
+  return parties.slice(0, 2);
+}
+
 const ITEM_FIELDS = [
   ['stt', 'STT'], ['maHang', 'MHHDVu'], ['tenHang', 'THHDVu'], ['donVi', 'DVTinh'],
 ];
@@ -142,10 +159,12 @@ function buildImportRecord(xml, { currentMst, fileXml } = {}) {
   const direction = detectDirection(record, currentMst);
   if (direction === 'UNKNOWN') {
     const expected = [...normalizeIdentifiers(currentMst)].join(', ');
-    throw Object.assign(new Error(`Không xác định được Mua vào/Bán ra: MST người bán (${record.mstBan || 'trống'}) và người mua (${record.mstMua || 'trống'}) đều không thuộc mã nhận diện của hồ sơ (${expected || 'trống'}).`), { unknownDirection: true });
+    // unknownParties gắn KÈM lỗi để scanner ghi ma-chua-xac-dinh.json — người dùng gán mã
+    // (vd CCCD 058168004258 của cùng người MST 4500487170) rồi lượt quét sau tự nhập lại.
+    throw Object.assign(new Error(`Không xác định được Mua vào/Bán ra: MST người bán (${record.mstBan || 'trống'}) và người mua (${record.mstMua || 'trống'}) đều không thuộc mã nhận diện của hồ sơ (${expected || 'trống'}).`), { unknownDirection: true, unknownParties: unknownParties({ record }, currentMst) });
   }
   const invoiceKey = buildInvoiceKey({ mstBan: record.mstBan, khmshDon: record.khmsHd, khhDon: record.khhHd, shDon: record.soHd });
   return { record: { ...record, direction, invoiceKey, fileXml }, warnings, direction };
 }
 
-module.exports = { parseInvoiceXml, buildImportRecord, detectDirection, normalizeIdentifiers, toVietnamDate };
+module.exports = { parseInvoiceXml, buildImportRecord, detectDirection, unknownParties, normalizeIdentifiers, toVietnamDate };

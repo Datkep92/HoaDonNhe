@@ -7,6 +7,7 @@ const invoiceExport = require('./invoice-excel');
 // Khoá hoá đơn của TẦNG DỮ LIỆU (MST người bán | KHMSHDon | KHHDon | SHDon, đã bỏ số 0 đầu).
 // Danh sách "hoá đơn bị thay thế" phải dùng ĐÚNG định dạng này để bộ nhập so khớp được.
 const { buildInvoiceKey } = require('./data/invoice-key');
+const invoiceState = require('./data/invoice-state');
 
 function safeName(value) {
   let result = String(value ?? '').replace(/[<>:"/\\|?*\x00-\x1f]/g, '_').replace(/[. ]+$/g, '').slice(0, 100);
@@ -24,25 +25,72 @@ function atomicWrite(file, data) {
   try { fs.copyFileSync(temp, file); fs.unlinkSync(temp); return; } catch { /* ghi thẳng */ }
   fs.writeFileSync(file, data); try { fs.unlinkSync(temp); } catch {}
 }
-// Hoá đơn cổng thuế báo "Đã bị thay thế" (tthai = 4) KHÔNG thuộc kho dữ liệu. XML không mang
-// trạng thái, nên engine ghi lại danh sách khoá vào <thư mục lưu>/MST-<mst>/hoa-don-bi-thay-the.json
-// để bộ nhập (xml-scanner) bỏ qua và dọn những bản đã nhập trước đó.
-const SUPERSEDED_FILE = 'hoa-don-bi-thay-the.json';
-const SUPERSEDED_STATE = '4';
-function supersededFile(output, mst) {
-  return path.join(String(output || ''), `MST-${safeName(mst)}`, SUPERSEDED_FILE);
+// Hạn chót cho một promise CÓ THỂ không bao giờ settle (ví dụ worker thread chết giữa chừng).
+// Vì sao cần: `run()` chỉ nhả `busy` ở finally, nên chỉ cần MỘT await con treo là lượt tải kẹt
+// `busy = true` mãi — nút cứ ở "Ngưng tải", người dùng phải bấm tay mới thoát. Một bước PHỤ
+// (bảng tổng hợp Excel) không được phép giữ cả lượt tải như vậy.
+function withDeadline(promise, ms, label) {
+  const guarded = Promise.resolve(promise);
+  guarded.catch(() => {}); // nuôi bản sao: hết hạn trước thì không sinh unhandledRejection
+  let timer = null;
+  return Promise.race([
+    guarded,
+    new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`${label}: quá ${Math.round(ms / 1000)} giây không xong — bỏ qua.`)), ms);
+      if (timer.unref) timer.unref();
+    }),
+  ]).finally(() => { if (timer) clearTimeout(timer); });
 }
-// Gộp khoá mới vào danh sách đã có rồi ghi lại (đọc–gộp–ghi để nhiều lượt không xoá lẫn nhau).
-function rememberSuperseded(job, keys) {
-  const file = supersededFile(job.output, job.account && (job.account.mst || job.account.label));
-  let existing = [];
+// Trạng thái hoá đơn (tthai) CHỈ có ở kết quả tra cứu — XML không mang. Engine ghi lại
+// <thư mục lưu>/MST-<mst>/trang-thai-hoa-don.json (ĐỦ cả 6 trạng thái) để bộ nhập đọc và lưu
+// vào cột invoices.tthai; nhờ đó kho lọc được theo trạng thái.
+//
+// KHÔNG xoá hoá đơn khỏi kho ở đây: hoá đơn bị thay thế/điều chỉnh/huỷ vẫn được tải về, vẫn nằm
+// trong kho và vẫn xem được — chỉ KHÔNG cộng vào danh sách hàng hoá và tổng tiền
+// (danh sách loại trừ nằm ở src/data/invoice-state.js, KHÔNG chép lại ở đây).
+const STATE_FILE = 'trang-thai-hoa-don.json';
+// File của bản cũ (chỉ chứa khoá hoá đơn "Đã bị thay thế"): vẫn ĐỌC để không mất dấu, KHÔNG ghi nữa.
+const LEGACY_SUPERSEDED_FILE = 'hoa-don-bi-thay-the.json';
+function stateFile(output, mst) {
+  return path.join(String(output || ''), `MST-${safeName(mst)}`, STATE_FILE);
+}
+function legacySupersededFile(output, mst) {
+  return path.join(String(output || ''), `MST-${safeName(mst)}`, LEGACY_SUPERSEDED_FILE);
+}
+// Đọc trạng thái đã ghi: { states: { "khoá hoá đơn": "1".."6" } }. File hỏng/thiếu ⇒ rỗng.
+function readStates(file) {
   try {
     const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
-    existing = Array.isArray(raw) ? raw : (raw && Array.isArray(raw.keys) ? raw.keys : []);
-  } catch { /* chưa có file */ }
-  const merged = [...new Set([...existing.map(String), ...keys].filter(Boolean))];
-  try { atomicWrite(file, JSON.stringify({ updatedAt: new Date().toISOString(), keys: merged })); } catch { /* không ghi được thì lần sau thử lại */ }
-  return merged.length;
+    const states = raw && typeof raw === 'object' && raw.states && typeof raw.states === 'object' ? raw.states : {};
+    const clean = {};
+    for (const [key, value] of Object.entries(states)) {
+      const state = String(value ?? '').trim();
+      if (key && /^[1-6]$/.test(state)) clean[String(key)] = state;
+    }
+    return clean;
+  } catch { return {}; }
+}
+// File cũ: mảng khoá trần hoặc { keys: [...] } ⇒ mọi khoá là '4'. Chỉ dùng khi file mới chưa có khoá đó.
+function readLegacySuperseded(file) {
+  try {
+    const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
+    const keys = Array.isArray(raw) ? raw : (raw && Array.isArray(raw.keys) ? raw.keys : []);
+    return keys.map(String).filter(Boolean);
+  } catch { return []; }
+}
+// Ghi trạng thái KIỂU ĐỌC–GỘP–GHI ĐỒNG BỘ (không có await ở giữa): lượt này không xoá dấu của
+// lượt trước, và hai lượt chạy song song không ghi đè lẫn nhau.
+function rememberStates(job, states) {
+  const mst = job.account && (job.account.mst || job.account.label);
+  const file = stateFile(job.output, mst);
+  const merged = readStates(file);
+  for (const key of readLegacySuperseded(legacySupersededFile(job.output, mst))) {
+    if (!merged[key]) merged[key] = '4';
+  }
+  for (const [key, value] of states) merged[String(key)] = String(value);
+  try { atomicWrite(file, JSON.stringify({ updatedAt: new Date().toISOString(), states: merged }, null, 1)); }
+  catch { /* không ghi được thì lần sau thử lại */ }
+  return Object.keys(merged).length;
 }
 function dates(from, to) {
   const valid = x => /^\d{4}-\d{2}-\d{2}$/.test(x) && Number.isFinite(Date.parse(x)) && new Date(x).toISOString().slice(0, 10) === x;
@@ -66,6 +114,37 @@ function searchExpression(from, to, variant) {
 function invoiceKey(inv) {
   return [inv.family, inv.direction, inv.nbmst, inv.khmshdon, inv.khhdon, inv.shdon].map(x => String(x ?? '')).join('|');
 }
+// Tên công ty/HKD của một MST lấy từ KẾT QUẢ TRA CỨU đang có trong bộ nhớ (engine.job.items).
+// Có NGAY sau khi tra cứu — không phải đợi tải XML rồi nhập vào kho mới hiện tên.
+// Thứ tự tra giống hệt câu SQL trong server#companyNameFor: người BÁN trước, rồi người MUA.
+// (Tra mua vào thì MST mình là người mua, tra bán ra thì là người bán — cần cả hai chiều.)
+function companyNameFromItems(items, mst) {
+  const key = String(mst ?? '').trim();
+  if (!key || !Array.isArray(items)) return '';
+  const pick = (mstField, nameField) => {
+    for (const item of items) {
+      const invoice = (item && item.invoice) || item || {};
+      if (String(invoice[mstField] ?? '').trim() !== key) continue;
+      const name = String(invoice[nameField] ?? '').trim();
+      if (name) return name;
+    }
+    return '';
+  };
+  return pick('nbmst', 'nbten') || pick('nmmst', 'nmten');
+}
+// Một dòng của bảng kết quả tra cứu. Gồm cả NGƯỜI MUA và NGÀY LẬP — trước đây ngày có trong dữ
+// liệu nhưng giao diện không vẽ, còn người mua thì thiếu hẳn.
+function itemRow({ invoice: i, state, error, errorType, retryable, warning, files }) {
+  return {
+    number: i.shdon, symbol: i.khhdon, form: i.khmshdon, family: i.family,
+    seller: i.nbmst, name: i.nbten,
+    buyer: i.nmmst, buyerName: i.nmten,
+    date: i.tdlap, amount: i.tgtttbso,
+    tthai: i.tthai == null || i.tthai === '' ? '' : String(i.tthai),
+    stateLabel: invoiceState.label(i.tthai),
+    files: (files || []).slice(0, 3), state, error, errorType, retryable, warning,
+  };
+}
 function validateParams(p) {
   if (!p || !['purchase', 'sold'].includes(p.direction)) throw new Error('Chọn loại mua vào/bán ra.');
   dates(p.from, p.to);
@@ -88,6 +167,9 @@ const { invoiceHtml, withXmlFields } = require('./invoice-html');
 // Chặn an toàn: nếu cổng trả cursor MỚI mãi không dừng thì dừng task đó lại thay vì lặp vô hạn.
 // 400 trang × 50 dòng = 20.000 hóa đơn/tháng, cao hơn mọi tháng thực tế đã gặp.
 const MAX_PAGES_PER_TASK = 400;
+// Hạn chót cho bước dựng bảng tổng hợp Excel ở cuối lượt tải (xem withDeadline).
+// Đọc LÚC GỌI (không phải hằng số nạp một lần) để test còn ép được giá trị nhỏ.
+const excelDeadlineMs = () => { const value = Number(process.env.HOADON_EXCEL_TIMEOUT_MS); return Number.isFinite(value) && value > 0 ? value : 90000; };
 // Chỉ TÁI SỬ DỤNG danh sách đã tra cứu khi: lượt trước đã tra cứu XONG và sẵn sàng tải
 // (`phase='download'`, `state='ready'`) VÀ mọi điều kiện tra cứu trùng khớp (từ ngày, đến ngày,
 // chiều mua/bán, nhóm/family, định dạng, trạng thái). Khác một điều kiện bất kỳ ⇒ phải chạy
@@ -125,7 +207,34 @@ function validateInvoiceXml(xml, invoice) {
 class Engine {
   constructor({ store, request, identity, emit, pdf, excel, shouldSkip }) {
     Object.assign(this, { store, request, identity, emit, pdf, excel, shouldSkip });
+    // Each run owns its cancellation signal; late results cannot resume an old run.
+    for (const name of ['request', 'identity', 'pdf', 'excel', 'shouldSkip']) {
+      const operation = this[name];
+      if (typeof operation !== 'function') continue;
+      this[name] = (...args) => {
+        const signal = this.runController?.signal;
+        if (!signal) return operation(...args);
+        if (signal.aborted) return Promise.reject(signal.reason);
+        if (name === 'request') {
+          args[2] = () => { if (signal.aborted) throw signal.reason; };
+          args[2].signal = signal;
+        }
+        return new Promise((resolve, reject) => {
+          const abort = () => reject(signal.reason);
+          signal.addEventListener('abort', abort, { once: true });
+          Promise.resolve().then(() => {
+            if (signal.aborted) throw signal.reason;
+            return operation(...args);
+          }).then(resolve, reject).finally(() => signal.removeEventListener('abort', abort));
+        });
+      };
+    }
     this.busy = false; this.cancelled = false; this.job = null;
+    // Đếm số lần nội dung job đổi (save() hoặc gán job mới): UI so số này thay vì stringify toàn bộ
+    // snapshot (tới 1.000 dòng) mỗi nhịp poll 1,5 giây.
+    this.jobRevision = 0;
+    // Trạng thái gom nhịp ghi job (xem save()/flush()): mốc lần ghi đĩa gần nhất + bộ hẹn đang chờ.
+    this.saveTimer = null; this.lastDiskSave = 0;
     // Lượt chạy bị NGẮT (app bị tắt/crash giữa đường) để lại đúng `searching`/`downloading` trên đĩa;
     // còn khi người dùng bấm "Tạm dừng" thì app đã ghi hẳn `paused`. Ghi nhớ để lát nữa tự chạy tiếp.
     this.interrupted = false;
@@ -142,14 +251,62 @@ class Engine {
     this.interrupted = false;
     return this.job.phase === 'search' ? this.resume() : this.resume(true);
   }
-  save() { if (this.job) atomicWrite(this.store, JSON.stringify(this.job)); this.emit(this.snapshot()); }
+  // ---- Ghi job ra đĩa CÓ GOM NHỊP (throttle: tối đa ~2 lần ghi/giây) ----
+  // Trong lúc tải, save() được gọi tối thiểu 2 lần cho MỖI hoá đơn (đổi state trước + sau khi tải),
+  // mỗi lần stringify toàn bộ job (tới 1.000 dòng ≈ vài trăm KB) + ghi đĩa nguyên tử ⇒ lượt 1.000
+  // hoá đơn = hơn 2.000 lần ghi, là nguồn giật chính của tiến trình khi đang tải. Throttle 500ms:
+  // gọi dồn thì chỉ lần ĐẦU trong cửa sổ được ghi ra đĩa, lần sau ghi lại sau 500ms — không trì hoãn
+  // vô hạn như debounce thuần. Nội dung TRONG RAM và jobRevision (UI đọc qua /api/state) vẫn tăng
+  // NGAY như cũ nên tiến độ UI không chậm lại — chỉ phần ghi đĩa được gom.
+  // An toàn resume: file cũ trên đĩa là checkpoint; crash mất tối đa 500ms tiến độ, lượt dở vẫn tiếp
+  // đúng nhờ shouldSkip + đối chiếu file đã có — không trùng lặp, chỉ tốn lại vài request.
+  static SAVE_DEBOUNCE_MS = 500;
+  // Ghi ra đĩa NGAY, bỏ qua throttle (dùng cho checkpoint chủ đích).
+  flush() { if (this.saveTimer) { clearTimeout(this.saveTimer); this.saveTimer = null; } this.lastDiskSave = Date.now(); if (this.job) atomicWrite(this.store, JSON.stringify(this.job)); }
+  save() {
+    this.jobRevision += 1;
+    if (this.saveTimer) { clearTimeout(this.saveTimer); this.saveTimer = null; }
+    // Ngoài lượt chạy (busy = false): save() là ghi checkpoint CỐ Ý từ bên ngoài → ghi đĩa NGAY
+    // (giữ đúng hợp đồng cũ cho mọi caller ngoài vòng run(); test core.test.js dựa vào điều này).
+    if (!this.busy) { this.lastDiskSave = Date.now(); if (this.job) atomicWrite(this.store, JSON.stringify(this.job)); this.emit(this.snapshot()); return; }
+    const since = Date.now() - this.lastDiskSave;
+    if (since >= Engine.SAVE_DEBOUNCE_MS) {
+      this.lastDiskSave = Date.now();
+      if (this.job) atomicWrite(this.store, JSON.stringify(this.job));
+    } else if (!this.saveTimer) {
+      this.saveTimer = setTimeout(() => { this.saveTimer = null; this.flush(); }, Engine.SAVE_DEBOUNCE_MS - since);
+      if (this.saveTimer.unref) this.saveTimer.unref();
+    }
+    this.emit(this.snapshot());
+  }
+  // "Tải ngay" gom cả `done` VÀ `skipped`: hoá đơn đã có sẵn trên đĩa / đã có trong kho cũng là
+  // xong. Nếu chỉ tính `done` thì chạy lại một kỳ đã tải đủ sẽ cho bảng TRỐNG dù tìm thấy đủ hoá
+  // đơn — người dùng tưởng lượt chạy không làm gì.
+  visibleItems() {
+    const j = this.job;
+    if (!j) return [];
+    return j.mode === 'stream' ? j.items.filter(item => item.state === 'done' || item.state === 'skipped') : j.items;
+  }
+  // Danh sách cho bảng kết quả tra cứu. Giao diện dùng MỘT lần gọi (offset 0, limit 1000) và cuộn
+  // như bản cũ — KHÔNG còn nút sang trang; offset/limit giữ lại để cắt bớt khi lượt chạy quá dài.
+  // newestFirst: MỚI NHẤT TRƯỚC để hoá đơn vừa tải xong nằm ngay đầu bảng, không phải cuộn xuống.
+  itemsPage({ offset = 0, limit = 100, newestFirst = true } = {}) {
+    const rows = this.visibleItems();
+    const size = Math.max(1, Math.min(500, Number(limit) || 100));
+    const skip = Math.max(0, Number(offset) || 0);
+    const ordered = newestFirst ? [...rows].reverse() : rows;
+    return { total: ordered.length, offset: skip, limit: size, rows: ordered.slice(skip, skip + size).map(itemRow) };
+  }
   snapshot() {
     if (!this.job) return { state: 'idle', busy: this.busy, items: [], message: 'Đăng nhập để bắt đầu.' };
     const j = this.job;
-    const visible = j.mode === 'stream' ? j.items.filter(item => item.state === 'done') : j.items;
-    return { state: j.state, busy: this.busy, mode: j.mode || 'search', message: j.message, params: j.params, output: j.output, account: j.account, stats: j.stats || null, total: j.items.length, done: j.items.filter(x => x.state === 'done' || x.state === 'skipped').length, failed: j.items.filter(x => x.state === 'failed').length, items: visible.slice(0, 1000).map(({ invoice: i, state, error, errorType, retryable, warning, files }) => ({ number: i.shdon, symbol: i.khhdon, seller: i.nbmst, name: i.nbten, date: i.tdlap, amount: i.tgtttbso, files: (files || []).slice(0, 3), state, error, errorType, retryable, warning })) };
+    const visible = this.visibleItems();
+    return { state: j.state, busy: this.busy, mode: j.mode || 'search', message: j.message, params: j.params, output: j.output, account: j.account, stats: j.stats || null, total: j.items.length, done: j.items.filter(x => x.state === 'done' || x.state === 'skipped').length, failed: j.items.filter(x => x.state === 'failed').length, items: visible.slice(0, 1000).map(itemRow) };
   }
-  pause() { this.cancelled = true; }
+  pause() {
+    this.cancelled = true;
+    this.runController?.abort(Object.assign(new Error('Đã tạm dừng. Có thể tải tiếp.'), { paused: true }));
+  }
   check() { if (this.cancelled) throw Object.assign(new Error('Đã tạm dừng. Có thể tải tiếp.'), { paused: true }); }
   async checkAccount() {
     this.check();
@@ -159,9 +316,12 @@ class Engine {
   async run(fn) {
     if (this.busy) throw new Error('Đang có tác vụ chạy.');
     this.busy = true; this.cancelled = false;
+    this.runController = new AbortController();
     try { await fn(); }
     catch (e) { if (this.job) { this.job.state = e.paused ? 'paused' : e.auth ? 'auth_required' : 'failed'; this.job.message = e.message; } else throw e; }
-    finally { this.busy = false; this.save(); }
+    // Kết thúc lượt (xong / tạm dừng / lỗi): busy=false rồi save() ⇒ ghi đĩa NGAY (xem save()),
+    // đây là checkpoint mà resume/cân đối trạng thái phụ thuộc file job.
+    finally { this.busy = false; this.runController = null; this.save(); }
     return this.snapshot();
   }
   async search(params, output) {
@@ -203,8 +363,8 @@ class Engine {
       // cursor/count/pages/seen giữ nguyên nên vẫn tiếp đúng chỗ đã dừng.
       task.error = ''; task.warning = '';
       let seq = 0;
-      const superseded = new Set();
-      let supersededSaved = 0;
+      const states = new Map(); // khoá hoá đơn → tthai: ghi ra MST-<mst>/trang-thai-hoa-don.json
+      let statesSaved = 0;
       // GỐI ĐẦU (chỉ ở "Tải ngay"): lấy trước TRANG KẾ trong lúc đang tải trang hiện tại, để không còn
       // khoảng nghỉ giữa hai trang. Nhịp cổng vẫn xếp hàng tuần tự ⇒ KHÔNG tăng áp lực lên cổng thuế.
       const queryFor = cursor => `/${task.family}/invoices/${j.params.direction}?sort=tdlap:desc&size=50&search=${searchExpression(task.from, task.to, task.variant)}${cursor ? '&state=' + encodeURIComponent(cursor) : ''}`;
@@ -223,17 +383,17 @@ class Engine {
             const inv = { ...invoice, family: task.family, direction: j.params.direction };
             const key = invoiceKey(inv);
             const state = String(inv.tthai ?? '');
-            // tthai = 4 ("Đã bị thay thế") không thuộc kho dữ liệu: CHỈ lấy khi người dùng chọn
-            // đúng trạng thái này; còn lại ghi khoá lại để bộ nhập bỏ qua và dọn bản đã có.
-            const blocked = state === SUPERSEDED_STATE && j.params.status !== SUPERSEDED_STATE;
-            if (blocked) {
-              // Ghi khoá theo đúng định dạng tầng dữ liệu; thiếu trường thì bỏ qua, KHÔNG làm hỏng lượt tìm.
-              try { superseded.add(buildInvoiceKey({ mstBan: inv.nbmst, khmshDon: inv.khmshdon, khhDon: inv.khhdon, shDon: inv.shdon })); }
+            // Ghi lại trạng thái cho MỌI hoá đơn cổng trả về (đủ 1..6), khoá theo ĐÚNG định dạng
+            // tầng dữ liệu để bộ nhập so khớp được. Thiếu trường ⇒ bỏ qua, không làm hỏng lượt tìm.
+            if (/^[1-6]$/.test(state)) {
+              try { states.set(buildInvoiceKey({ mstBan: inv.nbmst, khmshDon: inv.khmshdon, khhDon: inv.khhdon, shDon: inv.shdon }), state); }
               catch { /* cổng trả thiếu trường ⇒ không ghi được khoá */ }
             }
-            if (!keys.has(key) && !blocked && (!j.params.status || state === j.params.status)) { keys.add(key); j.items.push({ invoice: inv, state: 'queued', files: [] }); order.set(key, [index, seq]); seq += 1; }
+            // KHÔNG chặn theo trạng thái: hoá đơn bị thay thế/điều chỉnh/huỷ vẫn được tải về và vào
+            // kho. Chỉ lọc khi người dùng chủ động chọn đúng một trạng thái ở ô "Trạng thái hóa đơn".
+            if (!keys.has(key) && (!j.params.status || state === j.params.status)) { keys.add(key); j.items.push({ invoice: inv, state: 'queued', files: [] }); order.set(key, [index, seq]); seq += 1; }
           }
-          if (superseded.size > supersededSaved) { rememberSuperseded(j, superseded); supersededSaved = superseded.size; }
+          if (states.size > statesSaved) { rememberStates(j, states); statesSaved = states.size; }
           const count = task.count + data.datas.length;
           const cursor = data.state === undefined || data.state === null ? '' : String(data.state);
           // Cổng thuế trả `total` KHÔNG nhất quán (đo thực tế: 295 vs 287 cho cùng một tháng;
@@ -266,6 +426,10 @@ class Engine {
               j.stats.prefetched = (j.stats.prefetched || 0) + 1;
             }
             await this.download({ incremental: true, finalize: false });
+            // Ngắt mạch vừa bấm: trang mới KHÔNG tải được cái nào ⇒ dừng cả lượt ngay (không tra
+            // cứu tiếp, không sang tháng kế) — nếu không message lại ghi đè thành “đang tra cứu tiếp”
+            // và vòng lặp cứ chạy mãi trong khi thực tế không có gì tải về được nữa.
+            if (j.state === 'partial') { circuitStopped = true; return; }
             j.phase = 'search'; j.state = 'searching';
             j.message = `Đã tìm ${j.items.length} · tải thành công ${j.stats.downloaded} · đang tra cứu tiếp${j.stats.prefetched ? ` · gối đầu ${j.stats.prefetched} trang` : ''}`;
             this.save();
@@ -284,7 +448,11 @@ class Engine {
     let next = 0;
     // Giành index TRƯỚC khi await (tăng đồng bộ) — nếu tăng sau await thì hai worker sẽ cùng lấy
     // một task và bỏ qua task khác.
-    const worker = async () => { for (;;) { const i = next; next += 1; if (i >= queue.length) return; await runTask(queue[i]); } };
+    // Cờ NGẮT MẠCH của riêng lượt scan này (KHÔNG đọc state trên job — job tải lại từ đĩa cho
+    // lượt “Tải tiếp” vốn đã mang 'partial', đọc state là làm chết luôn lượt tiếp). Đặt khi trang
+    // mới không tải được cái nào ⇒ các tháng còn lại trong hàng chờ không chạy nữa.
+    let circuitStopped = false;
+    const worker = async () => { for (;;) { if (circuitStopped) return; const i = next; next += 1; if (i >= queue.length) return; await runTask(queue[i]); } };
     // allSettled: một task ném lỗi (tạm dừng / hết phiên) cũng không để worker khác treo lơ lửng.
     const settled = await Promise.allSettled(Array.from({ length: Math.min(concurrency, queue.length) }, () => worker()));
     const fatal = settled.find(r => r.status === 'rejected');
@@ -298,6 +466,9 @@ class Engine {
     }
     const unfinished = j.tasks.filter(t => !t.done);
     if (j.mode === 'stream') {
+      // Ngắt mạch vừa dừng lượt: GIỮ NGUYÊN thông báo riêng của breaker (đã nói rõ lý do + hướng
+      // “Bấm Tải tiếp”), không ghi đè bằng thông báo “tạm dừng – còn X khoảng chưa hoàn tất”.
+      if (circuitStopped) { this.save(); return; }
       if (unfinished.length) {
         j.phase = 'search'; j.state = 'partial';
         j.message = `Tải cuốn chiếu tạm dừng: đã tìm ${j.items.length}, tải thành công ${j.stats.downloaded}. Còn ${unfinished.length} khoảng chưa hoàn tất.`;
@@ -445,6 +616,7 @@ class Engine {
       // File hóa đơn nằm trong <Mua_vao|Ban_ra>/<xml|pdf|html|zip>/; tên file giữ MST người bán, mẫu số,
       // ký hiệu, số hóa đơn và hậu tố chống trùng nên không lẫn nhau. File đã có thì không ghi lại.
       const write = (kind, ext, bytes) => {
+        this.check();
         const file = path.join(root, direction, kind, base + ext);
         try { if (fs.existsSync(file) && fs.statSync(file).size > 0) { if (!item.files.includes(file)) item.files.push(file); return; } } catch {}
         atomicWrite(file, bytes); onDisk.set(path.basename(file).toLowerCase(), file); if (!item.files.includes(file)) item.files.push(file);
@@ -482,6 +654,7 @@ class Engine {
         }
         item.state = 'done'; item.errorType = ''; item.retryable = false; recount();
       } catch (e) {
+        if (e.paused) { item.state = 'queued'; item.error = ''; recount(); throw e; }
         const failure = classifyDownloadError(e);
         item.state = 'failed'; item.error = failure.message; item.errorType = failure.type; item.retryable = failure.retryable; recount();
         if (failure.type === 'rate_limited') { this.downloadConcurrency = 1; e.paused = true; }
@@ -508,6 +681,25 @@ class Engine {
     if (fatal) throw fatal.reason;
     this.check();
     if (!finalize) {
+      // NGẮT MẠCH (circuit breaker) cho chế độ cuốn chiếu — CHỈ khi cổng thật sự TỪ CHỐI.
+      //
+      // "Đã có sẵn" KHÔNG phải lỗi và KHÔNG được ngắt: chạy lại một kỳ đã tải đủ là chuyện thường,
+      // ngắt ở đó sẽ khoá lượt ở 'partial' và bắt người dùng bấm "Tải tiếp" mãi mà không bao giờ
+      // xong (bấm lại ra đúng kết quả cũ), đồng thời bỏ luôn các trang cũ hơn chưa tới vì vòng lặp
+      // đã thoát. Đo thật: kỳ đã tải đủ ⇒ 'partial' + "Bấm Tải tiếp" dù không còn gì để tải.
+      //
+      // Vì sao vẫn cần ngắt khi có lỗi thật: nếu KHÔNG ngắt, vòng scan() chạy tiếp qua các
+      // trang/tháng kế tiếp, message đứng ở “đang tra cứu tiếp” và giao diện trông như kẹt
+      // “Đang tải” hàng phút dù dữ liệu không về thêm — người dùng phải bấm Ngưng thủ công.
+      const fresh = pendingItems;
+      const freshDone = fresh.filter(x => x.state === 'done').length;
+      const freshFailed = fresh.filter(x => x.state === 'failed').length;
+      if (fresh.length && !freshDone && freshFailed) {
+        j.state = 'partial';
+        j.message = `Tạm dừng tải cuốn chiếu: ${j.stats.downloaded}/${j.items.length} đã tải — cổng thuế từ chối ${freshFailed} hóa đơn của trang vừa quét (lỗi tạm thời — đã giữ tiến độ). Bấm “Tải tiếp” để thử lại từ chỗ đã dừng.`;
+        this.save();
+        return;
+      }
       j.state = 'searching';
       j.message = `Đã tìm ${j.items.length} · tải thành công ${j.stats.downloaded} · đang tra cứu tiếp`;
       this.save();
@@ -516,12 +708,24 @@ class Engine {
     if (j.params.formats.includes('xlsx')) {
       // Bảng tổng hợp nằm luôn trong thư mục nhánh 2 (Mua_vao/Ban_ra), không tạo thư mục riêng.
       const file = path.join(root, jobDirection, `HD-EXCEL-${j.params.from}-${j.params.to}-${j.id.slice(0, 8)}.xlsx`);
-      if (!(fs.existsSync(file) && fs.statSync(file).size > 0)) atomicWrite(file, await this.excel(j.items));
+      if (!(fs.existsSync(file) && fs.statSync(file).size > 0)) {
+        // Bảng tổng hợp là bước PHỤ. Bọc hạn chót để nó không thể giữ `busy` của cả lượt tải
+        // (worker dựng Excel treo ⇒ trước đây lượt chạy kẹt vĩnh viễn ở state 'downloading').
+        try {
+          const bytes = await withDeadline(this.excel(j.items), excelDeadlineMs(), 'Dựng bảng tổng hợp Excel');
+          this.check(); atomicWrite(file, bytes);
+        } catch (error) {
+          j.excelError = error && error.message ? error.message : String(error);
+        }
+      }
     }
+    this.check();
     atomicWrite(path.join(root, `bao-cao-${j.id}.json`), JSON.stringify({ params: j.params, items: j.items.map(x => ({ key: invoiceKey(x.invoice), state: x.state, error: x.error || '', files: x.files })) }, null, 2));
     const errors = j.items.filter(x => x.state === 'failed').length;
     j.state = errors ? 'partial' : 'completed';
-    j.message = `Hoàn tất: ${j.items.length - errors} hóa đơn (tải mới ${j.stats.downloaded}, đã có sẵn ${j.stats.skipped}, lỗi ${errors}).`;
+    // Bước phụ (Excel) hỏng thì BÁO RA, không im lặng: hoá đơn đã tải xong nhưng bảng tổng hợp thiếu.
+    j.message = `Hoàn tất: ${j.items.length - errors} hóa đơn (tải mới ${j.stats.downloaded}, đã có sẵn ${j.stats.skipped}, lỗi ${errors}).`
+      + (j.excelError ? ` Không dựng được bảng tổng hợp Excel: ${j.excelError}` : '');
   }
   // Xuất 01 file Excel ĐÚNG theo mẫu MISA, từ chính kết quả tra cứu (không gọi API chi tiết, không tải XML/PDF).
   async exportList() {
@@ -538,4 +742,4 @@ class Engine {
     return { file, rows: j.items.length, columns: invoiceExport.columnNames().length };
   }
 }
-module.exports = { Engine, safeName, atomicWrite, dates, invoiceKey, tasksFor, searchExpression, validateParams, invoiceHtml, canReuseSearch, classifyDownloadError, validateInvoiceXml };
+module.exports = { Engine, itemRow, companyNameFromItems, safeName, atomicWrite, dates, invoiceKey, tasksFor, searchExpression, validateParams, invoiceHtml, canReuseSearch, classifyDownloadError, validateInvoiceXml };

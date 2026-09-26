@@ -5,9 +5,10 @@
 // 1 MST = 1 data.db. XML vẫn là nguồn gốc (source of truth); các bảng ở đây chỉ
 // là index / lớp truy vấn, KHÔNG thay thế XML và KHÔNG lưu nội dung XML.
 // Đổi schema ⇒ tăng SCHEMA_VERSION (tầng sqlite.js sẽ tự nâng cấp theo bước).
+// v4 thêm cột `invoices.tthai` (trạng thái hoá đơn) — DB cũ phải ALTER TABLE, xem sqlite.js.
 // ---------------------------------------------------------------------------
 
-const SCHEMA_VERSION = 3;
+const SCHEMA_VERSION = 4;
 
 const TABLES = [
   `CREATE TABLE IF NOT EXISTS invoices (
@@ -23,6 +24,7 @@ const TABLES = [
     khh_hd TEXT,
     so_hd TEXT,
     loai_hoa_don TEXT,
+    tthai TEXT,
     tien_truoc_thue REAL DEFAULT 0,
     tien_thue REAL DEFAULT 0,
     tong_tien REAL DEFAULT 0,
@@ -76,6 +78,7 @@ const INDEXES = [
   'CREATE INDEX IF NOT EXISTS idx_invoice_direction_date ON invoices(direction, ngay_lap DESC, id DESC)',
   'CREATE INDEX IF NOT EXISTS idx_invoice_symbol_number ON invoices(khh_hd, so_hd)',
   'CREATE INDEX IF NOT EXISTS idx_invoice_updated ON invoices(updated_at DESC)',
+  'CREATE INDEX IF NOT EXISTS idx_invoice_state ON invoices(tthai)',
   'CREATE INDEX IF NOT EXISTS idx_item_code ON invoice_items(ma_hang)',
   'CREATE INDEX IF NOT EXISTS idx_item_invoice ON invoice_items(invoice_id)',
   'CREATE INDEX IF NOT EXISTS idx_imported_file_path ON imported_files(file_path)',

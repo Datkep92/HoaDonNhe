@@ -11,6 +11,19 @@ const os = require('node:os');
 const path = require('node:path');
 
 const data = require('../src/data');
+
+// Đợt 3: đường đọc /api/db/* phải dùng kết nối dùng lại (readDatabase) thay vì mở/đóng mỗi request,
+// và phải có van an toàn HOADON_READ_CONN=0 để quay về đường cũ khi chẩn đoán.
+test('đường đọc Kho dữ liệu dùng kết nối SQLite dùng lại, có van HOADON_READ_CONN và vô hiệu khi đổi MST', () => {
+  const server = fs.readFileSync(path.join(__dirname, '..', 'src', 'server.js'), 'utf8');
+  assert.ok(server.includes('function readDatabase('), 'phải có readDatabase (cache kết nối đọc theo data.db)');
+  assert.ok(server.includes('function invalidateReadConn('), 'phải có hàm vô hiệu cache khi đường dẫn db đổi');
+  assert.ok(server.includes('invalidateReadConn(dataLayer().mst.mstDirectory(output, from))'), 'đổi MST phải đóng kết nối cũ');
+  assert.ok(server.includes("process.env.HOADON_READ_CONN === '0'"), 'phải giữ van HOADON_READ_CONN=0 về đường mở/đóng cũ');
+  // Khoá cache có SCHEMA_VERSION: nâng schema thì key đổi, kết nối cũ tự bị bỏ.
+  assert.ok(server.includes('SCHEMA_VERSION') && server.includes('readConnCache'), 'khoá cache phải gắn SCHEMA_VERSION');
+  assert.equal(typeof data.sqlite.SCHEMA_VERSION, 'number');
+});
 const { openDatabase, closeDatabase, withTransaction, tableNames, schemaVersion, applySchema, SCHEMA_VERSION } = require('../src/data/sqlite');
 const { insertInvoice, findInvoiceByKey, countInvoices, countItems, itemsOfInvoice, recordImportedFile, listInvoices, setSyncState, getSyncState } = require('../src/data/repository');
 const { buildInvoiceKey, parseInvoiceKey, stripLeadingZeros } = require('../src/data/invoice-key');

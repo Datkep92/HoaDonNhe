@@ -13,9 +13,9 @@
 //   - Chạy lại nhiều lần không nhân bản (mục 19): file đã import (đúng path + size + mtime)
 //     thì bỏ qua; hoá đơn đã có (theo invoice_key) thì ghi vết duplicate.
 //   - Async + nhường event loop sau mỗi file: UI theo dõi được tiến độ và không bị khoá (mục 26/52).
-//   - Hoá đơn cổng thuế báo "Đã bị thay thế" (tthai = 4) KHÔNG thuộc kho dữ liệu: bộ nhập đọc
-//     danh sách khoá trong MST-<mst>/hoa-don-bi-thay-the.json (do engine tra cứu ghi) để bỏ qua
-//     và dọn bản đã nhập trước đó. XML không mang trạng thái nên đây là nguồn duy nhất biết được.
+//   - Trạng thái hoá đơn (tthai) do engine tra cứu ghi vào MST-<mst>/trang-thai-hoa-don.json
+//     (XML không mang trạng thái) được lưu vào cột invoices.tthai. Hoá đơn bị thay thế/điều
+//     chỉnh/huỷ VẪN được nhập và GIỮ trong kho — chỉ không cộng vào hàng hoá và tổng tiền.
 // ---------------------------------------------------------------------------
 
 const fs = require('node:fs');
@@ -23,13 +23,18 @@ const path = require('node:path');
 const { buildImportRecord } = require('./xml-parser');
 const { insertInvoice, upsertInvoice, findInvoiceByKey, recordImportedFile } = require('./repository');
 const { withTransaction } = require('./sqlite');
+const { isExcluded } = require('./invoice-state');
+const { observeCandidates: defaultObserveCandidates } = require('./identity-candidates');
 
 const FOLDER_DIRECTION = { Mua_vao: 'BUY', Ban_ra: 'SELL' };
 const MAX_DEPTH = 8;
 const IMPORT_BATCH_SIZE = 25;
 // Trạng thái imported_files coi như "đã xử lý" (không đọc lại file mỗi lượt quét).
-const HANDLED_STATUS = ['imported', 'superseded'];
-const SUPERSEDED_FILE = 'hoa-don-bi-thay-the.json';
+// Trạng thái 'imported' là "đã xử lý". KHÔNG còn 'superseded': bản trước đánh dấu rồi bỏ qua file
+// của hoá đơn bị thay thế, nên những file đó sẽ được đọc lại một lần để vào kho kèm tthai.
+const HANDLED_STATUS = ['imported'];
+const STATE_FILE = 'trang-thai-hoa-don.json';
+const LEGACY_SUPERSEDED_FILE = 'hoa-don-bi-thay-the.json';
 
 const yieldToLoop = () => new Promise(resolve => setImmediate(resolve));
 
@@ -74,30 +79,46 @@ function alreadyImported(db, filePath, stat) {
   return Number(row.file_size) === stat.size && String(row.modified_time) === stat.mtime.toISOString();
 }
 
-// Danh sách khoá hoá đơn cổng thuế đã báo "Đã bị thay thế" (tthai = 4), do engine ghi trong
-// MST-<mst>/hoa-don-bi-thay-the.json. Chấp nhận cả mảng trần lẫn { keys: [...] }.
-function readSuperseded(mstDir) {
+// Trạng thái hoá đơn theo khoá tầng dữ liệu — nguồn duy nhất, vì XML không mang tthai.
+// File mới: MST-<mst>/trang-thai-hoa-don.json dạng { states: { "khoá": "1".."6" } }.
+// File của BẢN CŨ (hoa-don-bi-thay-the.json: mảng khoá trần hoặc { keys }) vẫn được đọc với
+// tthai = '4' để nâng cấp không mất dấu; giá trị trong file mới LUÔN thắng.
+function readStates(mstDir) {
+  const states = new Map();
   try {
-    const raw = JSON.parse(fs.readFileSync(path.join(mstDir, SUPERSEDED_FILE), 'utf8'));
+    const raw = JSON.parse(fs.readFileSync(path.join(mstDir, LEGACY_SUPERSEDED_FILE), 'utf8'));
     const keys = Array.isArray(raw) ? raw : (raw && Array.isArray(raw.keys) ? raw.keys : []);
-    return new Set(keys.map(String).filter(Boolean));
-  } catch { return new Set(); }
-}
-
-// Dọn một hoá đơn đã bị thay thế khỏi kho (dòng hàng xoá theo nhờ ON DELETE CASCADE).
-function removeSuperseded(db, invoiceKey) {
-  const row = findInvoiceByKey(db, invoiceKey);
-  if (!row) return false;
-  db.prepare('DELETE FROM invoices WHERE id = ?').run(row.id);
-  return true;
+    for (const key of keys.map(String).filter(Boolean)) states.set(key, '4');
+  } catch { /* chưa có file bản cũ */ }
+  try {
+    const raw = JSON.parse(fs.readFileSync(path.join(mstDir, STATE_FILE), 'utf8'));
+    const entries = raw && typeof raw === 'object' && raw.states && typeof raw.states === 'object' ? raw.states : {};
+    for (const [key, value] of Object.entries(entries)) {
+      const state = String(value ?? '').trim();
+      if (key && /^[1-6]$/.test(state)) states.set(String(key), state);
+    }
+  } catch { /* chưa có file mới */ }
+  return states;
 }
 
 function previousFile(db, filePath) {
   return db.prepare('SELECT status, file_size, modified_time, invoice_key FROM imported_files WHERE file_path = ? ORDER BY id DESC LIMIT 1').get(filePath) || null;
 }
 
+// Trạng thái hoá đơn có thể ĐỔI sau khi file đã nhập (hoá đơn tháng 1 đến tháng 3 mới bị thay thế).
+// Lúc đó file KHÔNG đổi (cùng path/size/mtime) nên bước "đã nhập thì bỏ qua" sẽ bỏ luôn phần cập
+// nhật trạng thái ⇒ kho giữ trạng thái cũ vĩnh viễn. Phát hiện lệch thì cho file đi lại luồng bình
+// thường (đọc XML → upsert) để cập nhật tthai.
+function stateChanged(db, known, states) {
+  if (!known || !known.invoice_key) return false;
+  const next = states.get(String(known.invoice_key)) || null;
+  const row = findInvoiceByKey(db, known.invoice_key);
+  if (!row) return false;
+  return String(row.tthai ?? '') !== String(next ?? '');
+}
+
 // Xử lý ĐÚNG MỘT file: mọi lỗi được bắt tại đây để một file hỏng không làm dừng cả lượt.
-function processFile({ db, mst, identifiers, filePath, folder, summary, superseded }) {
+function processFile({ db, mst, identifiers, filePath, folder, summary, states }) {
   const name = path.basename(filePath);
   const expected = FOLDER_DIRECTION[folder] || '';
   let stat;
@@ -110,17 +131,7 @@ function processFile({ db, mst, identifiers, filePath, folder, summary, supersed
   }
   const base = { filePath, fileName: name, fileSize: stat.size, modifiedTime: stat.mtime.toISOString() };
   const known = previousFile(db, filePath);
-  // Hoá đơn đã bị cổng thuế báo "Đã bị thay thế": dọn khỏi kho và ghi vết để lần sau bỏ qua NGAY.
-  // Dùng khoá đã lưu trong imported_files nên KHÔNG phải đọc lại XML — chạy TRƯỚC bước "đã nhập thì bỏ qua".
-  if (superseded && superseded.size && known && known.invoice_key && superseded.has(String(known.invoice_key))) {
-    const removed = removeSuperseded(db, known.invoice_key);
-    const unchanged = String(known.status) === 'superseded' && known.file_size === stat.size && known.modified_time === stat.mtime.toISOString();
-    if (!unchanged) recordImportedFile(db, { ...base, invoiceKey: known.invoice_key, status: 'superseded' });
-    summary.superseded += 1;
-    summary.files.push({ file: filePath, status: 'superseded', invoiceKey: known.invoice_key, removed });
-    return;
-  }
-  if (alreadyImported(db, filePath, stat)) {
+  if (alreadyImported(db, filePath, stat) && !stateChanged(db, known, states)) {
     summary.skipped += 1;
     summary.files.push({ file: filePath, status: 'skipped' });
     return;
@@ -128,14 +139,9 @@ function processFile({ db, mst, identifiers, filePath, folder, summary, supersed
   try {
     const xml = fs.readFileSync(filePath, 'utf8');
     const { record, warnings, direction } = buildImportRecord(xml, { currentMst: identifiers && identifiers.length ? identifiers : mst, fileXml: filePath });
-    // Hoá đơn "Đã bị thay thế": bỏ qua và dọn bản đã nhập trước đó (nếu có).
-    if (superseded && superseded.size && superseded.has(record.invoiceKey)) {
-      const removed = removeSuperseded(db, record.invoiceKey);
-      recordImportedFile(db, { ...base, invoiceKey: record.invoiceKey, status: 'superseded' });
-      summary.superseded += 1;
-      summary.files.push({ file: filePath, status: 'superseded', invoiceKey: record.invoiceKey, removed, direction });
-      return;
-    }
+    // Trạng thái lấy từ kết quả tra cứu (XML không mang). Không có trong sổ trạng thái ⇒ null:
+    // KHÔNG suy đoán là '1', và null KHÔNG bị coi là loại trừ.
+    record.tthai = states.get(record.invoiceKey) || null;
     if (expected && direction !== expected) {
       warnings.push(`File nằm trong thư mục ${folder} nhưng nội dung XML là ${direction} — giữ nguyên file, ghi theo nội dung XML.`);
     }
@@ -151,6 +157,7 @@ function processFile({ db, mst, identifiers, filePath, folder, summary, supersed
       summary.updated += 1;
       summary.items += result.itemsInserted;
       summary.warningCount += warnings.length;
+      if (isExcluded(record.tthai)) summary.inactive += 1;
       summary.files.push({ file: filePath, status: 'updated', invoiceKey: record.invoiceKey, direction, items: result.itemsInserted, warnings });
       return;
     }
@@ -167,10 +174,22 @@ function processFile({ db, mst, identifiers, filePath, folder, summary, supersed
     summary.imported += 1;
     summary.items += result.itemsInserted;
     summary.warningCount += warnings.length;
+    if (isExcluded(record.tthai)) summary.inactive += 1;
     summary.files.push({ file: filePath, status: 'imported', invoiceKey: record.invoiceKey || result.invoiceKey, direction, items: result.itemsInserted, warnings });
   } catch (error) {
     summary.errors += 1;
     const message = error && error.message ? error.message : String(error);
+    // Hoá đơn UNKNOWN (mst_ban/mst_mua đều không thuộc định danh hồ sơ): gom mã lạ để sau lượt
+    // quét ghi vào ma-chua-xac-dinh.json — UI hỏi người dùng gán (vd CCCD 058168004258 của cùng
+    // người MST 4500487170) rồi lượt quét sau tự nhập lại. File vẫn giữ status 'error' trong
+    // imported_files nên khi định danh đã đủ, lượt sau ĐỌC LẠI được (không bị coi đã nhập).
+    // Chỉ mã CÙNG PHÍA với hồ sơ mới đáng gán: file trong Mua_vao ⇒ hồ sơ là người mua ⇒ mã
+    // đáng gán là bên NMua; Ban_ra ⇒ bên NBan. Mã phía đối diện chỉ là nhà cung cấp/khách hàng
+    // bình thường — ghi vết (ownSide:false) nhưng UI không đề nghị gán.
+    if (error && Array.isArray(error.unknownParties) && error.unknownParties.length) {
+      const expectedSide = expected === 'BUY' ? 'mua' : (expected === 'SELL' ? 'ban' : '');
+      (summary.unknownSeen ||= []).push(...error.unknownParties.map(party => ({ ...party, file: filePath, ownSide: !expectedSide || party.side === expectedSide })));
+    }
     try {
       recordImportedFile(db, { ...base, status: 'error', errorMessage: message });
     } catch { /* không ghi được vết thì vẫn phải đi tiếp */ }
@@ -178,18 +197,38 @@ function processFile({ db, mst, identifiers, filePath, folder, summary, supersed
   }
 }
 
-async function scanXmlFolder({ db, mst, identifiers, mstDir, folders = Object.keys(FOLDER_DIRECTION), onFile }) {
-  const summary = { scanned: 0, imported: 0, updated: 0, duplicates: 0, skipped: 0, errors: 0, superseded: 0, items: 0, warningCount: 0, files: [] };
+// Cây thư mục con của file trong vùng MST: 'Mua_vao' | 'Ban_ra' | '' (file rời/không thuộc 2 cây).
+function folderOf(mstDir, filePath) {
+  const rel = path.relative(mstDir, filePath);
+  if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) return null; // nằm ngoài vùng MST ⇒ bỏ
+  const first = rel.split(path.sep)[0];
+  return Object.prototype.hasOwnProperty.call(FOLDER_DIRECTION, first) ? first : '';
+}
+
+async function scanXmlFolder({ db, mst, identifiers, mstDir, folders = Object.keys(FOLDER_DIRECTION), onlyFiles, onFile, observeCandidates = defaultObserveCandidates }) {
+  const summary = { scanned: 0, imported: 0, updated: 0, duplicates: 0, skipped: 0, errors: 0, inactive: 0, items: 0, warningCount: 0, files: [] };
   const notify = () => { if (typeof onFile === 'function') onFile(summary); };
-  const superseded = readSuperseded(mstDir);
-  const targets = listMstXmlFiles(mstDir, folders);
+  const states = readStates(mstDir);
+  let targets;
+  if (Array.isArray(onlyFiles) && onlyFiles.length) {
+    // Chế độ "chỉ nhập ĐÚNG các file này" (engine truyền danh sách file VỪA tải): thay vì quét lại
+    // toàn bộ kho (mỗi lần = readdir đệ quy + statSync + 1 SELECT imported_files cho TỪNG file),
+    // chỉ stat đúng các file đã biết. File nào đã nhập từ trước cũng chỉ tốn một lần SELECT để
+    // bỏ qua — kết quả nhập GIỐNG HỆT quét cả kho vì các file còn lại chắc chắn chưa đổi (bước quét
+    // đầu lượt đã xử lý chúng, và giữa hai lần quét không ai ghi vào vùng này ngoài engine).
+    targets = [...new Set(onlyFiles.map(String))]
+      .map(file => ({ filePath: file, folder: folderOf(mstDir, file) }))
+      .filter(({ filePath, folder }) => folder !== null && (() => { try { return fs.statSync(filePath).isFile(); } catch { return false; } })());
+  } else {
+    targets = listMstXmlFiles(mstDir, folders);
+  }
   for (let start = 0; start < targets.length; start += IMPORT_BATCH_SIZE) {
     await yieldToLoop();
     const batch = targets.slice(start, start + IMPORT_BATCH_SIZE);
     withTransaction(db, () => {
       for (const { filePath, folder } of batch) {
         summary.scanned += 1;
-        processFile({ db, mst, identifiers, filePath, folder, summary, superseded });
+        processFile({ db, mst, identifiers, filePath, folder, summary, states });
         // Thông báo tiến độ TỪNG FILE: UI đọc qua /api/db/import/status (polling) nên chi phí chỉ là
         // vài phép gán trong bộ nhớ, không phải "hàng nghìn UI update". Giao dịch vẫn GỘP THEO LÔ
         // (IMPORT_BATCH_SIZE) — đó mới là chỗ tiết kiệm thời gian ghi SQLite.
@@ -197,7 +236,17 @@ async function scanXmlFolder({ db, mst, identifiers, mstDir, folders = Object.ke
       }
     });
   }
-  return summary;
+  // Ghi các mã định danh CHƯA NHẬN DIỆN vừa gặp (hoá đơn UNKNOWN) vào ma-chua-xac-dinh.json.
+  // Mã VỪA THẤY LẦN ĐẦU ⇒ hẹn quét lại sau một nhịp: nếu người dùng (hoặc máy khác) vừa gán mã
+  // vào hồ sơ trong lúc quét đang chạy, lượt kế tiếp sẽ nhập được các file đang lỗi UNKNOWN.
+  let pendingRescan = false;
+  if (Array.isArray(summary.unknownSeen) && summary.unknownSeen.length) {
+    try {
+      const observed = observeCandidates(mstDir, summary.unknownSeen);
+      pendingRescan = observed.added.length > 0;
+    } catch { /* vết phụ — không được làm hỏng kết quả quét chính */ }
+  }
+  return { ...summary, pendingRescan };
 }
 
-module.exports = { scanXmlFolder, alreadyImported, previousFile, processFile, collectXmlFiles, listMstXmlFiles, readSuperseded, removeSuperseded, FOLDER_DIRECTION, IMPORT_BATCH_SIZE, SUPERSEDED_FILE };
+module.exports = { scanXmlFolder, alreadyImported, previousFile, processFile, stateChanged, collectXmlFiles, listMstXmlFiles, folderOf, readStates, FOLDER_DIRECTION, IMPORT_BATCH_SIZE, STATE_FILE, LEGACY_SUPERSEDED_FILE };

@@ -172,3 +172,56 @@
 .data-export-list .group > summary:hover { background: #e6f5f2; color: #087f70; }
 .data-export-list .sub { display: flex; flex-direction: column; gap: 2px; padding: 2px 0 4px 10px; border-left: 2px solid #e6ecf3; margin: 2px 0 2px 11px; }
 .data-export-list .sub button { font-size: 12.5px; padding: 7px 10px; }
+
+/* ============================================================================
+   LỚP TỐI ƯU DESKTOP CHO KHO DỮ LIỆU (2026-09) — nối thêm, không đụng quy tắc trên.
+   ========================================================================== */
+
+/* Nút tab / lọc: phản hồi nhẹ như phần còn lại của app */
+.data-tabs button,.data-seg button,.data-chips button{transition:background-color .12s ease,border-color .12s ease,color .12s ease,box-shadow .12s ease}
+.data-tabs button:active,.data-seg button:active,.data-chips button:active{transform:translateY(1px)}
+.data-tabs button:focus-visible,.data-seg button:focus-visible,.data-chips button:focus-visible{
+  outline:2px solid #0aa08c;outline-offset:2px;
+}
+
+/* Bảng kho: tiêu đề cột phải LUÔN dính khi cuộn (kể cả nền trắng), dòng chọn/khách
+   đang mở A4 không lẫn với dòng khác */
+.data-content th{z-index:2;box-shadow:inset 0 -1px 0 #dde5ee}
+.data-content tbody tr.selected td{background:#e5f3ef!important;box-shadow:inset 3px 0 0 #087f70}
+.data-content tbody tr{transition:background-color .1s ease}
+
+/* Ô tìm kiếm chính: giữ cỡ chữ 12 nhưng đường viền rõ hơn khi rê vào */
+#data-q:hover{border-color:#c4d2e2}
+
+/* Thanh tiến trình: mượt khi giá trị nhảy */
+#data-import-bar,#backfill-bar{transition:width .25s ease}
+
+/* ============================================================================
+   PHẢN HỒI TỨC THÌ KHI TẢI BẢNG KHO DỮ LIỆU (2026-09) — chỉ hiệu ứng.
+   Bảng đang fetch (lật trang, đổi lọc, đổi chiều…) mờ đi + khoá tương tác;
+   dữ liệu về thì vẽ bình thường. AbortController của latestApi vẫn là nơi đảm
+   bảo chỉ kết quả của lần bấm MỚI NHẤT được vẽ — lớp này KHÔNG đụng logic.
+   ========================================================================== */
+table.loading tbody { opacity: .45; pointer-events: none; }
+table.loading { cursor: progress; }
+table.loading tbody { transition: opacity .12s ease; }
+
+/* ============================================================================
+   XEM TRƯỚC HÓA ĐƠN TỪ TAB TRA CỨU (2026-09) — cùng khổ A4 với tab Kho dữ liệu
+   ========================================================================== */
+#preview-dialog.invoice-dialog {
+  /* Rộng hơn hộp thoại A4 của tab Kho dữ liệu: đây là chỗ xem hoá đơn chính. */
+  width: min(98vw, 1600px); max-width: 98vw; max-height: 96vh; padding: 16px 18px 18px;
+  background: #fff; border: 1px solid #dfe7ef; border-radius: 13px; overflow: hidden;
+}
+.preview-head { display: flex; align-items: flex-start; gap: 12px; margin-bottom: 11px; }
+.preview-head h2 { margin: 0 0 2px; font-size: 17px; color: #20324a; }
+.preview-head p { margin: 0; font-size: 11.5px; color: #76869a; }
+.preview-head button {
+  margin-left: auto; border: 0; background: transparent; color: #76869a;
+  font-size: 22px; line-height: 1; cursor: pointer; padding: 0 4px;
+}
+.preview-head button:hover { color: #20324a; }
+.preview-frame-wrap { height: calc(96vh - 152px); min-height: 320px; border: 1px solid #e0e7ef; border-radius: 10px; overflow: hidden; background: #eef1f4; }
+.preview-frame-wrap iframe { display: block; width: 100%; height: 100%; border: 0; background: #eef1f4; }
+.preview-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 11px; }

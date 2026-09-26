@@ -99,7 +99,10 @@ test('HTML hoá đơn: ngày lập hiện theo giờ VN', () => {
 test('các đường xuất đều đi qua bộ quy đổi chung, không còn cắt chuỗi UTC', () => {
   const read = rel => fs.readFileSync(path.join(__dirname, '..', rel), 'utf8');
   const server = read('src/server.js');
-  assert.ok(server.includes("'Ngày lập': vnDate.dmy(i.tdlap)"), 'Excel tổng hợp phải quy về ngày VN');
+  // makeExcel đã chuyển sang src/invoice-excel.js (summaryWorkbook) để dựng workbook trong worker;
+  // ngày lập vẫn phải qua ĐÚNG bộ quy đổi chung (isoToDmy = vnDate.dmy).
+  assert.ok(read('src/invoice-excel.js').includes("'Ngày lập': isoToDmy(i.tdlap)"), 'Excel tổng hợp phải quy về ngày VN');
+  assert.ok(!server.includes('json_to_sheet'), 'server không còn tự dựng bảng Excel (đã đẩy xuống excel-worker)');
   assert.ok(!server.includes("'Ngày lập': String(i.tdlap ?? '')"), 'không được in thẳng chuỗi UTC');
   assert.ok(server.includes('const iso = date => vnDate.dayOf(date)'), 'cửa sổ ngày của Auto Sync phải tính theo ngày VN');
   assert.ok(!server.includes('date.toISOString().slice(0, 10)'), 'không còn lấy ngày bằng toISOString của giờ địa phương');

@@ -7,7 +7,7 @@ const { closeDatabase } = require('./sqlite');
 const { scanXmlFolder } = require('./xml-scanner');
 const MST_FORMAT = require('../mst-format');
 
-function createXmlWatcher({ onChange = () => {}, onStatus = () => {}, shouldPause = () => false, identifiersFor = mst => [mst], debounceMs = 700 } = {}) {
+function createXmlWatcher({ onChange = () => {}, onStatus = () => {}, shouldPause = () => false, identifiersFor = mst => [mst], afterScan = () => {}, debounceMs = 700 } = {}) {
   let root = '';
   let watcher = null;
   let allowed = new Set();
@@ -35,6 +35,13 @@ function createXmlWatcher({ onChange = () => {}, onStatus = () => {}, shouldPaus
       const area = ensureMst({ output: root, mst });
       db = area.db;
       const result = await scanXmlFolder({ db, mst, identifiers: identifiersFor(mst), mstDir: area.dir });
+      // Hook server (autoAssignByPersonName): lượt quét vừa gặp mã lạ trùng TÊN hồ sơ ⇒ tự gán
+      // ngay tại đây — chạy nền, KHÔNG cần ai mở tab. Lỗi hook không được làm hỏng lượt quét.
+      try { afterScan(mst, result); } catch { /* tự gán là tối ưu, không phải bắt buộc */ }
+      // Lượt quét vừa gặp mã định danh MỚI chưa nhận diện (vd CCCD của cùng người MST gốc):
+      // hẹn quét lại một nhịp — nếu mã đã được tự gán/gán tay thì lượt này nhập được ngay các
+      // hoá đơn UNKNOWN; nếu chưa, lượt sau chỉ cập nhật vết (không lặp vô hạn).
+      if (result.pendingRescan) schedule(mst);
       const changed = (result.imported || 0) + (result.updated || 0);
       const previous = stateFor(mst);
       const next = publish(mst, {

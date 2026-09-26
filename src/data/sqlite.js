@@ -10,7 +10,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { DatabaseSync } = require('node:sqlite');
-const { SCHEMA_VERSION, DDL } = require('./schema');
+const { SCHEMA_VERSION, TABLES, INDEXES, FTS5 } = require('./schema');
 
 function withTransaction(db, fn) {
   // Scanner có thể gom nhiều file trong một transaction lớn. Repository vẫn gọi helper này cho
@@ -32,8 +32,21 @@ function schemaVersion(db) {
   return Number(row && row.user_version) || 0;
 }
 
-// Nâng schema theo bước: v0 (file mới) → v1 → v2 → v3.
-// v3 thêm bảng FTS5 `invoice_fts`; với DB cũ phải đổ dữ liệu invoices đã có vào index.
+// Nâng schema theo bước: v0 (file mới) → v1 → v2 → v3 (FTS5) → v4 (cột tthai).
+//
+// THỨ TỰ BẮT BUỘC: bảng → thêm cột còn thiếu → index → FTS.
+// DB cũ đã có bảng `invoices` nhưng CHƯA có cột `tthai`; nếu tạo index trên cột đó TRƯỚC khi
+// ALTER thì cả transaction nâng cấp ném "no such column: tthai" và app không mở được data.db.
+function tableColumns(db, table) {
+  return db.prepare(`PRAGMA table_info(${table})`).all().map(row => String(row.name));
+}
+
+function ensureColumn(db, table, column, definition) {
+  if (tableColumns(db, table).includes(column)) return false;
+  db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+  return true;
+}
+
 function applySchema(db) {
   const current = schemaVersion(db);
   if (current === SCHEMA_VERSION) return { changed: false, version: current };
@@ -41,7 +54,10 @@ function applySchema(db) {
     throw new Error(`data.db đang ở schema ${current}, mới hơn bản app này hỗ trợ (${SCHEMA_VERSION}).`);
   }
   withTransaction(db, () => {
-    for (const sql of DDL) db.exec(sql);
+    for (const sql of TABLES) db.exec(sql);
+    if (current < 4) ensureColumn(db, 'invoices', 'tthai', 'TEXT');
+    for (const sql of INDEXES) db.exec(sql);
+    for (const sql of FTS5) db.exec(sql);
     // Backfill FTS cho DB tạo trước v3 (câu lệnh này chạy sau khi trigger đã tạo).
     // INSERT vào invoice_fts không kích trigger trên invoices nên KHÔNG bị ghi trùng;
     // chỉ chạy khi nâng cấp thật (< 3) để không nhân đôi index mỗi lần mở app.
@@ -89,4 +105,4 @@ function tableNames(db) {
     .all().map(row => row.name);
 }
 
-module.exports = { openDatabase, closeDatabase, withTransaction, applySchema, schemaVersion, tableNames, backfillFts, SCHEMA_VERSION };
+module.exports = { openDatabase, closeDatabase, withTransaction, applySchema, schemaVersion, tableNames, tableColumns, ensureColumn, backfillFts, SCHEMA_VERSION };

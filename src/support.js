@@ -12,7 +12,9 @@ const MAX_MESSAGES = 500;
 // Bước 2: dùng thử ngầm TRIAL_DAYS ngày, tính từ lần cài đặt đầu tiên trên máy này.
 // Máy chủ vẫn là nguồn quyết định; giá trị dưới đây chỉ là phương án dự phòng khi
 // chưa đăng ký được hoặc Gateway không phản hồi.
-const TRIAL_DAYS = 3;
+// PHẢI KHỚP với TRIAL_DAYS trong support-gateway/apps-script/Code.gs — lệch nhau là app tự cắt
+// sớm hơn CRM (người dùng thấy "hết hạn" trong khi Sheet vẫn còn hạn).
+const TRIAL_DAYS = 30;
 const TRIAL_MS = TRIAL_DAYS * 24 * 60 * 60 * 1000;
 const DEVICE_LIMIT_MESSAGE = 'Key này đã đạt giới hạn số thiết bị sử dụng tối đa. Vui lòng liên hệ Admin để mua thêm slot.';
 const TRIAL_OVER_MESSAGE = `Đã hết ${TRIAL_DAYS} ngày dùng thử. Vui lòng nhập License Key để tiếp tục sử dụng.`;

@@ -9,3 +9,20 @@
 *.png binary
 *.jpg binary
 *.mp3 binary
+
+# Nguồn văn bản: LUÔN checkout bằng LF trên MỌI máy, kể cả Windows.
+# Vì sao bắt buộc: nhiều test kiểm tra VĂN BẢN NGUỒN bằng chuỗi nhiều dòng (có \n) — ví dụ
+# tests/ui-wiring.test.js. Trên Windows, git mặc định core.autocrlf=true nên checkout ra CRLF
+# và chuỗi đó KHÔNG khớp: test XANH ở máy này nhưng ĐỎ trên runner CI. Đã xảy ra thật, làm
+# hỏng lượt phát hành v1.0.4. Ép LF ở đây thì mọi nơi đọc đúng cùng một nội dung.
+# (Không đụng *.nsi/*.nsh ở trên — hai loại đó cần CRLF và đã khai báo riêng.)
+*.js text eol=lf
+*.cjs text eol=lf
+*.mjs text eol=lf
+*.json text eol=lf
+*.css text eol=lf
+*.html text eol=lf
+*.md text eol=lf
+*.yml text eol=lf
+*.txt text eol=lf
+*.gs text eol=lf

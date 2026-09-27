@@ -55,15 +55,19 @@ function download(url, dest) {
 }
 
 const SOURCES = {
+  // Nguồn CHÍNH: prerelease `ocr-model-v1` của CHÍNH repo này — bản sao cố định, đúng byte đang
+  // chạy thật trên máy. Vì sao không lấy từ ddddocr cho cả hai file: repo đó KHÔNG có common.json
+  // (charset của nó là file Python charsets.py) — ba URL cũ đều trả 404, đã kiểm thật ngày 27/09.
+  // Riêng common.onnx thì ddddocr vẫn dùng được nên giữ làm nguồn dự phòng.
+  // KHÔNG tự suy ra common.json từ charsets.py: charset của app là CHARSET_BETA nhưng CÓ thêm một
+  // phần tử '' ở vị trí 1173 (do bộ chuyển của extension tách chuỗi escape) — suy diễn sai một ký tự
+  // là CAPTCHA ra CHỮ SAI, tệ hơn hẳn việc báo lỗi. Dùng đúng file đang chạy tốt.
   'common.onnx': [
+    'https://github.com/Datkep92/HoaDonNhe/releases/download/ocr-model-v1/common.onnx',
     'https://raw.githubusercontent.com/sml2h3/ddddocr/master/ddddocr/common.onnx',
-    'https://cdn.jsdelivr.net/gh/sml2h3/ddddocr@master/ddddocr/common.onnx',
-    'https://mirror.ghproxy.com/https://raw.githubusercontent.com/sml2h3/ddddocr/master/ddddocr/common.onnx',
   ],
   'common.json': [
-    'https://raw.githubusercontent.com/sml2h3/ddddocr/master/ddddocr/common.json',
-    'https://cdn.jsdelivr.net/gh/sml2h3/ddddocr@master/ddddocr/common.json',
-    'https://mirror.ghproxy.com/https://raw.githubusercontent.com/sml2h3/ddddocr/master/ddddocr/common.json',
+    'https://github.com/Datkep92/HoaDonNhe/releases/download/ocr-model-v1/common.json',
   ],
 };
 
@@ -98,6 +102,14 @@ async function main() {
     }
     if (!ok) throw new Error(`Không lấy được ${file.name}. ${lastErr}`);
     console.log(`✓ Đã tải: ${file.name}`);
+  }
+  // KIỂM KÍCH THƯỚC CHÍNH XÁC sau khi lấy: tải thiếu/thừa vài byte cũng phải DỪNG ngay, không để
+  // một EXE khuyết model đi ra bản phát hành (xem chốt chặn trong tools/build-app.cjs).
+  for (const file of FILES) {
+    const size = fs.statSync(path.join(DEST_DIR, file.name)).size;
+    if (file.size && size !== file.size) {
+      throw new Error(`${file.name} sai kích thước: ${size} bytes, cần ${file.size}. Xoá file đó rồi chạy lại.`);
+    }
   }
   console.log('Model OCR sẵn sàng trong src/onnx/');
 }

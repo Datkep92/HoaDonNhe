@@ -74,6 +74,13 @@ jobs:
       - name: Chạy test
         run: npm test
 
+      # Model OCR (~54 MB) KHÔNG nằm trong git (.gitignore: src/onnx/). Nếu thiếu, pkg chỉ CẢNH BÁO
+      # rồi vẫn xuất EXE khuyết — mọi bản phát hành trước đây tải về KHÔNG giải được CAPTCHA.
+      # Nguồn là prerelease `ocr-model-v1` của chính repo này (không phải bản phát hành sản phẩm;
+      # prerelease nên không bao giờ thành "latest" và bộ tự cập nhật trong app không thấy nó).
+      - name: Tải model OCR (src/onnx)
+        run: npm run fetch-onnx
+
       - name: Build app EXE (pkg + ẩn console)
         run: npm run build
 

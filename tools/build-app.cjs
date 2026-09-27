@@ -46,6 +46,25 @@ try {
   const pkgBin = path.join(root, 'node_modules', '@yao-pkg', 'pkg', 'lib-es5', 'bin.js');
   if (!fs.existsSync(pkgBin)) throw new Error('Chưa có @yao-pkg/pkg. Chạy "npm install" trước.');
 
+  // CHỐT CHẶN MODEL OCR — phải có TRƯỚC khi đóng gói.
+  // Vì sao cần: pkg chỉ *cảnh báo* khi thiếu asset ("Warning Cannot stat, ENOENT") rồi VẪN xuất EXE
+  // thiếu model. Đã xảy ra thật: mọi bản phát hành qua GitHub Actions thiếu src/onnx (54 MB, không
+  // nằm trong git) nên EXE tải về KHÔNG giải được CAPTCHA — mà không ai biết vì build vẫn "xanh".
+  // Thiếu/sai kích thước thì DỪNG build (exit 1) thay vì âm thầm ra bản khuyết.
+  // Cố ý build bản không OCR (hiếm): HOADON_ALLOW_NO_OCR=1
+  const OCR_FILES = [['common.onnx', 54088400], ['common.json', 90092]];
+  if (process.env.HOADON_ALLOW_NO_OCR === '1') {
+    console.log('⚠ HOADON_ALLOW_NO_OCR=1 — build KHÔNG có model OCR (EXE sẽ không giải CAPTCHA được).');
+  } else {
+    for (const [name, size] of OCR_FILES) {
+      const file = path.join(root, 'src', 'onnx', name);
+      if (!fs.existsSync(file)) throw new Error(`Thiếu model OCR: src/onnx/${name}. Chạy "npm run fetch-onnx" trước khi build.`);
+      const actual = fs.statSync(file).size;
+      if (actual !== size) throw new Error(`Model OCR sai kích thước: src/onnx/${name} là ${actual}, cần ${size}. Chạy lại "npm run fetch-onnx".`);
+    }
+    console.log('Model OCR: đủ (common.onnx + common.json) — sẽ được nhúng vào EXE.');
+  }
+
   run(process.execPath, [
     pkgBin, '.',
     '--compress', 'GZip',

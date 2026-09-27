@@ -58,7 +58,13 @@ async function autoLogin(input, scope = '') {
       if (attempt < maxAttempts) await sleep(RETRY_DELAY_MS);
     }
   }
-  return { ok: false, attempts: maxAttempts, error: lastError, solverError: solverBroken ? captchaSolver.lastError() : '' };
+  // Gộp lý do của BỘ GIẢI CAPTCHA vào thông báo. Trước đây gọi sai tên hàm
+  // (`captchaSolver.lastError` trong khi module xuất `lastErrorMessage`) nên nhánh này NÉM
+  // TypeError — người dùng chỉ thấy "lastError is not a function" rồi route đổi thành HTTP 400,
+  // còn lý do thật (ví dụ thiếu model OCR) thì bị che mất. Nay lý do đi thẳng ra thông báo.
+  const solverNote = solverBroken ? String(captchaSolver.lastErrorMessage() || '').trim() : '';
+  const error = [lastError, solverNote ? `(bộ giải CAPTCHA: ${solverNote})` : ''].filter(Boolean).join(' ');
+  return { ok: false, attempts: maxAttempts, error, solverError: solverNote };
 }
 
 module.exports = { autoLogin, attemptOnce, MAX_ATTEMPTS };

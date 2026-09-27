@@ -21,12 +21,21 @@ test('wait() giữ chỗ: hai lần gọi cổng liên tiếp vẫn cách nhau t
 test('nhiều task chờ song song vẫn không bắn cùng lúc (không nhân tốc độ gửi)', async t => {
   t.after(() => pace.resetRest());
   pace.resetRest();
-  const times = [];
-  await Promise.all([0, 1, 2].map(async () => { await pace.wait(); times.push(Date.now()); }));
-  times.sort((a, b) => a - b);
-  assert.equal(times.length, 3);
-  assert.ok(times[1] - times[0] >= pace.MIN_GAP - 15, `hai lần bắn đầu cách nhau ${times[1] - times[0]}ms`);
-  assert.ok(times[2] - times[1] >= pace.MIN_GAP - 15, `hai lần bắn sau cách nhau ${times[2] - times[1]}ms`);
+  // Đo theo TỪNG waiter, không sắp xếp lại thời điểm hoàn tất: mốc được giữ chỗ theo đúng thứ tự
+  // gọi (giữ chỗ là code đồng bộ, không await chen vào), nên waiter thứ i phải chờ ít nhất
+  // i * MIN_GAP kể từ lúc nó gọi. Máy tải nặng chỉ làm waiter thức MUỘN hơn (chờ dài hơn) chứ
+  // không bao giờ thức sớm, nên phép đo này không đỏ oan; còn nếu mọi waiter cùng thức một lúc
+  // (lỗi cũ mà test này sinh ra để bắt) thì waited[1] và waited[2] đều ~0 và test đỏ ngay.
+  const waited = [];
+  await Promise.all([0, 1, 2].map(async i => {
+    const from = Date.now();
+    await pace.wait();
+    waited[i] = Date.now() - from;
+  }));
+  assert.equal(waited.length, 3);
+  assert.ok(waited[0] >= 0, `waiter đầu chờ ${waited[0]}ms`);
+  assert.ok(waited[1] >= pace.MIN_GAP - 15, `hai lần bắn đầu chỉ cách ${waited[1]}ms, phải >= ${pace.MIN_GAP}ms`);
+  assert.ok(waited[2] >= 2 * pace.MIN_GAP - 15, `waiter thứ ba chỉ chờ ${waited[2]}ms, phải >= ${2 * pace.MIN_GAP}ms`);
 });
 test('429 rests with exponential backoff and honours the portal Retry-After', t => {
   t.after(() => pace.resetRest());

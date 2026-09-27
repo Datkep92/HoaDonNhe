@@ -20,9 +20,34 @@ try { ort = require('onnxruntime-node'); } catch { /* thiếu module — solve()
 try { sharp = require('sharp'); } catch { /* thiếu module — solve() sẽ trả null */ }
 
 // Đường dẫn model: cạnh file này (src/onnx), hoặc ghi đè bằng biến môi trường
+const os = require('node:os');
 const ROOT = path.resolve(__dirname);
-const MODEL_PATH = process.env.HOADON_OCR_MODEL || path.join(ROOT, 'onnx', 'common.onnx');
+const SNAPSHOT_MODEL = path.join(ROOT, 'onnx', 'common.onnx');
 const CHARSET_PATH = process.env.HOADON_OCR_CHARSET || path.join(ROOT, 'onnx', 'common.json');
+const MODEL_SIZE = 54088400;
+
+// onnxruntime-node là thư viện NATIVE: nó mở model bằng fopen nên KHÔNG thấy hệ thống file ảo của
+// pkg — DÙ file đã được nhúng trong EXE. Đo thật trong EXE: "Load model
+// C:\snapshot\...\common.onnx failed: File doesn't exist". Vì vậy khi chạy trong EXE phải CHÉP model
+// ra đĩa thật rồi đưa đường dẫn thật cho ORT. JS thì đọc được file trong snapshot (pkg vá fs), nên
+// chỉ cần JS chép ra đúng MỘT lần rồi nhớ theo kích thước.
+function realModelPath() {
+  const override = process.env.HOADON_OCR_MODEL;
+  if (override) return override;
+  if (!process.pkg) return SNAPSHOT_MODEL; // chạy từ mã nguồn: dùng thẳng file thật
+  const target = path.join(os.tmpdir(), 'CN-Tax-Tools-ocr', 'common.onnx');
+  try {
+    if (fs.existsSync(target) && fs.statSync(target).size === MODEL_SIZE) return target; // đã chép rồi
+    const bytes = fs.readFileSync(SNAPSHOT_MODEL); // đọc từ snapshot
+    if (bytes.length !== MODEL_SIZE) throw new Error(`model trong EXE sai kích thước: ${bytes.length}, cần ${MODEL_SIZE}`);
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, bytes); // ghi ra đĩa THẬT cho ORT đọc
+    return target;
+  } catch (error) {
+    lastError = `Không chép được model OCR ra đĩa: ${error.message}`;
+    return SNAPSHOT_MODEL; // để lỗi thật hiện ra ở bước tạo session
+  }
+}
 
 let session = null;
 let charset = null;
@@ -39,14 +64,15 @@ async function initModel() {
   if (initPromise) return initPromise;
 
   initPromise = (async () => {
-    if (!fs.existsSync(MODEL_PATH)) {
-      throw new Error(`Không thấy model OCR: ${MODEL_PATH}. Chạy "node tools/fetch-onnx.cjs" để tải từ extension CaptchaX.`);
+    const modelPath = realModelPath();
+    if (!fs.existsSync(modelPath)) {
+      throw new Error(`Không thấy model OCR: ${modelPath}. Chạy "node tools/fetch-onnx.cjs" để tải từ extension CaptchaX.`);
     }
     if (!fs.existsSync(CHARSET_PATH)) {
       throw new Error(`Không thấy charset: ${CHARSET_PATH}. Chạy "node tools/fetch-onnx.cjs".`);
     }
     charset = JSON.parse(fs.readFileSync(CHARSET_PATH, 'utf8'));
-    session = await ort.InferenceSession.create(MODEL_PATH, {
+    session = await ort.InferenceSession.create(modelPath, {
       executionProviders: ['cpu'],
       logSeverityLevel: 3,
     });

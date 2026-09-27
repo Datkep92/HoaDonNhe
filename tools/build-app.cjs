@@ -98,7 +98,19 @@ try {
     try { fs.unlinkSync(exe); } catch { /* không xoá được thì vẫn phải báo lỗi */ }
     throw new Error(`EXE thiếu ${check.missing.length}/${REQUIRED.length} file nhúng bắt buộc: ${check.missing.join(', ')} — đã xoá file khuyết, KHÔNG phát hành.`);
   }
-  console.log(`Đã kiểm EXE: đủ ${REQUIRED.length}/${REQUIRED.length} file nhúng bắt buộc.`);
+  console.log(`Đã kiểm EXE: đủ ${check.total}/${check.total} file nhúng bắt buộc.`);
+
+  // CHỐT MẠNH NHẤT: chạy chính EXE vừa đóng gói với --ocr-check (giải 1 ảnh CAPTCHA mẫu tại chỗ,
+  // không gọi mạng, không dùng tài khoản nào). Kiểm theo TÊN file là chưa đủ — đã xảy ra thật:
+  // libvips CÓ trong EXE nhưng sharp vẫn không nạp được vì thiếu JS của gói nền (@img), nên
+  // EXE không giải được CAPTCHA ⇒ không đăng nhập được, trong khi `node src/server.js` thì tốt.
+  const ocr = spawnSync(exe, ['--ocr-check'], { encoding: 'utf8', timeout: 180000 });
+  const ocrOut = `${String(ocr.stdout || '').trim()} ${String(ocr.stderr || '').trim()}`.trim();
+  if (ocr.status !== 0) {
+    try { fs.unlinkSync(exe); } catch { /* không xoá được thì vẫn phải báo lỗi */ }
+    throw new Error(`EXE KHÔNG giải được CAPTCHA (--ocr-check thất bại) — đã xoá file khuyết. ${ocrOut || ocr.error || ''}`);
+  }
+  console.log('Đã kiểm OCR trong EXE: giải đúng ảnh mẫu.');
 
   const size = fs.statSync(exe).size;
   console.log(`\nXong: ${path.relative(root, exe)} (${(size / 1048576).toFixed(1)} MB)`);

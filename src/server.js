@@ -2192,7 +2192,32 @@ function localGet(port, pathname) {
 }
 server.listen(0, '127.0.0.1', async () => {
   const { port } = server.address();
-  if (process.argv.includes('--smoke-test')) {
+  // Kiểm CHÍNH BẢN ĐÓNG GÓI: bộ giải CAPTCHA có chạy được trong EXE không?
+  // Vì sao cần cờ này: `pkg` KHÔNG tự nhúng thư viện native của gói phụ thuộc. Đã xảy ra thật —
+  // thiếu sharp/libvips nên EXE không rasterize được SVG CAPTCHA ⇒ đăng nhập hỏng, trong khi
+  // `node src/server.js` (có node_modules) vẫn tốt. Ảnh mẫu tại chỗ: KHÔNG gọi mạng, KHÔNG dùng
+  // tài khoản nào — nên chạy được cả trên CI lẫn trên máy người dùng.
+  if (process.argv.includes('--ocr-check')) {
+    const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="120" height="40"><rect width="120" height="40" fill="white"/><text x="15" y="30" font-size="26" font-family="DejaVu Sans Mono" fill="black">A7K2</text></svg>';
+    // Nạp TỪNG thư viện native và ghi lại LỖI THẬT: bộ giải nuốt lỗi khi require nên nếu chỉ chạy
+    // solve() thì chỉ thấy "Thiếu sharp", không biết thiếu cái gì. Đây là chỗ cần lỗi thô.
+    const libs = {};
+    for (const name of ['sharp', 'onnxruntime-node']) {
+      try { require(name); libs[name] = 'ok'; }
+      catch (error) { libs[name] = String((error && error.message) || error).split('\n')[0].slice(0, 300); }
+    }
+    try {
+      const solver = require('./captcha-solver');
+      const text = await solver.solve(`data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`);
+      const ok = text === 'A7K2';
+      console.log(JSON.stringify({ packed, ocr: ok, text, solverError: solver.lastErrorMessage(), libs }, null, 1));
+      server.close(() => process.exit(ok ? 0 : 1));
+    } catch (error) {
+      console.error(JSON.stringify({ packed, ocr: false, thrown: String((error && error.message) || error).slice(0, 300), libs }, null, 1));
+      server.close(() => process.exit(1));
+    }
+  }
+  else if (process.argv.includes('--smoke-test')) {
     try {
       const [page, state] = await Promise.all([localGet(port, '/'), localGet(port, '/api/state')]);
       if (page.status !== 200 || !page.body.includes('CN Tax Tools') || state.status !== 200 || JSON.parse(state.body).ok !== true) throw new Error('Giao diện hoặc API localhost không phản hồi đúng.');

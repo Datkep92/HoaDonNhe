@@ -1,6 +1,6 @@
 {
   "name": "cn-tax-tools",
-  "version": "1.0.6",
+  "version": "1.0.7",
   "description": "Ung dung nhe tai hoa don qua Chrome/Edge he thong",
   "author": "CN Tax Tools",
   "private": true,
@@ -55,6 +55,14 @@
       "src/onnx/common.json",
       "node_modules/onnxruntime-node/bin/napi-v6/win32/x64/*.node",
       "node_modules/onnxruntime-node/bin/napi-v6/win32/x64/*.dll",
+      "node_modules/@img/sharp-win32-x64/lib/*.node",
+      "node_modules/@img/sharp-win32-x64/lib/*.dll",
+      "node_modules/@img/sharp-win32-x64/*.cjs",
+      "node_modules/@img/sharp-win32-x64/*.json",
+      "node_modules/@img/colour/*.cjs",
+      "node_modules/@img/colour/*.json",
+      "node_modules/sharp/package.json",
+      "node_modules/sharp/dist/*.cjs",
       "src/excel-worker.js",
       "src/excel-worker-thread.js"
     ]

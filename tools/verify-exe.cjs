@@ -37,8 +37,31 @@ const REQUIRED = [
 
 function verify(exePath) {
   const bytes = fs.readFileSync(exePath);
-  const missing = REQUIRED.filter(name => bytes.indexOf(Buffer.from(name)) < 0);
-  return { missing, size: bytes.length, total: REQUIRED.length };
+  const required = [...REQUIRED, ...nativeNames()];
+  const missing = required.filter(name => bytes.indexOf(Buffer.from(name)) < 0);
+  return { missing, size: bytes.length, total: required.length };
+}
+
+// MỌI thư viện NATIVE trong node_modules đều phải có mặt trong EXE.
+// Vì sao phải quét động: pkg KHÔNG tự nhúng .node/.dll của gói phụ thuộc — nó chỉ theo require graph
+// rồi bỏ qua thư mục. Đã xảy ra thật hai lần: thiếu model ONNX (sửa bằng cách khai trong assets),
+// rồi thiếu sharp/libvips ⇒ EXE KHÔNG rasterize được SVG CAPTCHA nên không đăng nhập được, trong khi
+// chạy `node src/server.js` (có node_modules) thì vẫn tốt. Quét động nên không sợ thiếu tên nào.
+function nativeNames() {
+  const found = new Set();
+  const walk = dir => {
+    let entries;
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const entry of entries) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) walk(full);
+      else if (/\.(node|dll)$/i.test(entry.name)) found.add(entry.name);
+    }
+  };
+  for (const base of ['node_modules/@img', 'node_modules/sharp', 'node_modules/onnxruntime-node']) {
+    walk(path.join(__dirname, '..', base));
+  }
+  return [...found];
 }
 
 function defaultExe() {
@@ -64,4 +87,4 @@ if (require.main === module) {
   console.log(`✓ EXE đủ ${total}/${total} file nhúng bắt buộc (${mb} MB).`);
 }
 
-module.exports = { verify, REQUIRED, defaultExe };
+module.exports = { verify, REQUIRED, nativeNames, defaultExe };

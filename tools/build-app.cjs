@@ -86,6 +86,20 @@ try {
     console.log(`Icon khay: ${path.relative(root, iconOut)}`);
   }
 
+  // KIỂM EXE NGAY TRONG BƯỚC BUILD: thiếu bất kỳ file nhúng bắt buộc nào là build THẤT BẠI.
+  // Nhờ vậy "build xong" đồng nghĩa "EXE đủ" — ở máy này và trên GitHub như nhau. Đây là chốt
+  // cuối: kể cả khi ai đó cố tình bỏ qua chốt model phía trên (HOADON_ALLOW_NO_OCR=1), bước này
+  // vẫn bắt được và không cho EXE khuyết ra đời.
+  const { verify, REQUIRED } = require('./verify-exe.cjs');
+  const check = verify(exe);
+  if (check.missing.length) {
+    // XOÁ luôn file khuyết: bảo đảm bất biến "EXE nào còn nằm trên đĩa là EXE đã qua kiểm".
+    // (pkg ghi file xong mới tới bước này, nên nếu không xoá thì build lỗi vẫn để lại một EXE khuyết.)
+    try { fs.unlinkSync(exe); } catch { /* không xoá được thì vẫn phải báo lỗi */ }
+    throw new Error(`EXE thiếu ${check.missing.length}/${REQUIRED.length} file nhúng bắt buộc: ${check.missing.join(', ')} — đã xoá file khuyết, KHÔNG phát hành.`);
+  }
+  console.log(`Đã kiểm EXE: đủ ${REQUIRED.length}/${REQUIRED.length} file nhúng bắt buộc.`);
+
   const size = fs.statSync(exe).size;
   console.log(`\nXong: ${path.relative(root, exe)} (${(size / 1048576).toFixed(1)} MB)`);
   console.log(`Nhắc: chạy "${path.relative(root, exe)}" --smoke-test để kiểm tra EXE chạy được.`);

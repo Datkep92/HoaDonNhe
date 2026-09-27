@@ -55,12 +55,12 @@ const open = buffer => {
   return { names: book.SheetNames, rows: name => XLSX.utils.sheet_to_json(book.Sheets[name], { header: 1 }) };
 };
 
-test('buildWorkbook: đủ 6 sheet riêng theo chiều/loại, đúng header và số dòng', () => {
+test('buildWorkbook: đủ 7 sheet riêng theo chiều/loại, đúng header và số dòng', () => {
   withDb(db => {
     seed(db);
     const { buffer, counts } = excelExport.buildWorkbook(db, {});
     const { names, rows } = open(buffer);
-    assert.deepEqual(names, [SHEET.buy, SHEET.sell, SHEET.productsBuy, SHEET.productsSell, SHEET.suppliers, SHEET.buyers]);
+    assert.deepEqual(names, [SHEET.buy, SHEET.sell, SHEET.productsBuy, SHEET.productsSell, SHEET.suppliers, SHEET.buyers, SHEET.bank]);
     assert.equal(counts.buy, 2, 'hai hoá đơn mua vào');
     assert.equal(counts.sell, 1, 'một hoá đơn bán ra');
     assert.equal(counts.suppliers, 1, 'một nhà cung cấp');
@@ -148,8 +148,8 @@ test('xuất riêng từng bảng: chỉ đúng sheet được chọn, tên file
     assert.equal(suppliersOnly.counts.suppliers, 1, 'nhà cung cấp đủ danh sách');
 
     // Mã bảng lạ bị bỏ qua; danh sách rỗng ⇒ quay về xuất tất cả.
-    assert.equal(open(excelExport.buildWorkbook(db, {}, ['khong-ton-tai']).buffer).names.length, 6);
-    assert.equal(open(excelExport.buildWorkbook(db, {}, []).buffer).names.length, 6);
+    assert.equal(open(excelExport.buildWorkbook(db, {}, ['khong-ton-tai']).buffer).names.length, 7);
+    assert.equal(open(excelExport.buildWorkbook(db, {}, []).buffer).names.length, 7);
   });
 });
 

@@ -112,9 +112,21 @@ try {
   }
   console.log('Đã kiểm OCR trong EXE: giải đúng ảnh mẫu.');
 
+  // CHỐT THỨ HAI: chạy chính EXE với --smoke-test. Bài kiểm này giờ không chỉ hỏi "giao diện có mở
+  // không" mà còn tải MỌI file giao diện (script/link trong index.html + pdfjs) và đòi HTTP 200 —
+  // nhờ vậy EXE thiếu một tab (ví dụ "Sao kê ngân hàng" ở bản 1.0.7) là build ĐỎ ngay tại đây,
+  // chứ không phải để người dùng phát hiện sau khi tải về.
+  const smoke = spawnSync(exe, ['--smoke-test'], { encoding: 'utf8', timeout: 180000, env: { ...process.env, HOADON_NO_UPDATE_CHECK: '1' } });
+  const smokeOut = `${String(smoke.stdout || '').trim()} ${String(smoke.stderr || '').trim()}`.trim();
+  if (smoke.status !== 0) {
+    try { fs.unlinkSync(exe); } catch { /* không xoá được thì vẫn phải báo lỗi */ }
+    throw new Error(`EXE chạy --smoke-test thất bại (thiếu file giao diện hoặc API không lên) — đã xoá file khuyết. ${smokeOut || smoke.error || ''}`);
+  }
+  console.log(`Đã kiểm giao diện trong EXE: ${smokeOut}`);
+
   const size = fs.statSync(exe).size;
   console.log(`\nXong: ${path.relative(root, exe)} (${(size / 1048576).toFixed(1)} MB)`);
-  console.log(`Nhắc: chạy "${path.relative(root, exe)}" --smoke-test để kiểm tra EXE chạy được.`);
+  console.log(`Nhắc: EXE đã qua cả --ocr-check lẫn --smoke-test ngay trong bước build này.`);
 } catch (error) {
   console.error(`\nLỖI build app: ${error.message}`);
   process.exit(1);

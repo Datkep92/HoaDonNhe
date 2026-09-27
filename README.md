@@ -1,14 +1,26 @@
 # CN Tax Tools
 
-`release/CN-Tax-Tools-v1.0.0.exe` là bản Windows x64 chạy bằng Chrome hoặc Microsoft Edge đã có trên máy. EXE không kèm Electron, Chromium hay extension.
+Ứng dụng Windows x64 tra cứu và tải hóa đơn điện tử từ cổng thuế, chạy bằng **Google Chrome hoặc Microsoft Edge** đã có trên máy; bản phát hành **không kèm Electron, Chromium hay extension**.
+
+## Tải và cài bản mới nhất
+
+- Trang tải: <https://github.com/Datkep92/HoaDonNhe/releases/latest>
+- Người dùng chỉ cần **một file**: `CN-Tax-Tools-Setup-vX.Y.Z.exe` (tải kèm `…exe.sha256`). Chạy file đó rồi chọn **CÀI ĐẶT VÀO WINDOWS** hoặc **PORTABLE** — xem mục *Phát hành (Release)* bên dưới.
+- Kiểm file trước khi cài (tuỳ chọn):
+
+  ```powershell
+  (Get-FileHash .\CN-Tax-Tools-Setup-vX.Y.Z.exe -Algorithm SHA256).Hash.ToLower()  # so với nội dung file .sha256
+  ```
+
+- App **tự kiểm tra bản mới mỗi lần mở** và tự cập nhật — **không cần chạy lại Setup** (mục *Tự cập nhật (self-update)*).
 
 ## Dùng ứng dụng
 
-1. Mở `CN-Tax-Tools-v1.0.0.exe`. Giao diện mở trong cửa sổ app của Chrome/Edge.
+1. Mở **CN Tax Tools** (shortcut Desktop/Start Menu sau khi cài, hoặc `CN-Tax-Tools.exe` ở bản Portable). Giao diện mở trong cửa sổ app của Chrome/Edge.
 2. Cột trái là **danh sách MST** (có ô tìm kiếm theo tên hoặc MST) và 2 nút **＋ Thêm MST** / **Đăng nhập**. Nút **Thêm MST** mở form nhập **Tên khách hàng – MST – Mật khẩu** rồi lưu vào danh sách (`du_lieu/accounts.json`); lưu xong ứng dụng tự mở bước lấy CAPTCHA để đăng nhập. Menu **⋯** trên mỗi dòng có **Đăng nhập / nhập CAPTCHA**, **Sửa MST** (đổi tên khách, đổi MST — đổi luôn thư mục profile và tiến độ — hoặc đổi mật khẩu), **Xoá mật khẩu đã lưu** và **Bỏ khỏi danh sách**. Chấm màu mỗi dòng: xanh = đang có phiên, vàng = có phiên đã lưu, xám = chưa đăng nhập.
-3. **Bấm vào một dòng**: nếu còn phiên thì vào thẳng giao diện chính để tra cứu ngay; nếu hết phiên thì ứng dụng mở form đăng nhập (tên đăng nhập điền sẵn, mật khẩu đã lưu thì chỉ cần gõ mã CAPTCHA).
-4. Khi ảnh CAPTCHA xuất hiện, nhập tên đăng nhập, mật khẩu và mã xác nhận rồi bấm **Đăng nhập** (có thể để trống mật khẩu nếu MST đó đã lưu mật khẩu). Nút **Xoá mật khẩu đã lưu** bỏ mật khẩu đã nhớ nhưng vẫn giữ phiên đang đăng nhập. Có nút **Hiện Chrome đăng nhập / Ẩn Chrome đăng nhập** khi cần đăng nhập dự phòng trong trình duyệt.
-5. Lần sau chọn MST trong danh sách: ứng dụng dùng lại phiên đã lưu (token + cookie), không cần CAPTCHA cho tới khi cổng thuế hết hạn. Tick **Nhớ mật khẩu cho MST này** thì lần sau chỉ cần gõ mã trong ảnh. Mỗi MST luôn dùng một profile Chrome riêng (`du_lieu/profiles/{MST}`) nên cookie và phiên không lẫn nhau.
+3. **Bấm vào một dòng**: nếu còn phiên thì vào thẳng giao diện chính để tra cứu ngay; nếu hết phiên thì ứng dụng **tự giải CAPTCHA và đăng nhập** (tên đăng nhập điền sẵn; MST đã lưu mật khẩu thì không phải gõ gì).
+4. **Ứng dụng tự giải CAPTCHA — không phải gõ mã.** Khi đăng nhập, app tự lấy ảnh CAPTCHA từ cổng thuế, đọc mã bằng mô hình nhận dạng **nhúng sẵn trong EXE và chạy ngay trên máy** (không gửi ảnh đi đâu), rồi gửi đăng nhập; đọc sai thì tự lấy ảnh mới và thử lại (tối đa 5 lần). Bạn chỉ cần **mật khẩu**: đã lưu (tick **Nhớ mật khẩu cho MST này**) thì bấm là vào, chưa lưu thì nhập mật khẩu một lần trong form **Đăng nhập**. Muốn tự tay nhập mã hoặc đăng nhập dự phòng trong trình duyệt thì dùng **Hiện Chrome đăng nhập / Ẩn Chrome đăng nhập**. Nút **Xoá mật khẩu đã lưu** bỏ mật khẩu đã nhớ nhưng vẫn giữ phiên đang đăng nhập.
+5. Lần sau chọn MST trong danh sách: ứng dụng dùng lại phiên đã lưu (token + cookie), không cần CAPTCHA cho tới khi cổng thuế hết hạn. Tick **Nhớ mật khẩu cho MST này** thì lần sau app tự giải CAPTCHA và đăng nhập, không phải gõ gì. Mỗi MST luôn dùng một profile Chrome riêng (`du_lieu/profiles/{MST}`) nên cookie và phiên không lẫn nhau.
 5. Chọn **Thư mục lưu (dùng chung cho mọi MST)**: bấm **Chọn thư mục…** để chọn trong máy, hoặc gõ/dán đường dẫn đầy đủ vào ô rồi bấm ra ngoài. Một thư mục duy nhất cho toàn bộ MST, được ghi nhớ cho lần sau và **không** đổi theo từng lượt tải. Chưa chọn thì bấm **Tra cứu** sẽ báo *"Chọn thư mục lưu hóa đơn trước khi tra cứu."*
 
 6. **Chọn nhanh khoảng ngày**: chọn **Năm** + **Tháng** (hoặc đổi **Chọn nhanh** sang *Theo quý* / *Cả năm*). Chọn quý thì ô Tháng tự ẩn, chọn tháng thì ô Quý tự ẩn; ứng dụng tự điền **Từ ngày — Đến ngày** (ví dụ Năm 2025 + Quý 1 → `01/01/2025 – 31/03/2025`, tháng 2 năm 2024 → `01/02/2024 – 29/02/2024`). Ô **Nhóm hóa đơn** mặc định là **Cả hai nhóm**.
@@ -76,11 +88,20 @@ Cookie và JWT vẫn có thể hết hạn theo cổng thuế. Khi đó chọn M
 npm install
 npm test
 npm run smoke
+npm run fetch-onnx     # BẮT BUỘC trước build: tải model OCR (~54 MB) vào src/onnx/ — model KHÔNG nằm trong git
 npm run build          # -> release/CN-Tax-Tools-v<version>.exe  (payload, đã ẩn console)
-npm run installer      # -> release/CN-Tax-Tools-Setup-v<version>.exe (+ .sha256, RELEASE_NOTES.md)
+npm run installer      # -> release/CN-Tax-Tools-Setup-v<version>.exe (+ .sha256, RELEASE_NOTES.md); cần NSIS
 npm run test:browser   # cần Chrome thật: kiểm tra CSP/đăng nhập/CAPTCHA
-node tests/browser-regression.js release/CN-Tax-Tools-v1.0.0.exe
+node tests/browser-regression.js release/CN-Tax-Tools-v<version>.exe
 ```
+
+`npm run build` **tự chặn bản build khuyết** (đúng lỗi của các bản 1.0.4–1.0.6: EXE phát hành thiếu model OCR nên không giải được CAPTCHA, phải build lại):
+
+1. trước khi đóng gói — thiếu `src/onnx/common.onnx` (54.088.400 byte) hoặc `common.json` (90.092 byte), hoặc sai kích thước ⇒ **dừng ngay**, không đóng gói;
+2. sau khi đóng gói — kiểm đủ **32/32 file nhúng bắt buộc**; thiếu ⇒ **xoá EXE** + báo lỗi;
+3. chạy chính EXE vừa build với `--ocr-check` (giải một ảnh CAPTCHA mẫu): không giải được ⇒ **xoá EXE** + báo lỗi.
+
+`npm run fetch-onnx` tải model từ prerelease `ocr-model-v1` của chính repo này (không phải bản phát hành sản phẩm). Chỉ khi cố ý build bản không OCR: `HOADON_ALLOW_NO_OCR=1` — khi đó app sẽ không giải được CAPTCHA.
 
 `npm run smoke` kiểm tra server và việc tìm Chrome/Edge. `npm test` kiểm tra phân trang, XML ZIP, resume, chống trùng, tạm dừng và cách ly tài khoản. Cần đăng nhập thật để kiểm chứng API GDT cho từng MST.
 
@@ -105,19 +126,19 @@ CN-Tax-Tools-Setup-vX.Y.Z.exe /S /PORTABLE /D="C:\ThuMuc\CN Tax Tools"   # giả
 
 ### Phát hành bằng GitHub Actions
 
-Workflow `.github/workflows/release.yml` chạy khi push tag dạng `vX.Y.Z` trên runner `windows-latest`:
+Workflow `.github/workflows/release.yml` chạy khi push tag dạng `cntax-vX.Y.Z` (hoặc `vX.Y.Z`) trên runner `windows-latest`:
 
 ```powershell
-node tools/set-version.cjs 1.0.1   # (tuỳ chọn) đồng bộ version ở máy, nên commit cùng
-npm test                           # kiểm tra trước khi tag
+node tools/set-version.cjs 1.0.8   # (tuỳ chọn) đồng bộ version ở máy, nên commit cùng
+npm test                           # kiểm tra trước khi tag (CI cũng chạy lại)
 git add -A
-git commit -m "release v1.0.1"
-git tag v1.0.1
+git commit -m "release: CN Tax Tools v1.0.8"
+git tag -a cntax-v1.0.8 -m "CN Tax Tools v1.0.8"
 git push origin main
-git push origin v1.0.1
+git push origin cntax-v1.0.8
 ```
 
-Workflow tự làm: checkout → cài dependency → **đồng bộ version theo tag** → chạy test → build app EXE (`npm run build`) → tính SHA-256 cho payload self-update → cài NSIS → đóng gói Setup (`npm run installer`) → tạo GitHub Release và upload **cả 4 file** (`CN-Tax-Tools-Setup-vX.Y.Z.exe` + `.sha256`, `CN-Tax-Tools-vX.Y.Z.exe` + `.sha256`). Không cần build tay trên máy cá nhân.
+Workflow tự làm: checkout → cài dependency → **đồng bộ version theo tag** → chạy test → **tải model OCR (`npm run fetch-onnx`)** → build app EXE (`npm run build`, có 3 chốt chống bản khuyết ở mục *Build*) → tính SHA-256 cho payload self-update → cài NSIS → đóng gói Setup (`npm run installer`) → tạo GitHub Release và upload **cả 4 file** (`CN-Tax-Tools-Setup-vX.Y.Z.exe` + `.sha256`, `CN-Tax-Tools-vX.Y.Z.exe` + `.sha256`). Không cần build tay trên máy cá nhân.
 
 ### Version
 

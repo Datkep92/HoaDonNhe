@@ -20,5 +20,6 @@ module.exports = {
   xmlWatcher: require('./xml-watcher'),
   xmlImport: require('./xml-import'),
   excelExport: require('./excel-export'),
+  bankStatement: require('./bank-statement'),
   identityCandidates: require('./identity-candidates'),
 };

@@ -137,19 +137,20 @@ test('bấm tra cứu/tải là UI phản hồi NGAY: vẽ optimistic + vòng po
   assert.ok(refresh.includes('pollFailures'), 'refresh() phải đếm nhịp hụt và tự hồi phục');
 });
 
-test('menu "Xuất Excel": Tải toàn bộ + 3 nhóm (Hóa đơn / Hàng hóa / Đối tác), mỗi nhóm 2 mục con', () => {
+test('menu "Xuất Excel": Tải toàn bộ + 4 nhóm (Hóa đơn / Hàng hóa / Đối tác / Ngân hàng), mỗi nhóm đúng mục con', () => {
   // Yêu cầu: bấm Xuất Excel ra "Tải toàn bộ", rồi các nhóm có mục con
-  // Hóa đơn -> Mua vào/Bán ra, Hàng hóa -> Mua vào/Bán ra, Đối tác -> Nhà cung cấp/Khách hàng.
+  // Hóa đơn -> Mua vào/Bán ra, Hàng hóa -> Mua vào/Bán ra, Đối tác -> Nhà cung cấp/Khách hàng,
+  // Ngân hàng -> Sao kê ngân hàng.
   const listAt = html.indexOf('id="data-export-list"');
   assert.ok(listAt > -1, 'không tìm thấy menu xuất Excel');
   assert.ok(html.indexOf('data-part="all"') > listAt, 'phải có nút "Tải toàn bộ" trong menu');
 
   // Các nhóm nằm SAU phần tử menu (không có nơi nào khác trong trang dùng class "group").
   const groups = [...html.matchAll(/<details class="group"><summary>([^<]+)<\/summary>([\s\S]*?)<\/details>/g)];
-  assert.equal(groups.length, 3, 'phải có đúng 3 nhóm');
+  assert.equal(groups.length, 4, 'phải có đúng 4 nhóm');
   assert.ok(html.indexOf(groups[0][0]) > listAt, 'nhóm phải nằm TRONG menu xuất Excel');
-  assert.deepEqual(groups.map(g => g[1]), ['Hóa đơn', 'Hàng hóa', 'Đối tác']);
-  const expected = { 'Hóa đơn': ['buy', 'sell'], 'Hàng hóa': ['productsBuy', 'productsSell'], 'Đối tác': ['suppliers', 'buyers'] };
+  assert.deepEqual(groups.map(g => g[1]), ['Hóa đơn', 'Hàng hóa', 'Đối tác', 'Ngân hàng']);
+  const expected = { 'Hóa đơn': ['buy', 'sell'], 'Hàng hóa': ['productsBuy', 'productsSell'], 'Đối tác': ['suppliers', 'buyers'], 'Ngân hàng': ['bank'] };
   for (const [, name, body] of groups) {
     const parts = [...body.matchAll(/data-part="(\w+)"/g)].map(m => m[1]);
     assert.deepEqual(parts, expected[name], `nhóm "${name}" sai mục con`);
@@ -158,7 +159,7 @@ test('menu "Xuất Excel": Tải toàn bộ + 3 nhóm (Hóa đơn / Hàng hóa /
   // Mọi mã bảng trong HTML phải là mã module xuất Excel hiểu được ('all' = xuất tất cả).
   const known = [...html.matchAll(/data-part="(\w+)"/g)].map(m => m[1]);
   for (const part of known) assert.ok(part === 'all' || excelExport.PARTS.includes(part), `mã bảng lạ: ${part}`);
-  assert.equal(known.length, 7, 'tổng 7 lựa chọn (tất cả + 6 mục con)');
+  assert.equal(known.length, 8, 'tổng 8 lựa chọn (tất cả + 7 mục con)');
 
   // JS phải đóng menu VÀ các nhóm con sau khi chọn, nếu không lần sau mở ra còn mở sẵn nhóm cũ.
   const ui = fs.readFileSync(path.join(root, 'src', 'data-ui.js'), 'utf8');
@@ -427,5 +428,96 @@ test('tên công ty: có NGAY sau khi tra cứu, không phải đợi nhập XML
   assert.ok(
     /companyName: companyNameFor\(selected\) \|\| companyNameFromItems\(/.test(server),
     'appState phải ghép: kho dữ liệu trước, kết quả tra cứu sau',
+  );
+});
+
+// ===========================================================================
+// CÂY KHỐI <div>/<section> CỦA index.html — thứ quyết định khối nào thuộc tab nào.
+// Lỗi thật (2026-09): ở cuối khối bộ lọc Kho dữ liệu, `</div>` và `</section>` bị đảo
+// chỗ và thừa một `</div>`, nên trình duyệt đóng #pane-data NGAY tại đó: `data-toolbar`
+// và `data-content` rơi ra ngoài tab ⇒ hiện ở MỌI tab (kể cả Sao kê ngân hàng), còn
+// `#pane-bank` bị đẩy lệch lưới 2 cột (bộ lọc sang cột rộng, bảng giao dịch bị nhét vào
+// cột 312px nên chỉ thấy một góc). Lỗi này KHÔNG làm hỏng test id nào, phải kiểm bằng cây.
+// ===========================================================================
+function containerTree(source) {
+  const tag = /<(\/?)(div|section)\b([^>]*)>/gi;
+  const stack = [];
+  const problems = [];
+  const roots = [];
+  let match;
+  while ((match = tag.exec(source))) {
+    const [, closing, name, attr] = match;
+    if (closing) {
+      const open = stack.pop();
+      if (!open || open.name !== name) {
+        problems.push(`</${name}> tại ký tự ${match.index} đóng nhầm ${open ? `<${open.name}${open.id ? ' id=' + open.id : ''}${open.cls ? ' class="' + open.cls + '"' : ''}>` : '(không còn thẻ mở)'}`);
+      }
+      continue;
+    }
+    const node = {
+      name,
+      id: (attr.match(/id="([^"]*)"/) || [])[1] || '',
+      cls: (attr.match(/class="([^"]*)"/) || [])[1] || '',
+      at: match.index,
+      children: [],
+    };
+    if (stack.length) stack[stack.length - 1].children.push(node); else roots.push(node);
+    stack.push(node);
+  }
+  for (const open of stack) problems.push(`<${open.name}${open.cls ? ' class="' + open.cls + '"' : ''}> mở mà không đóng`);
+  return { roots, problems };
+}
+
+function findNode(nodes, predicate) {
+  for (const node of nodes) {
+    if (predicate(node)) return node;
+    const deeper = findNode(node.children, predicate);
+    if (deeper) return deeper;
+  }
+  return null;
+}
+
+test('index.html: thẻ <div>/<section> đóng đúng cặp, không đảo thứ tự', () => {
+  const tree = containerTree(html);
+  assert.deepEqual(tree.problems, [], `cây khối của index.html bị lệch: ${tree.problems.join(' | ')}`);
+});
+
+test('tab Sao kê ngân hàng: khối Kho dữ liệu nằm TRONG #pane-data, #pane-bank là anh em cùng cấp', () => {
+  const tree = containerTree(html);
+  const paneData = findNode(tree.roots, node => node.id === 'pane-data');
+  assert.ok(paneData, 'không tìm thấy #pane-data');
+  const names = paneData.children.map(child => child.cls || child.id || child.name);
+  // Ba khối này phải là con TRỰC TIẾP của #pane-data — rơi ra ngoài là chúng hiện ở mọi tab.
+  for (const cls of ['data-overview', 'card data-toolbar', 'card data-content']) {
+    const child = paneData.children.find(node => node.cls === cls);
+    assert.ok(child, `"${cls}" phải là con trực tiếp của #pane-data (đang có: ${names.join(' | ')})`);
+  }
+  const paneBank = findNode(tree.roots, node => node.id === 'pane-bank');
+  assert.ok(paneBank, 'không tìm thấy #pane-bank');
+  assert.ok(!findNode(paneData.children, node => node.id === 'pane-bank'), '#pane-bank KHÔNG được nằm trong #pane-data (sẽ bị ẩn theo)');
+  assert.deepEqual(
+    paneBank.children.map(node => node.cls),
+    ['bank-overview', 'card filters bank-filters', 'results bank-results'],
+    'thứ tự con của #pane-bank phải là: dải số → bộ lọc → bảng giao dịch',
+  );
+});
+
+test('tab Sao kê ngân hàng: dải số trải hết 2 cột, bộ lọc ở cột hẹp, bảng ở cột rộng', () => {
+  const css = fs.readFileSync(path.join(root, 'src', 'data-view.css'), 'utf8');
+  // Luật gốc: #pane-bank là lưới (một cột khi cửa sổ hẹp).
+  assert.ok(
+    /#pane-bank \{ display: grid; grid-template-columns: minmax\(0, 1fr\);/.test(css),
+    '#pane-bank phải là lưới một cột ở màn hẹp (bộ lọc trên, bảng dưới)',
+  );
+  // Màn rộng: 2 cột. Nếu phần này mất, bố cục trở lại một cột — không sai, nhưng phải biết là đã đổi.
+  assert.ok(
+    /#pane-bank \{ grid-template-columns: 312px minmax\(0, 1fr\); align-items: start; \}/.test(css),
+    '#pane-bank phải là lưới 2 cột (312px | phần còn lại) khi cửa sổ rộng',
+  );
+  // Không có dòng này, ô lưới đầu tiên (dải số) chiếm cột trái ⇒ bộ lọc nhảy sang cột rộng
+  // và bảng giao dịch bị nhét vào cột 312px (chỉ thấy một góc).
+  assert.ok(
+    /\.bank-overview \{[^}]*grid-column: 1 \/ -1/.test(css),
+    '.bank-overview phải trải hết cả 2 cột để bộ lọc về cột trái và bảng về cột phải',
   );
 });

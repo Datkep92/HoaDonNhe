@@ -6,9 +6,13 @@
 // là index / lớp truy vấn, KHÔNG thay thế XML và KHÔNG lưu nội dung XML.
 // Đổi schema ⇒ tăng SCHEMA_VERSION (tầng sqlite.js sẽ tự nâng cấp theo bước).
 // v4 thêm cột `invoices.tthai` (trạng thái hoá đơn) — DB cũ phải ALTER TABLE, xem sqlite.js.
+// v5 thêm 2 bảng SAO KÊ NGÂN HÀNG (tab "Sao kê ngân hàng" trong Kho dữ liệu):
+//   bank_files       — metadata file sao kê đã nhập (tên, hash, ngân hàng, số TK, thống kê)
+//   bank_transactions— giao dịch đã CHUẨN HÓA (ngày ISO, số tiền tách Tiền vào/Tiền ra, hash chống trùng)
+// Cả hai nằm trong data.db của từng MST ⇒ dữ liệu sao kê cũng tách theo MST như hoá đơn (§46).
 // ---------------------------------------------------------------------------
 
-const SCHEMA_VERSION = 4;
+const SCHEMA_VERSION = 5;
 
 const TABLES = [
   `CREATE TABLE IF NOT EXISTS invoices (
@@ -66,6 +70,47 @@ const TABLES = [
     value TEXT,
     updated_at TEXT
   )`,
+  // ---- v5: SAO KÊ NGÂN HÀNG ------------------------------------------------
+  // Mỗi file sao kê (Excel/CSV) nhập vào = 1 dòng bank_files; mỗi giao dịch chuẩn hoá = 1 dòng
+  // bank_transactions. Chống trùng bằng row_hash (SHA-1 của ngày+tiền+nội dung+mã GD) UNIQUE:
+  // nhập lại cùng file, hoặc file khác chứa trùng giao dịch, KHÔNG tạo dòng thứ hai (§26).
+  `CREATE TABLE IF NOT EXISTS bank_files (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    file_name TEXT NOT NULL,
+    file_hash TEXT,
+    bank TEXT,
+    account TEXT,
+    period_from TEXT,
+    period_to TEXT,
+    rows_total INTEGER DEFAULT 0,
+    rows_imported INTEGER DEFAULT 0,
+    rows_duplicate INTEGER DEFAULT 0,
+    rows_error INTEGER DEFAULT 0,
+    imported_at TEXT,
+    status TEXT,
+    error_message TEXT
+  )`,
+  `CREATE TABLE IF NOT EXISTS bank_transactions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    file_id INTEGER NOT NULL,
+    tran_date TEXT,
+    value_date TEXT,
+    description TEXT,
+    detail TEXT,
+    counterparty_name TEXT,
+    counterparty_account TEXT,
+    reference TEXT,
+    credit REAL,
+    debit REAL,
+    amount REAL,
+    balance REAL,
+    currency TEXT DEFAULT 'VND',
+    row_hash TEXT NOT NULL UNIQUE,
+    file_name TEXT,
+    created_at TEXT,
+    updated_at TEXT,
+    FOREIGN KEY(file_id) REFERENCES bank_files(id) ON DELETE CASCADE
+  )`,
 ];
 
 const INDEXES = [
@@ -83,6 +128,10 @@ const INDEXES = [
   'CREATE INDEX IF NOT EXISTS idx_item_invoice ON invoice_items(invoice_id)',
   'CREATE INDEX IF NOT EXISTS idx_imported_file_path ON imported_files(file_path)',
   'CREATE INDEX IF NOT EXISTS idx_imported_invoice_key ON imported_files(invoice_key)',
+  'CREATE INDEX IF NOT EXISTS idx_bank_tran_date ON bank_transactions(tran_date)',
+  'CREATE INDEX IF NOT EXISTS idx_bank_tran_file ON bank_transactions(file_id)',
+  'CREATE INDEX IF NOT EXISTS idx_bank_tran_amount ON bank_transactions(amount)',
+  'CREATE INDEX IF NOT EXISTS idx_bank_file_hash ON bank_files(file_hash)',
 ];
 
 // FTS5 (external content) cho tìm kiếm nhanh ở tab "Kho dữ liệu" (mục §34).

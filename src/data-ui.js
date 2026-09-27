@@ -33,7 +33,11 @@
   let range = { from: '', to: '', chip: 'all' };
   let periodLabel = '';
   // Mỗi bảng có lựa chọn chiều riêng, không dùng chung một ô lọc.
-  const tabState = { products: { dir: '' }, list: { dir: '', state: 'all' }, partners: { kind: 'all' } };
+  const tabState = { products: { dir: '' }, list: { dir: '', state: 'all' }, partners: { kind: 'all' }, bank: { flow: '' } };
+  // Bộ lọc RIÊNG của tab Sao kê ngân hàng (không dùng chung với Kho dữ liệu).
+  let bankRange = { from: '', to: '' };
+  let bankPage = 0;
+  let bankTotal = 0;
   let importPoll = null;
   let autosyncPoll = null;
   let backfillPoll = null;
@@ -127,12 +131,14 @@
     view = next;
     $('pane-download').hidden = next !== 'download';
     $('pane-data').hidden = next !== 'data';
-    for (const [id, name] of [['view-download', 'download'], ['view-data', 'data']]) {
+    $('pane-bank').hidden = next !== 'bank';
+    for (const [id, name] of [['view-download', 'download'], ['view-data', 'data'], ['view-bank', 'bank']]) {
       const button = $(id);
       button.classList.toggle('active', name === next);
       button.setAttribute('aria-selected', name === next ? 'true' : 'false');
     }
     if (next === 'data') refreshAll();
+    if (next === 'bank') refreshBank();
   }
 
   // ------------------------------------------------------------------ Mã định danh của "cùng một người" (MST gốc ↔ CCCD) — chỉ THÔNG BÁO
@@ -152,7 +158,8 @@
 
   async function refreshAll() {
     try {
-      const visible = activeDataTab === 'products' ? loadProducts() : (activeDataTab === 'list' ? loadList() : loadPartners());
+      const visible = activeDataTab === 'products' ? loadProducts()
+        : (activeDataTab === 'list' ? loadList() : loadPartners());
       await Promise.all([loadSummary(), visible, loadImportStatus(), loadAutoSync(), loadBackfill()]);
       // Panel mã chưa gán chỉ cần khi vào tab; lỗi của nó không được làm sập refreshAll.
       await loadCandidates().catch(() => {});
@@ -294,7 +301,8 @@
 
   function reloadAll() {
     page = 0; savePrefs();
-    const loading = activeDataTab === 'products' ? loadProducts() : (activeDataTab === 'list' ? loadList() : loadPartners());
+    const loading = activeDataTab === 'products' ? loadProducts()
+      : (activeDataTab === 'list' ? loadList() : loadPartners());
     loading.catch(ignoreAbort);
   }
 
@@ -719,10 +727,276 @@
     } catch (error) { fail(error); }
   }
 
+  // ------------------------------------------------------------------ sao kê ngân hàng (TAB RIÊNG ở header)
+  // Gán theo MST: máy chủ mở data.db của MST đang chọn — click MST nào thấy sao kê MST đó.
+  // Bộ lọc RIÊNG (tìm kiếm, từ/đến ngày, khoảng tiền, chiều vào/ra), không dùng chung với Kho dữ liệu.
+  function bankFilters() {
+    const min = $('data-bank-min').value.trim();
+    const max = $('data-bank-max').value.trim();
+    return {
+      q: $('data-bank-q').value.trim(),
+      from: bankRange.from, to: bankRange.to,
+      min: min === '' ? '' : String(Number(min) || 0),
+      max: max === '' ? '' : String(Number(max) || 0),
+    };
+  }
+
+  function paintBankTiles(summary) {
+    const tiles = $('data-bank-tiles');
+    tiles.replaceChildren();
+    const show = (label, value, kind) => {
+      const box = document.createElement('div');
+      box.className = kind ? `data-tile ${kind}` : 'data-tile';
+      box.append(Object.assign(document.createElement('span'), { textContent: label }));
+      box.append(Object.assign(document.createElement('strong'), { textContent: value }));
+      tiles.append(box);
+    };
+    const ky = summary.from ? `${shortDay(summary.from)} → ${shortDay(summary.to)}` : '—';
+    show('MST', app.selected || '—');
+    show('Khoảng ngày', ky, 'range');
+    show('Giao dịch', num.format(summary.transactions || 0));
+    show('Tiền vào', num.format(summary.moneyIn || 0), 'bank-in');
+    show('Tiền ra', num.format(summary.moneyOut || 0), 'bank-out');
+    show('File đã nhập', num.format(summary.files || 0), 'time');
+  }
+
+  async function refreshBank() {
+    await loadBankSummary().catch(error => { if (!isAbort(error)) fail(error); });
+    await loadBank().catch(ignoreAbort);
+  }
+
+  async function loadBankSummary() {
+    paintBankTiles(await latestApi('bankSummary', '/api/db/bank/summary'));
+  }
+
+  // Cùng cơ chế với các bảng khác: mờ khi tải, AbortController huỷ request cũ, phân trang riêng.
+  async function loadBank() {
+    const card = document.querySelector('#pane-bank .table-card');
+    if (card) card.classList.toggle('loading', true);
+    try {
+      const filters = bankFilters();
+      const params = new URLSearchParams({ ...filters, flow: tabState.bank.flow, limit: String(size), offset: String(bankPage * size) });
+      const value = await latestApi('bank', `/api/db/bank/transactions?${params.toString()}`);
+      bankTotal = value.total || 0;
+      const body = $('data-bank-rows');
+      body.replaceChildren();
+      for (const [index, tran] of (value.rows || []).entries()) {
+        const tr = document.createElement('tr');
+        tr.append(td(String(bankPage * size + index + 1), 'stt'));
+        tr.append(td(shortDay(tran.tran_date)));
+        tr.append(td(tran.description || ''));
+        tr.append(td(tran.counterparty_name || ''));
+        tr.append(td(tran.reference || ''));
+        tr.append(td(tran.credit == null ? '—' : num.format(tran.credit), 'num in'));
+        tr.append(td(tran.debit == null ? '—' : num.format(tran.debit), 'num out'));
+        tr.append(td(tran.balance == null ? '—' : num.format(tran.balance), 'num'));
+        tr.append(td(tran.file_name || ''));
+        tr.title = 'Đối ứng: ' + (tran.counterparty_account || '—') + (tran.detail ? ' · ' + tran.detail : '');
+        body.append(tr);
+      }
+      const pages = Math.max(1, Math.ceil(bankTotal / size));
+      if (bankPage >= pages) bankPage = pages - 1;
+      $('data-bank-count').textContent = `${num.format(bankTotal)} giao dịch`;
+      $('data-bank-page').textContent = `Trang ${bankPage + 1} / ${pages}`;
+      $('data-bank-prev').disabled = bankPage <= 0;
+      $('data-bank-next').disabled = bankPage + 1 >= pages;
+    }
+    finally { if (card) card.classList.toggle('loading', false); }
+  }
+
+  // Nhập file sao kê — LUỒNG 3 BƯỚC (chống up nhầm MST + kiểm tra số liệu trước khi lưu):
+  // 1) XÁC NHẬN: hiện tên MST + tên hộ KD/công ty, user OK mới đọc file.
+  // 2) ĐỌC + KIỂM TRA: Excel/CSV/PDF-chữ đọc local (BankPdf); PDF scan/ảnh gửi server gọi AI.
+  //    Server chuẩn hoá + kiểm tra số dư liên mạch, TRẢ VỀ KẾT QUẢ — chưa ghi gì vào DB.
+  // 3) XÁC NHẬN LƯU: khớp → lưu; lệch → hiện chi tiết dòng sai, user chọn "Vẫn lưu"/"Huỷ".
+  async function importBankFile() {
+    // Bước 0: lấy MST + tên công ty NGAY trong lần bấm nút (hộp file phải mở cùng lượt bấm).
+    const state = await api('/api/state?items=0').catch(() => null);
+    const mst = (state && state.selected) || (app.selected || '');
+    const company = (state && state.companyName) || app.companyName || '';
+    if (!mst) { if (window.notice) window.notice('Chọn một MST trước khi nhập file sao kê.'); return; }
+    const label = company ? `MST ${mst} — ${company}` : `MST ${mst}`;
+    if (!confirm(`Nhập file sao kê cho đúng tài khoản này?
+
+${label}
+
+Bấm OK rồi chọn file. Nếu SAI tài khoản, bấm Huỷ và chọn MST khác trước.`)) return;
+
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.xlsx,.xls,.csv,.pdf,.png,.jpg,.jpeg';
+    input.onchange = async () => {
+      const file = input.files && input.files[0];
+      if (!file) return;
+      const bar = $('data-bank-bar');
+      const note = $('data-bank-note');
+      const setProgress = (value, text) => { bar.hidden = value === null; if (value !== null) bar.value = value; note.textContent = text; };
+      $('data-bank-import').disabled = true;
+      try {
+        // Bước 2: đọc theo loại file.
+        setProgress(20, `Đang đọc ${file.name}…`);
+        const parsed = await window.BankPdf.readAny(file);
+        let preview;
+        if (parsed.kind === 'excel') {
+          const dataBase64 = await new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(String(reader.result).split(',')[1] || '');
+            reader.onerror = () => reject(new Error('Đọc file không được.'));
+            reader.readAsDataURL(file);
+          });
+          setProgress(45, `Đang chuẩn hoá + kiểm tra ${file.name}…`);
+          preview = await post('/api/db/bank/preview', { fileName: file.name, data: dataBase64 });
+        } else if (parsed.kind === 'pdf-text') {
+          setProgress(45, `Đã đọc PDF có chữ (${parsed.pages} trang) — đang chuẩn hoá + kiểm tra…`);
+          preview = await post('/api/db/bank/preview-rows', { fileName: file.name, rows: parsed.grid });
+        } else if (parsed.kind === 'pdf-scan' || parsed.kind === 'image') {
+          const dataBase64 = await new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(String(reader.result).split(',')[1] || '');
+            reader.onerror = () => reject(new Error('Đọc file không được.'));
+            reader.readAsDataURL(file);
+          });
+          setProgress(40, parsed.kind === 'image' ? 'Đang gửi ảnh cho AI đọc… (có thể mất tới 1 phút)' : 'PDF không có chữ (scan) — đang gửi AI đọc… (có thể mất tới 1 phút)');
+          preview = await post('/api/db/bank/preview', { fileName: file.name, data: dataBase64 });
+        } else {
+          throw new Error('Chỉ nhận file .xlsx, .xls, .csv, .pdf, .png hoặc .jpg.');
+        }
+
+        // Bước 3: hiện kết quả kiểm tra, user quyết định.
+        const verification = preview.verification || {};
+        const stats = verification.stats || {};
+        const summary = `File: ${file.name}
+Tài khoản: ${label}
+
+Đọc được ${stats.rows || 0} giao dịch.
+Tổng tiền vào: ${num.format(stats.moneyIn || 0)}
+Tổng tiền ra: ${num.format(stats.moneyOut || 0)}
+` + (stats.balanceChecks ? `Kiểm tra số dư: ${stats.balanceChecks} cặp dòng — ${stats.balanceBreaks ? 'LỆCH ' + stats.balanceBreaks + ' chỗ!' : 'khớp.'}
+` : `File không có cột số dư — kiểm tra mức nhẹ (đủ ngày, đủ tiền).`);
+        if (verification.level === 'error' || !(stats.rows > 0)) {
+          throw new Error(`File không đọc ra giao dịch nào hợp lệ.${(verification.issues || []).length ? '\n' + verification.issues.join('\n') : ''}`);
+        }
+        let confirmed;
+        if (verification.level === 'warn') {
+          confirmed = confirm(`${summary}
+CẢNH BÁO: phát hiện vấn đề:
+${(verification.issues || []).join('\n')}
+
+Bấm OK = VẪN LƯU vào MST ${mst}. Bấm Huỷ = bỏ, không lưu gì.`);
+        } else {
+          confirmed = confirm(`${summary}
+Số liệu KHỚP. Lưu vào MST ${mst}?
+
+(OK = lưu · Huỷ = bỏ)`);
+        }
+        if (!confirmed) { setProgress(null, `Đã bỏ ${file.name} — không lưu gì vào kho.`); return; }
+
+        setProgress(80, `Đang lưu ${file.name} vào kho MST ${mst}…`);
+        const result = await post('/api/db/bank/import-rows', { fileName: file.name, fileHash: preview.fileHash || '', rows: preview.rows });
+        setProgress(100, `Đã lưu ${file.name}: mới ${num.format(result.imported)}, trùng ${num.format(result.duplicate)}, lỗi ${num.format(result.failed)}.`);
+        if (window.notice) window.notice(`Đã nhập sao kê ${file.name} vào MST ${mst}: ${num.format(result.imported)} giao dịch mới, ${num.format(result.duplicate)} trùng, ${num.format(result.failed)} dòng lỗi.`);
+        bankPage = 0;
+        await loadBankSummary().catch(ignoreAbort);
+        await loadBank();
+      } catch (error) {
+        setProgress(null, `Lỗi nhập ${file.name}: ${error.message}`);
+        fail(error);
+      } finally {
+        $('data-bank-import').disabled = false;
+      }
+    };
+    input.click();
+  }
+
+  // ---- Hộp quản lý file sao kê: Xoá từng file / Chuyển sang MST khác ----
+  async function openBankFiles() {
+    $('bank-file-dialog').showModal();
+    await loadBankFiles().catch(error => fail(error));
+  }
+
+  async function loadBankFiles() {
+    const status = $('bank-file-status');
+    status.textContent = 'Đang tải danh sách file…';
+    const [summary, files] = await Promise.all([
+      api('/api/db/bank/summary'),
+      api('/api/db/bank/files').then(v => v.rows || []),
+    ]);
+    const mst = app.selected || '';
+    const company = app.companyName || '';
+    status.textContent = files.length
+      ? `${files.length} file · ${num.format(summary.transactions || 0)} giao dịch của MST ${mst}${company ? ' — ' + company : ''}.`
+      : 'Chưa có file sao kê nào trong kho của MST này.';
+    const body = $('bank-file-rows');
+    body.replaceChildren();
+    const mstOptions = (app.accounts || []).filter(a => a.mst && a.mst !== mst).map(a => a.mst);
+    for (const file of files) {
+      const tr = document.createElement('tr');
+      tr.append(td(file.file_name || '(không tên)'));
+      tr.append(td(num.format(file.rows_imported || 0), 'num'));
+      tr.append(td(num.format(file.rows_duplicate || 0), 'num'));
+      tr.append(td(num.format(file.rows_error || 0), 'num'));
+      tr.append(td(file.period_from ? `${shortDay(file.period_from)} → ${shortDay(file.period_to)}` : '—'));
+      const actions = document.createElement('td');
+      const del = document.createElement('button');
+      del.type = 'button'; del.className = 'danger'; del.textContent = 'Xoá';
+      del.title = 'Xoá file này và toàn bộ giao dịch của nó khỏi kho MST này.';
+      del.onclick = async () => {
+        if (!confirm(`Xoá file "${file.file_name}" khỏi MST ${mst}?
+Xoá luôn ${num.format(file.rows_imported || 0)} giao dịch của file này. Không thể hoàn tác.`)) return;
+        del.disabled = true;
+        try {
+          await post('/api/db/bank/delete', { fileId: file.id });
+          if (window.notice) window.notice(`Đã xoá ${file.file_name}.`);
+          await loadBankFiles();
+          await loadBankSummary().catch(ignoreAbort);
+          await loadBank().catch(ignoreAbort);
+        } catch (error) { fail(error); del.disabled = false; }
+      };
+      const move = document.createElement('button');
+      move.type = 'button'; move.className = 'secondary'; move.textContent = 'Chuyển MST…';
+      move.title = 'Chuyển toàn bộ giao dịch của file này sang kho của MST khác.';
+      if (!mstOptions.length) { move.disabled = true; move.title = 'Không có MST nào khác trong danh sách.'; }
+      move.onclick = async () => {
+        const toMst = prompt(`Chuyển "${file.file_name}" sang MST nào?
+Các MST đang có: ${mstOptions.join(', ') || '(không có MST nào khác)'}`);
+        if (!toMst) return;
+        if (!mstOptions.includes(toMst.trim())) { if (window.notice) window.notice(`MST "${toMst}" không có trong danh sách hồ sơ.`); return; }
+        move.disabled = true;
+        try {
+          const result = await post('/api/db/bank/move', { fileId: file.id, toMst: toMst.trim() });
+          if (window.notice) window.notice(`Đã chuyển ${file.file_name} sang MST ${result.toMst}: ${num.format(result.moved)} giao dịch, trùng bỏ qua ${num.format(result.duplicate)}.`);
+          await loadBankFiles();
+          await loadBankSummary().catch(ignoreAbort);
+          await loadBank().catch(ignoreAbort);
+        } catch (error) { fail(error); move.disabled = false; }
+      };
+      actions.append(del, move);
+      tr.append(actions);
+      body.append(tr);
+    }
+  }
+
+  async function deleteBankFile() {
+    // Xoá TOÀN BỘ sao kê đã nhập của MST đang chọn (dùng khi nhập nhầm).
+    const value = await api('/api/db/bank/summary').catch(() => null);
+    if (!value || !value.files) { if (window.notice) window.notice('Chưa có file sao kê nào để xoá.'); return; }
+    if (!confirm(`Xoá toàn bộ sao kê ngân hàng của MST này (${num.format(value.transactions)} giao dịch, ${value.files} file)?`)) return;
+    try {
+      for (const file of await api('/api/db/bank/files').then(v => v.rows || [])) {
+        await post('/api/db/bank/delete', { fileId: file.id });
+      }
+      if (window.notice) window.notice('Đã xoá toàn bộ sao kê ngân hàng của MST này.');
+      bankPage = 0;
+      await loadBankSummary().catch(ignoreAbort);
+      await loadBank();
+    } catch (error) { fail(error); }
+  }
+
   // ------------------------------------------------------------------ gắn sự kiện
   function bind() {
     $('view-download').onclick = () => showView('download');
     $('view-data').onclick = () => showView('data');
+    $('view-bank').onclick = () => showView('bank');
 
     // "Tải lại": nhãn "Đang tải…" NGAY lúc bấm — 5 request song song dưới đây mất vài trăm ms
     // tới vài giây, trước đây bấm xong nút đứng im khiến người dùng bấm thêm nhiều lần.
@@ -752,7 +1026,7 @@
     $('data-size').onchange = () => { size = Number($('data-size').value) || 50; reloadAll(); };
     $('data-from').onchange = () => { range = { from: $('data-from').value, to: $('data-to').value, chip: 'custom' }; paintRange(); reloadAll(); };
     $('data-to').onchange = () => { range = { from: $('data-from').value, to: $('data-to').value, chip: 'custom' }; paintRange(); reloadAll(); };
-    $('data-clear').onclick = () => {
+      $('data-clear').onclick = () => {
       $('data-q').value = '';
       range = { from: '', to: '', chip: 'all' };
       tabState.products.dir = '';
@@ -779,6 +1053,33 @@
     // Lọc theo trạng thái hoá đơn (1..6). Đổi bộ lọc thì quay về trang 1 để không đứng ở trang rỗng.
     bindSegment('data-seg-state', button => { tabState.list.state = button.dataset.state; page = 0; loadList().catch(ignoreAbort); });
     bindSegment('data-seg-partners', button => { tabState.partners.kind = button.dataset.kind; loadPartners().catch(ignoreAbort); });
+
+    // Sao kê ngân hàng (tab riêng): bộ lọc chi tiết, chiều, phân trang, nhập file, xoá lọc.
+    bindSegment('data-seg-bank', button => { tabState.bank.flow = button.dataset.flow || ''; bankPage = 0; loadBank().catch(ignoreAbort); });
+    $('data-bank-prev').onclick = () => { if (bankPage > 0) { bankPage -= 1; loadBank().catch(ignoreAbort); } };
+    $('data-bank-next').onclick = () => { bankPage += 1; loadBank().catch(ignoreAbort); };
+    $('data-bank-import').onclick = importBankFile;
+    $('data-bank-files').onclick = openBankFiles;
+    $('bank-file-close').onclick = () => $('bank-file-dialog').close();
+    let bankTyping = null;
+    const bankReload = () => { clearTimeout(bankTyping); bankTyping = setTimeout(() => { bankPage = 0; loadBank().catch(ignoreAbort); }, 250); };
+    $('data-bank-q').oninput = bankReload;
+    $('data-bank-min').oninput = bankReload;
+    $('data-bank-max').oninput = bankReload;
+    $('data-bank-from').onchange = () => { bankRange.from = $('data-bank-from').value; bankPage = 0; loadBank().catch(ignoreAbort); };
+    $('data-bank-to').onchange = () => { bankRange.to = $('data-bank-to').value; bankPage = 0; loadBank().catch(ignoreAbort); };
+    $('data-bank-clear').onclick = () => {
+      $('data-bank-q').value = ''; $('data-bank-min').value = ''; $('data-bank-max').value = '';
+      $('data-bank-from').value = ''; $('data-bank-to').value = '';
+      bankRange = { from: '', to: '' };
+      tabState.bank.flow = '';
+      for (const button of $('data-seg-bank').querySelectorAll('button')) button.classList.toggle('active', button.dataset.flow === '');
+      bankPage = 0;
+      loadBank().catch(ignoreAbort);
+    };
+    // Bấm đúp vào nhãn trạng thái = xoá toàn bộ sao kê (ít dùng, giấu để khỏi bấm nhầm).
+    $('data-bank-note').ondblclick = deleteBankFile;
+    $('data-bank-note').title = 'Bấm đúp để xoá toàn bộ sao kê của MST này.';
 
     $('invoice-close').onclick = closeInvoice;
     $('invoice-print').onclick = printInvoice;
@@ -821,8 +1122,10 @@
         newInvoices = 0;
         $('data-new-badge').hidden = true;
         page = 0;
+        bankPage = 0;
         changeRevision = -1;
         if (view === 'data') refreshAll();
+        if (view === 'bank') refreshBank();
       }
     });
   }

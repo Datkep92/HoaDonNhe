@@ -45,6 +45,19 @@ function findMakensis() {
   return null;
 }
 
+// "Có gì mới" của từng bản — thêm một mục mỗi lần phát hành, để trang Release trên GitHub nói đúng
+// thứ người dùng nhận được (bản 1.0.7 phát hành thiếu hẳn tab Sao kê ngân hàng mà không ai biết).
+// Bản không có trong bảng thì bỏ qua mục này, phần cài đặt/cập nhật vẫn đầy đủ.
+const WHATS_NEW = {
+  '1.0.8': [
+    '- **Tab “Sao kê ngân hàng”**: nhập sao kê Excel/CSV, đọc **PDF có chữ ngay trong máy** (không gửi lên mạng),',
+    '  chuẩn hoá ngày/số tiền, tự bỏ giao dịch trùng, lọc theo ngày – khoảng tiền – tiền vào/tiền ra,',
+    '  quản lý file đã nhập (xoá hoặc chuyển sang MST khác) và xuất Excel sheet “Sao kê ngân hàng”.',
+    '- Sửa lỗi giao diện: khối Kho dữ liệu không còn tràn sang tab Sao kê ngân hàng; bộ lọc nằm cột trái,',
+    '  bảng giao dịch nằm cột phải (trước đây bảng bị nhét vào cột 312px nên chỉ thấy một góc).',
+  ],
+};
+
 function fourPart(v) {
   const parts = String(v).split('.').map(n => (/^\d+$/.test(n) ? n : '0'));
   while (parts.length < 4) parts.push('0');
@@ -86,9 +99,11 @@ function fourPart(v) {
   const setupName = path.basename(setupExe);
   fs.writeFileSync(`${setupExe}.sha256`, `${hash}  ${setupName}${os.EOL}`);
 
+  const whatsNew = WHATS_NEW[version] || [];
   const notes = [
     `# CN Tax Tools v${version}`,
     '',
+    ...(whatsNew.length ? ['## Có gì mới', '', ...whatsNew, ''] : []),
     '## Cài lần đầu',
     '',
     `Tải **${setupName}** ở phần Assets bên dưới và chạy. Chỉ cần 1 file này — không cần ZIP/RAR,`,

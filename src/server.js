@@ -1049,6 +1049,70 @@ async function chooseFolder() {
   throw new Error(`Không mở được hộp thoại chọn thư mục (${detail}). Gõ hoặc dán đường dẫn đầy đủ vào ô “Thư mục lưu” rồi bấm ra ngoài ô.`);
 }
 function readBody(req) { return new Promise((resolve, reject) => { let text = ''; req.on('data', chunk => { text += chunk; if (text.length > 1024 * 1024) req.destroy(); }); req.on('end', () => { try { resolve(text ? JSON.parse(text) : {}); } catch { reject(new Error('JSON không hợp lệ.')); } }); req.on('error', reject); }); }
+// Body upload SAO KÊ (JSON { fileName, dataBase64 }): cho phép file lớn hơn JSON thường (20 MB),
+// dữ liệu vẫn nằm toàn bộ trong RAM — file sao kê Excel/CSV thực tế nhỏ hơn nhiều con số này.
+function readBankUpload(req) {
+  return new Promise((resolve, reject) => {
+    let text = '';
+    req.on('data', chunk => { text += chunk; if (text.length > 20 * 1024 * 1024) req.destroy(); });
+    req.on('end', () => {
+      try {
+        const input = text ? JSON.parse(text) : {};
+        const fileName = String(input.fileName || 'sao-ke.xlsx').trim();
+        if (!/\.(xlsx|xls|csv|pdf|png|jpe?g)$/i.test(fileName)) throw new Error('Chỉ nhận file .xlsx, .xls, .csv, .pdf, .png hoặc .jpg.');
+        const buffer = Buffer.from(String(input.data || ''), 'base64');
+        if (!buffer.length) throw new Error('File rỗng hoặc đọc không được nội dung.');
+        resolve({ fileName, buffer });
+      } catch (error) { reject(error instanceof SyntaxError ? new Error('JSON không hợp lệ.') : error); }
+    });
+    req.on('error', reject);
+  });
+}
+// ---- AI DEVEXTHUB: chuyển PDF scan/ảnh thành bảng (dùng đúng cách gọi của extension pdf conver).
+// Khoá định danh MẶC ĐỊNH ghim sẵn trong EXE; biến môi trường ghi đè được (DEVEXTHUB_INSTALL_ID /
+// DEVEXTHUB_FINGERPRINT) khi cần đổi khoá mà không phải build lại.
+const DEVEXTHUB_URL = 'https://api.devexthub.com:8443/api/convert';
+const DEVEXTHUB_INSTALL_ID = process.env.DEVEXTHUB_INSTALL_ID || '10386d78-7c25-46ee-8512-a4f6e6319b75';
+const DEVEXTHUB_FINGERPRINT = process.env.DEVEXTHUB_FINGERPRINT || 'e41db5f08f6491c3586c54b663fd9f9fbdba6084ac284dd2551c726d1fee5a2d';
+async function aiConvertPdfToTables(buffer) {
+  let resp;
+  try {
+    resp = await fetch(DEVEXTHUB_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        pdf: buffer.toString('base64'),
+        fingerprint: DEVEXTHUB_FINGERPRINT,
+        install_id: DEVEXTHUB_INSTALL_ID,
+        pages: 1, chars: 0, items: 0,
+        force_provider: null,
+      }),
+    });
+  } catch (error) {
+    throw new Error(`Không kết nối được máy chủ AI (devexthub): ${error.message}. Kiểm tra mạng rồi thử lại.`);
+  }
+  if (!resp.ok) {
+    let detail = '';
+    try { const json = await resp.json(); detail = json?.detail || ''; } catch { try { detail = await resp.text(); } catch { /* bỏ qua */ } }
+    if (resp.status === 429) throw new Error('AI hết lượt hôm nay (giới hạn của bên cấp). Thử lại vào ngày mai hoặc dùng file Excel/PDF chữ.');
+    if (resp.status === 413) throw new Error('PDF/ảnh quá lớn cho AI (tối đa ~10 MB). Tách file nhỏ hơn rồi thử lại.');
+    throw new Error(`Máy chủ AI từ chối (HTTP ${resp.status}): ${String(detail).slice(0, 200) || 'không rõ lý do'}.`);
+  }
+  const data = await resp.json();
+  const tables = Array.isArray(data?.tables) ? data.tables : [];
+  if (!tables.length) throw new Error('AI không đọc ra bảng dữ liệu nào từ file này.');
+  // Ghép mọi bảng thành MỘT grid: header bảng + các dòng, ngăn cách bằng dòng trống.
+  const rows = [];
+  for (const table of tables) {
+    rows.push([table.name || 'Bảng']);
+    if (Array.isArray(table.headers) && table.headers.length) rows.push(table.headers.map(cell => String(cell ?? '')));
+    for (const row of (Array.isArray(table.rows) ? table.rows : [])) {
+      rows.push((Array.isArray(row) ? row : []).map(cell => String(cell ?? '')));
+    }
+    rows.push([]);
+  }
+  return rows;
+}
 function reply(res, status, value) { res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }); res.end(JSON.stringify(value)); }
 function allowed(req) {
   const expectedHost = `127.0.0.1:${server.address().port}`;
@@ -1375,6 +1439,114 @@ async function endpoint(req, res, url) {
     }
     if (req.method === 'GET' && url.pathname === '/api/db/import/status') {
       return reply(res, 200, { ok: true, value: data.importJob.status() });
+    }
+    // ---- SAO KÊ NGÂN HÀNG (tab riêng ở header) ----
+    // POST /api/db/bank/preview : đọc file (Excel/CSV/PDF chữ local qua UI, PDF scan/ảnh qua AI),
+    //   chuẩn hoá + KIỂM TRA SỐ LIỆU — KHÔNG ghi gì vào DB. UI hiển thị kết quả rồi user quyết định.
+    if (req.method === 'POST' && url.pathname === '/api/db/bank/preview') {
+      await ensureLicenseAllowed();
+      const input = await readBankUpload(req);
+      const kind = /\.pdf$/i.test(input.fileName) ? 'pdf-scan-ai'
+        : (/\.(png|jpe?g)$/i.test(input.fileName) ? 'image-ai' : 'excel');
+      let rows;
+      if (kind === 'pdf-scan-ai' || kind === 'image-ai') rows = await aiConvertPdfToTables(input.buffer);
+      else rows = data.bankStatement.parseWorkbookBuffer(input.buffer, input.fileName);
+      const preview = data.bankStatement.previewRows(rows);
+      return reply(res, 200, {
+        ok: true,
+        value: {
+          kind,
+          fileName: input.fileName,
+          fileHash: kind === 'excel' ? require('node:crypto').createHash('sha1').update(input.buffer).digest('hex') : '',
+          rawRowCount: rows.length,
+          ...preview,
+        },
+      });
+    }
+    // POST /api/db/bank/import-rows : CHỈ LƯU sau khi user đã xem preview (xác nhận rồi mới gọi).
+    if (req.method === 'POST' && url.pathname === '/api/db/bank/import-rows') {
+      await ensureLicenseAllowed();
+      const input = await readBody(req);
+      const rows = Array.isArray(input.rows) ? input.rows : [];
+      if (!rows.length) throw new Error('Không có dòng nào để lưu.');
+      return withDatabase(db => {
+        // Chuẩn hoá LẠI trên server từ chính các dòng user xác nhận — không tin dữ liệu đã chuẩn hoá sẵn.
+        const grid = [[
+          'Ngày giao dịch', 'Ngày hiệu lực', 'Nội dung', 'Chi tiết', 'Tên đối ứng', 'TK đối ứng',
+          'Mã giao dịch', 'Tiền vào', 'Tiền ra', 'Số dư', 'Loại tiền',
+        ], ...rows.map(r => [
+          r.tranDate || '', r.valueDate || '', r.description || '', r.detail || '', r.counterpartyName || '',
+          r.counterpartyAccount || '', r.reference || '',
+          r.credit == null ? '' : String(r.credit), r.debit == null ? '' : String(r.debit),
+          r.balance == null ? '' : String(r.balance), r.currency || 'VND',
+        ])];
+        const value = data.bankStatement.importRows(db, {
+          fileName: String(input.fileName || 'sao-ke.pdf'),
+          fileHash: String(input.fileHash || ''),
+          rows: grid,
+        });
+        return reply(res, 200, { ok: true, value });
+      });
+    }
+    // POST /api/db/bank/preview-rows : giống /preview nhưng UI đã đọc được GRID (PDF chữ local
+    // bằng pdfjs) — server chỉ chuẩn hoá + kiểm tra, KHÔNG đọc file, KHÔNG ghi DB.
+    if (req.method === 'POST' && url.pathname === '/api/db/bank/preview-rows') {
+      await ensureLicenseAllowed();
+      const input = await readBody(req);
+      if (!Array.isArray(input.rows) || !input.rows.length) throw new Error('Không nhận được bảng chữ từ PDF.');
+      return reply(res, 200, {
+        ok: true,
+        value: { kind: 'pdf-text', fileName: String(input.fileName || 'sao-ke.pdf'), fileHash: '', ...data.bankStatement.previewRows(input.rows) },
+      });
+    }
+    // POST /api/db/bank/import : đường CŨ (Excel/CSV nhập thẳng) — giữ nguyên cho tương thích.
+    if (req.method === 'POST' && url.pathname === '/api/db/bank/import') {
+      await ensureLicenseAllowed();
+      const input = await readBankUpload(req);
+      return withDatabase(db => reply(res, 200, {
+        ok: true,
+        value: data.bankStatement.importWorkbook(db, { buffer: input.buffer, fileName: input.fileName }),
+      }));
+    }
+    // POST /api/db/bank/move : chuyển TOÀN BỘ file sao kê (fileId) sang data.db của MST khác.
+    if (req.method === 'POST' && url.pathname === '/api/db/bank/move') {
+      await ensureLicenseAllowed();
+      const input = await readBody(req);
+      const toMst = String(input.toMst || '').trim();
+      if (!toMst) throw new Error('Chưa chọn MST đích.');
+      return withDatabase((sourceDb, dir, mst) => {
+        if (toMst === mst) throw new Error('MST đích trùng với MST hiện tại.');
+        const { dir: targetDir, db: targetDb } = data.mst.ensureMst({ output, mst: toMst });
+        try {
+          const value = data.bankStatement.moveFileToMst(sourceDb, targetDb, { fileId: input.fileId, toMst });
+          return reply(res, 200, { ok: true, value });
+        } finally { data.sqlite.closeDatabase(targetDb); }
+      });
+    }
+    if (req.method === 'GET' && url.pathname === '/api/db/bank/summary') {
+      return withDatabase(db => reply(res, 200, { ok: true, value: data.bankStatement.summary(db) }));
+    }
+    if (req.method === 'GET' && url.pathname === '/api/db/bank/files') {
+      return withDatabase(db => reply(res, 200, { ok: true, value: { rows: data.bankStatement.listFiles(db) } }));
+    }
+    if (req.method === 'GET' && url.pathname === '/api/db/bank/transactions') {
+      const p = url.searchParams;
+      return withDatabase(db => reply(res, 200, {
+        ok: true,
+        value: data.bankStatement.listTransactions(db, {
+          q: p.get('q') || '', from: p.get('from') || '', to: p.get('to') || '',
+          flow: p.get('flow') || '', min: p.get('min') || '', max: p.get('max') || '',
+          limit: p.get('limit'), offset: p.get('offset'),
+        }),
+      }));
+    }
+    if (req.method === 'GET' && url.pathname === '/api/db/bank/daily') {
+      const p = url.searchParams;
+      return withDatabase(db => reply(res, 200, { ok: true, value: { rows: data.bankStatement.dailyTotals(db, { from: p.get('from') || '', to: p.get('to') || '' }) } }));
+    }
+    if (req.method === 'POST' && url.pathname === '/api/db/bank/delete') {
+      const input = await readBody(req);
+      return withDatabase(db => reply(res, 200, { ok: true, value: data.bankStatement.deleteFile(db, input.fileId) }));
     }
     // ---- Mã định danh CHƯA GÁN (MST gốc ↔ CCCD của cùng một người) ----
     // GET: danh sách cho panel tab Kho dữ liệu; POST: gán (thêm vào identifiers + quét lại),
@@ -2179,6 +2351,10 @@ const server = http.createServer((req, res) => {
   if (url.pathname === '/period.js') return staticFile(res, 'period.js', 'text/javascript; charset=utf-8');
   if (url.pathname === '/mst-format.js') return staticFile(res, 'mst-format.js', 'text/javascript; charset=utf-8');
   if (url.pathname === '/data-ui.js') return staticFile(res, 'data-ui.js', 'text/javascript; charset=utf-8');
+  if (url.pathname === '/bank-pdf.js') return staticFile(res, 'bank-pdf.js', 'text/javascript; charset=utf-8');
+  // pdfjs (module + worker) cho "Sao kê ngân hàng" đọc PDF có chữ ngay trong máy.
+  if (url.pathname === '/vendor/pdfjs/pdf.min.mjs') return staticFile(res, 'vendor/pdfjs/pdf.min.mjs', 'text/javascript; charset=utf-8');
+  if (url.pathname === '/vendor/pdfjs/pdf.worker.min.mjs') return staticFile(res, 'vendor/pdfjs/pdf.worker.min.mjs', 'text/javascript; charset=utf-8');
   if (url.pathname === '/data-view.css') return staticFile(res, 'data-view.css', 'text/css; charset=utf-8');
   if (url.pathname.startsWith('/api/')) return void endpoint(req, res, url);
   res.writeHead(404); res.end();
@@ -2221,7 +2397,24 @@ server.listen(0, '127.0.0.1', async () => {
     try {
       const [page, state] = await Promise.all([localGet(port, '/'), localGet(port, '/api/state')]);
       if (page.status !== 200 || !page.body.includes('CN Tax Tools') || state.status !== 200 || JSON.parse(state.body).ok !== true) throw new Error('Giao diện hoặc API localhost không phản hồi đúng.');
-      console.log(JSON.stringify({ ok: true, packed, port, browser: browserPath() || null, ui: true, api: true })); server.close(() => process.exit(0));
+      // ĐỦ TÍNH NĂNG, KHÔNG CHỈ "MỞ ĐƯỢC": pkg khi thiếu asset chỉ CẢNH BÁO rồi vẫn xuất EXE, nên bản
+      // 1.0.7 phát hành thiếu HẲN tab "Sao kê ngân hàng" (bank-pdf.js + vendor/pdfjs/*.mjs không nằm
+      // trong gói) mà build vẫn "xanh". Kiểm MỌI file giao diện có thật sự được phục vụ: danh sách
+      // lấy từ chính index.html nên sau này thêm file mới là tự động được kiểm theo.
+      const referenced = [...page.body.matchAll(/(?:src|href)="([^":#]+)"/g)].map(match => match[1]);
+      const assets = [...new Set([
+        ...referenced,
+        'icon.png',
+        // pdfjs nạp bằng import() động trong bank-pdf.js nên không xuất hiện trong index.html.
+        'vendor/pdfjs/pdf.min.mjs', 'vendor/pdfjs/pdf.worker.min.mjs',
+      ])];
+      const broken = [];
+      for (const asset of assets) {
+        const reply = await localGet(port, '/' + asset.replace(/^\.?\//, ''));
+        if (reply.status !== 200 || !reply.body) broken.push(`${asset} (HTTP ${reply.status})`);
+      }
+      if (broken.length) throw new Error(`EXE thiếu file giao diện: ${broken.join(', ')}`);
+      console.log(JSON.stringify({ ok: true, packed, port, browser: browserPath() || null, ui: true, api: true, assets: assets.length })); server.close(() => process.exit(0));
     } catch (error) { console.error(error.message); server.close(() => process.exit(1)); }
   }
   else if (testServer && process.argv.includes('--check-login-page')) {

@@ -108,6 +108,34 @@
 .invoice-frame-wrap iframe { display: block; width: 100%; height: 100%; border: 0; background: #eef1f4; }
 .invoice-dialog-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 11px; }
 
+/* ---- Sao kê ngân hàng: màu tiền vào (xanh) / tiền ra (đỏ nhạt) cho nhanh mắt ---- */
+.data-content td.num.in, #pane-bank td.num.in { color: #087f70; font-weight: 600; }
+.data-content td.num.out, #pane-bank td.num.out { color: #b3261e; }
+#data-bank-bar { width: 100%; height: 8px; margin-top: 10px; accent-color: #087f70; }
+
+/* ---- Tab riêng "Sao kê ngân hàng" ở header: cùng bố cục 2 cột với tab Tra cứu ---- */
+#pane-bank { display: grid; grid-template-columns: minmax(0, 1fr); grid-auto-rows: min-content; gap: 14px; min-width: 0; }
+@media(min-width:1101px) {
+  #pane-bank { grid-template-columns: 312px minmax(0, 1fr); align-items: start; }
+}
+.bank-overview { padding: 2px 0 0; grid-column: 1 / -1; }
+.bank-overview .data-tile.bank-in strong { color: #087f70; }
+.bank-overview .data-tile.bank-out strong { color: #b3261e; }
+.bank-filters { padding: 15px; }
+.bank-filters .data-field.search input { width: 100%; }
+.bank-filters .data-field.search { width: 100%; }
+.bank-seg { display: flex; margin: 2px 0 12px; }
+.bank-seg button { flex: 1 1 0; }
+.bank-filter-actions { display: flex; gap: 8px; margin-bottom: 4px; }
+.bank-filter-actions button { flex: 1 1 0; }
+.bank-files-btn { width: 100%; margin-bottom: 10px; font-weight: 600; }
+.bank-file-list { max-height: 46vh; margin-top: 10px; }
+.bank-file-list td:last-child { white-space: nowrap; }
+.bank-file-list td:last-child button { margin-right: 6px; font-size: 11px; padding: 7px 10px; }
+.bank-results { min-width: 0; }
+.bank-results .table-scroll { max-height: calc(100vh - 300px); min-height: 260px; }
+.bank-results .data-pager { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-top: 1px solid #edf1f5; }
+
 /* ---- Hộp thoại Auto Sync / Tải lịch sử ---- */
 #autosync-dialog, #backfill-dialog {
   width: min(94vw, 660px); max-width: 660px; padding: 18px;

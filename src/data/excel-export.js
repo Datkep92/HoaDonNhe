@@ -15,6 +15,7 @@
 const XLSX = require('../../resources/xlsx.cjs');
 const queries = require('./queries');
 const vnDate = require('../vn-date');
+const bankStatement = require('./bank-statement');
 
 const SHEET = {
   buy: 'Hóa đơn mua vào',
@@ -23,6 +24,7 @@ const SHEET = {
   productsSell: 'Hàng hóa bán ra',
   suppliers: 'Nhà cung cấp',
   buyers: 'Khách hàng',
+  bank: 'Sao kê ngân hàng',
 };
 
 const INVOICE_HEADERS = ['STT', 'Ngày lập', 'Ký hiệu', 'Số hóa đơn', 'MST người bán', 'Tên người bán', 'MST người mua', 'Tên người mua', 'Tiền trước thuế', 'Tiền thuế', 'Tổng tiền'];
@@ -31,6 +33,8 @@ const PRODUCT_HEADERS = ['Mã hàng', 'Tên hàng', 'ĐVT', 'Thuế suất', 'S�
 const PRODUCT_WIDTHS = [18, 46, 10, 10, 14, 18, 14];
 const PARTNER_HEADERS = ['MST', 'Tên', 'Số hóa đơn', 'Tổng tiền', 'Tiền thuế'];
 const PARTNER_WIDTHS = [16, 48, 12, 18, 14];
+const BANK_HEADERS = ['STT', 'Ngày giao dịch', 'Nội dung', 'Đối ứng', 'Mã giao dịch', 'Tiền vào', 'Tiền ra', 'Số dư', 'File nguồn'];
+const BANK_WIDTHS = [6, 14, 44, 30, 20, 16, 16, 16, 24];
 
 // dd/mm/yyyy — dùng CHUNG bộ quy đổi ngày (src/vn-date.js) với mọi đường đọc ngày khác.
 // `ngay_lap` trong data.db đã là ngày VN nên ở đây chỉ còn định dạng, không cộng thêm giờ.
@@ -126,8 +130,24 @@ function partnerRows(db, kind) {
   ]);
 }
 
+// Sao kê ngân hàng MỘT sheet: giao dịch đã chuẩn hoá trong data.db, theo cùng bộ lọc đang xem.
+function bankRows(db, filters) {
+  const { rows } = bankStatement.listTransactions(db, { q: filters.q || '', from: filters.from || '', to: filters.to || '', limit: 200, offset: 0 });
+  return rows.map((row, index) => [
+    index + 1,
+    dmy(row.tran_date),
+    row.description || '',
+    row.counterparty_name || '',
+    row.reference || '',
+    money(row.credit),
+    money(row.debit),
+    money(row.balance),
+    row.file_name || '',
+  ]);
+}
+
 // parts: danh sách bảng muốn xuất (thiếu ⇒ xuất TẤT CẢ). Dùng cho "xuất tất cả" và "xuất riêng lẻ".
-const PARTS = ['buy', 'sell', 'productsBuy', 'productsSell', 'suppliers', 'buyers'];
+const PARTS = ['buy', 'sell', 'productsBuy', 'productsSell', 'suppliers', 'buyers', 'bank'];
 
 // MỌI sheet đều theo ĐÚNG bộ lọc đang xem (q + khoảng ngày), kể cả 2 sheet đối tác.
 function buildWorkbook(db, filters = {}, parts) {
@@ -142,6 +162,7 @@ function buildWorkbook(db, filters = {}, parts) {
   if (wanted.has('productsSell')) counts.productsSell = addSheet(book, SHEET.productsSell, PRODUCT_HEADERS, productRows(db, 'SELL', filters), PRODUCT_WIDTHS);
   if (wanted.has('suppliers')) counts.suppliers = addSheet(book, SHEET.suppliers, PARTNER_HEADERS, partnerRows(db, 'supplier'), PARTNER_WIDTHS);
   if (wanted.has('buyers')) counts.buyers = addSheet(book, SHEET.buyers, PARTNER_HEADERS, partnerRows(db, 'buyer'), PARTNER_WIDTHS);
+  if (wanted.has('bank')) counts.bank = addSheet(book, SHEET.bank, BANK_HEADERS, bankRows(db, filters), BANK_WIDTHS);
   return { buffer: XLSX.write(book, { type: 'buffer', bookType: 'xlsx' }), counts, parts: [...wanted] };
 }
 
@@ -154,4 +175,4 @@ function fileName(mst, now = new Date(), parts) {
   return `kho-du-lieu-${one}${mst || 'MST'}-${stamp}.xlsx`;
 }
 
-module.exports = { buildWorkbook, fileName, SHEET, PARTS, INVOICE_HEADERS, PRODUCT_HEADERS, PARTNER_HEADERS, INVOICE_WIDTHS, PRODUCT_WIDTHS, PARTNER_WIDTHS, invoiceRows, productRows, partnerRows };
+module.exports = { buildWorkbook, fileName, SHEET, PARTS, INVOICE_HEADERS, PRODUCT_HEADERS, PARTNER_HEADERS, BANK_HEADERS, INVOICE_WIDTHS, PRODUCT_WIDTHS, PARTNER_WIDTHS, BANK_WIDTHS, invoiceRows, productRows, partnerRows };

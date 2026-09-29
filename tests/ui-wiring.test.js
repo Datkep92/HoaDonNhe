@@ -311,7 +311,8 @@ test('Kho dữ liệu phản hồi tức thì: busyButton cho lưu/chạy Auto S
   assert.ok(refreshBody.includes('.finally(restore)'), 'Tải lại phải mở khoá qua finally');
   // Xuất Excel trong kho dữ liệu: cờ chống bấm đúp đặt TRƯỚC khi fetch.
   const exportAt = source.indexOf('async function exportExcel(');
-  const exportBody = source.slice(exportAt, exportAt + 700);
+  // Cửa sổ phải đủ rộng: thân hàm có chú thích nên `await fetch` nằm xa hơn 700 ký tự.
+  const exportBody = source.slice(exportAt, exportAt + 1600);
   assert.ok(/if \(exportBusy\) return;/.test(exportBody), 'bấm đúp xuất Excel phải bị bỏ qua');
   const busySet = exportBody.indexOf('exportBusy = true;');
   const fetchAt = exportBody.indexOf("await fetch(`/api/db/export");
@@ -867,4 +868,49 @@ test('Tổng quan: thẻ Hàng hóa đủ theo mục 24 (tổng hợp 2 chiều,
   assert.ok(css.includes('.goods-warn'), 'cảnh báo hàng hóa phải có style của riêng nó');
   // Không có dữ liệu hàng hóa thì hiện "Chưa có dữ liệu", không hiện số 0 (mục 35).
   assert.ok(ui.includes('Chưa có dữ liệu hàng hóa.'), 'thẻ phải có trạng thái chưa có dữ liệu');
+});
+
+test('Thư mục lưu: ĐÃ LƯU thì KHOÁ lại, muốn đổi phải xác nhận cảnh báo mất dữ liệu', () => {
+  const html = fs.readFileSync(path.join(root, 'src', 'index.html'), 'utf8');
+  const ui = fs.readFileSync(path.join(root, 'src', 'renderer.js'), 'utf8');
+  const server = fs.readFileSync(path.join(root, 'src', 'server.js'), 'utf8');
+  const style = fs.readFileSync(path.join(root, 'src', 'style.css'), 'utf8');
+  // Đổi thư mục lưu = app chuyển sang đọc data.db/hoá đơn ở chỗ khác ⇒ dữ liệu đã tải ở thư mục cũ
+  // không còn hiện trong app. Nên ô nhập phải bị KHOÁ, và phải có đường đổi riêng có cảnh báo.
+  assert.ok(html.includes('id="change-output"'), 'phải có nút "Đổi thư mục…"');
+  assert.ok(ui.includes('field.readOnly = folderLocked'), 'ô thư mục phải readOnly khi đã lưu');
+  assert.ok(ui.includes('changeFolderButton.hidden = !folderLocked') && ui.includes('chooseFolderButton.hidden = folderLocked'),
+    'chỉ hiện MỘT trong hai nút: Chọn (chưa có thư mục) / Đổi (đã khoá)');
+  assert.ok(style.includes('#output.locked'), 'ô bị khoá phải có style riêng để nhìn là biết');
+  // Đổi thư mục phải đi qua hộp xác nhận CỦA APP (không dùng confirm() gốc) và nói rõ mất dữ liệu.
+  assert.ok(ui.includes('$(\'change-output\').onclick'), 'phải có handler cho nút Đổi thư mục');
+  assert.ok(/Đổi thư mục lưu hóa đơn[\s\S]{0,900}?FILE KHÔNG BỊ XOÁ/.test(ui),
+    'cảnh báo phải nói rõ app không còn hiện dữ liệu cũ NHƯNG file không bị xoá');
+  assert.ok(ui.includes("call('/api/folder', { confirm: true })"), 'phải gửi kèm xác nhận khi đổi');
+  // CHỐT Ở SERVER: thiếu xác nhận thì từ chối — không thể lách qua giao diện.
+  assert.ok(server.includes('function assertFolderChangeAllowed'), 'phải có chốt ở server');
+  assert.ok(server.includes('assertFolderChangeAllowed(next, input.confirm)'), 'route /api/folder phải dùng chốt');
+  assert.ok(server.includes('assertFolderChangeAllowed(folder, input.confirmOutput)'), 'route lưu khách mới cũng phải dùng chốt');
+  // Form Thêm MST: đã có thư mục dùng chung thì KHOÁ luôn ô ở đó (không đổi chéo từ form khác).
+  assert.ok(ui.includes("$('mst-output').readOnly = adding && hasFolder"), 'ô thư mục trong form Thêm MST phải khoá khi đã có thư mục');
+});
+
+test('MỌI tab trong index.html đều được NỐI đủ: có onclick, có pane, có trong showView', () => {
+  // Lỗi thật đã xảy ra: thêm nút tab "Hỗ trợ kế toán" vào index.html nhưng QUÊN gán onclick ở
+  // data-ui.js ⇒ bấm vào KHÔNG có gì xảy ra. Test này khoá lại cho MỌI tab, kể cả tab thêm sau.
+  const html = fs.readFileSync(path.join(root, 'src', 'index.html'), 'utf8');
+  const ui = fs.readFileSync(path.join(root, 'src', 'data-ui.js'), 'utf8');
+  const buttons = [...html.matchAll(/<button id="(view-[a-z]+)"/g)].map(match => match[1]);
+  assert.ok(buttons.length >= 5, `phải có ít nhất 5 tab, đang thấy ${buttons.length}`);
+  for (const id of buttons) {
+    const name = id.slice('view-'.length);
+    assert.ok(ui.includes(`$('${id}').onclick`), `tab ${id} CHƯA được nối onclick ⇒ bấm không có gì xảy ra`);
+    assert.ok(html.includes(`id="pane-${name}"`), `tab ${id} thiếu pane #pane-${name}`);
+    assert.ok(ui.includes(`'pane-${name}'`), `pane #pane-${name} chưa có trong danh sách pane của showView`);
+    assert.ok(ui.includes(`['${id}', '${name}']`), `tab ${id} chưa có trong vòng lặp bật/tắt active của showView`);
+  }
+  // Mỗi tab cũng phải có tiêu đề riêng trong viewInfo, nếu không header hiện sai nội dung.
+  for (const name of buttons.map(id => id.slice('view-'.length))) {
+    assert.ok(ui.includes(`${name}: ['`), `showView thiếu tiêu đề cho tab ${name}`);
+  }
 });

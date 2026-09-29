@@ -459,6 +459,22 @@ function openMstForm(account) {
   $('mst-password').value = '';
   $('mst-password').placeholder = account && account.remembered ? 'Đang có mật khẩu đã lưu — để trống nếu không đổi' : 'Để lưu sẵn cho lần sau';
   $('mst-remember').checked = account ? !!account.remembered : true;
+  // Ô "Thư mục lưu" CHỈ hiện khi THÊM MST. Vì sao: khách mới phải có chỗ ghi file NGAY, nếu không
+  // lượt quét 10 ngày đầu (xem src/first-scan.js) không chạy được vì không có thư mục đích.
+  // Sửa MST thì KHÔNG hỏi lại — thư mục lưu là DÙNG CHUNG cho mọi MST nên đã có sẵn.
+  const adding = !account;
+  const hasFolder = !!current.output;
+  $('mst-output-row').hidden = !adding;
+  $('mst-output-hint').hidden = !adding;
+  $('mst-output').value = adding ? (current.output || '') : '';
+  // ĐÃ có thư mục lưu ⇒ KHOÁ luôn ô này: thư mục dùng CHUNG cho mọi MST nên thêm khách mới không
+  // được đổi (đổi ở đây là đổi cho CẢ app, kéo theo dữ liệu cũ không còn hiện). Muốn đổi thì vào
+  // tab "Tra cứu & tải" bấm "Đổi thư mục…" — ở đó có cảnh báo mất dữ liệu.
+  $('mst-output').readOnly = adding && hasFolder;
+  $('mst-output-choose').hidden = adding && hasFolder;
+  $('mst-output-hint').textContent = !adding ? '' : (hasFolder
+    ? `Đã khoá theo thư mục dùng chung: ${current.output}. Muốn đổi, vào tab “Tra cứu & tải” bấm “Đổi thư mục…” (sẽ có cảnh báo mất dữ liệu).`
+    : `Bỏ trống (hoặc bấm Huỷ ở hộp chọn thư mục) = dùng mặc định ${current.defaultOutput || 'Documents\\CN-invoice'}. Thư mục này dùng chung cho mọi MST.`);
   $('mst-error').hidden = true; $('mst-dialog').showModal(); $('mst-name').focus();
 }
 // Mốc thời gian ngắn "15:01 25/09" cho banner trạng thái MST.
@@ -705,6 +721,16 @@ function render(state) {
   // Không ghi đè lên đường dẫn người dùng đang gõ; chỉ cập nhật khi nơi lưu đổi thật.
   const field = $('output');
   if (document.activeElement !== field && field.value !== (state.output || '')) field.value = state.output || '';
+  // KHOÁ THƯ MỤC LƯU: đã lưu thư mục rồi thì KHÔNG cho sửa thẳng. Vì sao: đổi thư mục là app chuyển
+  // sang đọc data.db/hoá đơn ở chỗ khác ⇒ dữ liệu đã tải ở thư mục cũ KHÔNG còn hiện trong app
+  // (file vẫn nằm nguyên trên đĩa). Chỉ cần gõ nhầm một ký tự là dính. Muốn đổi phải bấm
+  // "Đổi thư mục…" rồi XÁC NHẬN cảnh báo mất dữ liệu ở dưới.
+  const folderLocked = !!state.output;
+  field.readOnly = folderLocked;
+  field.classList.toggle('locked', folderLocked);
+  field.title = folderLocked
+    ? `Đã khoá theo thư mục đang dùng: ${state.output}. Bấm “Đổi thư mục…” nếu muốn đổi (sẽ có cảnh báo mất dữ liệu).`
+    : 'Gõ/dán đường dẫn đầy đủ, hoặc bấm “Chọn thư mục…”';
   $('empty').hidden = !!state.total;
   // Hiện spinner loading ở khu vực kết quả khi đang tải lần đầu (chưa có state từ server)
   if (initialLoading && !state.selected) {
@@ -715,6 +741,18 @@ function render(state) {
   }
   const busy = state.busy || state.authBusy || pending;
   ['choose', 'add-mst', 'mst-login', 'account-login'].forEach(id => { const el = optional(id); if (el) el.disabled = busy; });
+  // Chỉ hiện MỘT trong hai nút: chưa có thư mục ⇒ "Chọn thư mục…"; đã có (đang khoá) ⇒ "Đổi thư mục…".
+  const changeFolderButton = optional('change-output');
+  const chooseFolderButton = optional('choose');
+  if (changeFolderButton) changeFolderButton.hidden = !folderLocked;
+  if (chooseFolderButton) chooseFolderButton.hidden = folderLocked;
+  // Dòng ghi chú dưới ô phải KHỚP trạng thái: khoá rồi thì không thể "gõ/dán đường dẫn" nữa.
+  const outputHintNote = optional('output-hint-note');
+  if (outputHintNote) {
+    outputHintNote.textContent = folderLocked
+      ? 'Thư mục đã khoá để không đổi nhầm. Muốn đổi, bấm “Đổi thư mục…” (sẽ có cảnh báo mất dữ liệu).'
+      : 'Có thể gõ/dán đường dẫn đầy đủ rồi bấm ra ngoài ô.';
+  }
   // Nút "Đồng bộ tất cả": một nút vừa khởi động vừa ngưng. Hiện số luồng đang chạy để thấy
   // bể luôn giữ đủ 3 — MST nào xong thì MST kế tiếp vào chỗ.
   const pool = state.pool || {};
@@ -1124,9 +1162,15 @@ $('identifiers-form').onsubmit = async event => {
 document.addEventListener('click', event => { if (!event.target.closest('.mst-row')) closeRowMenus(); });
 $('mst-form').onsubmit = async event => {
   event.preventDefault();
-  const input = { previous: editingMst, mst: $('mst-code').value.trim(), name: $('mst-name').value.trim(), password: $('mst-password').value, remember: $('mst-remember').checked };
-  if (!MstFormat.isValidMst(input.mst)) { $('mst-error').textContent = MstFormat.MST_HINT; $('mst-error').hidden = false; return; }
   const wasEditing = editingMst;
+  const input = {
+    previous: editingMst, mst: $('mst-code').value.trim(), name: $('mst-name').value.trim(),
+    password: $('mst-password').value, remember: $('mst-remember').checked,
+    // THÊM MST: gửi kèm thư mục lưu. BỎ TRỐNG ⇒ server tự dùng mặc định Documents\CN-invoice —
+    // yêu cầu người dùng: khách bấm Huỷ ở hộp chọn thư mục thì KHÔNG được chặn việc thêm MST.
+    ...(wasEditing ? {} : { output: $('mst-output').value.trim() }),
+  };
+  if (!MstFormat.isValidMst(input.mst)) { $('mst-error').textContent = MstFormat.MST_HINT; $('mst-error').hidden = false; return; }
   $('mst-submit').disabled = true;
   try {
     const account = await call('/api/account/save', input);
@@ -1135,8 +1179,12 @@ $('mst-form').onsubmit = async event => {
     // Thêm MST mới: lưu xong là TỰ ĐỘNG ĐĂNG NHẬP luôn (mật khẩu vừa nhập trong form được saveAccount
     // lưu sẵn). Chỉ khi thất bại mới mở form Đăng nhập thủ công.
     notice(`Đã lưu ${displayName(account)} — đang tự động đăng nhập…`);
-    try { await autoLoginMst(account.mst); }
-    catch (error) { noticeFail(error.message); openLogin(account.mst); }
+    // LƯU Ý: autoLoginMst() KHÔNG ném lỗi khi đăng nhập sai — nó trả về false (bên trong đã dựng
+    // sẵn form thủ công rồi ĐÓNG lại). Vì vậy phải bắt cả giá trị false, nếu chỉ có `catch` thì
+    // khách lưu MST với mật khẩu sai sẽ chỉ thấy một dòng toast và KHÔNG có hộp thoại đăng nhập nào.
+    // Đăng nhập thành công ⇒ server tự chạy lượt quét 10 ngày đầu cho MST mới (src/first-scan.js).
+    try { if (!(await autoLoginMst(account.mst))) openLoginChoice(account.mst); }
+    catch (error) { noticeFail(error.message); await prepareManualLogin(account.mst); openLoginChoice(account.mst); }
   } catch (error) { $('mst-error').textContent = error.message; $('mst-error').hidden = false; }
   finally { $('mst-submit').disabled = false; editingMst = ''; }
 };
@@ -1206,6 +1254,54 @@ $('choose').onclick = async () => {
     $('output').value = folder || ''; current.output = folder || '';
     if (folder && folder !== before) notice(`Thư mục lưu: ${folder}`);
     else if (!folder) notice('Chưa chọn thư mục lưu — chọn lại, hoặc gõ đường dẫn vào ô “Thư mục lưu”.');
+  } catch (error) { noticeFail(error.message); }
+  finally { restore(); }
+};
+// Nút "Chọn thư mục…" TRONG form Thêm MST: dùng ĐÚNG hộp thoại Windows của tab Tra cứu
+// (POST /api/folder KHÔNG kèm path). Bấm HUỶ ở hộp thoại ⇒ folder rỗng ⇒ GIỮ NGUYÊN ô; nếu ô vẫn
+// trống thì lúc lưu server tự dùng thư mục mặc định (Documents\CN-invoice) — không chặn việc thêm.
+$('mst-output-choose').onclick = async () => {
+  const restore = busyButton($('mst-output-choose'), 'Đang mở…');
+  notice('Đang mở hộp thoại chọn thư mục… Nếu không thấy hộp thoại, gõ hoặc dán đường dẫn đầy đủ vào ô rồi bấm ra ngoài ô.');
+  try {
+    const folder = await call('/api/folder', {});
+    if (folder) { $('mst-output').value = folder; notice(`Thư mục lưu: ${folder}`); }
+    else notice('Không chọn thư mục — khi lưu sẽ dùng thư mục mặc định.');
+  } catch (error) { noticeFail(error.message); }
+  finally { restore(); }
+};
+// Gõ/dán đường dẫn thẳng vào ô của form Thêm MST: kiểm ngay như ô "Thư mục lưu" ở tab Tra cứu
+// (server tạo thư mục + thử ghi) để không phải đợi tới lúc lưu mới báo lỗi.
+$('mst-output').onchange = async () => {
+  const typed = $('mst-output').value.trim();
+  if (!typed) return; // để trống = dùng mặc định, không cần kiểm
+  try { const folder = await call('/api/folder', { path: typed }); $('mst-output').value = folder; notice(`Đã đặt thư mục lưu: ${folder}`); }
+  catch (error) { noticeFail(error.message); $('mst-output').value = ''; }
+};
+// ĐỔI THƯ MỤC LƯU — thao tác NGUY HIỂM nên đi đường riêng, có cảnh báo. Ô "Thư mục lưu" bị KHOÁ
+// (xem render()) để không gõ nhầm; muốn đổi phải xác nhận rồi mới mở hộp thoại chọn thư mục.
+// `confirm: true` gửi kèm là xác nhận để SERVER cho phép đổi — chốt nằm ở server chứ không chỉ ở
+// giao diện, nên không đường nào đổi thư mục mà thiếu xác nhận.
+$('change-output').onclick = async () => {
+  const from = current.output || '';
+  const accepted = await askConfirm({
+    title: 'Đổi thư mục lưu hóa đơn',
+    tone: 'error',
+    ok: 'Tôi hiểu — đổi thư mục',
+    cancel: 'Giữ nguyên',
+    text: `App đang dùng thư mục:\n${from}\n\n`
+      + 'Nếu đổi sang thư mục khác thì hóa đơn và kho dữ liệu ĐÃ CÓ ở thư mục trên sẽ KHÔNG còn hiện trong app '
+      + '(Tổng quan, Kho dữ liệu, Sao kê ngân hàng đều đọc thư mục mới).\n\n'
+      + 'FILE KHÔNG BỊ XOÁ — vẫn nằm nguyên trong thư mục cũ. Muốn thấy lại dữ liệu cũ thì đổi về thư mục đó.',
+  });
+  if (!accepted) return;
+  const restore = busyButton($('change-output'), 'Đang mở…');
+  try {
+    const folder = await call('/api/folder', { confirm: true });
+    if (!folder || folder === from) { notice('Không đổi thư mục — giữ nguyên thư mục hiện tại.'); return; }
+    $('output').value = folder; current.output = folder;
+    notice(`Đã đổi thư mục lưu: ${folder}`);
+    await refresh();
   } catch (error) { noticeFail(error.message); }
   finally { restore(); }
 };

@@ -26,7 +26,7 @@
 //   TM/CK nên không tự phân loại được — mục 3 của yêu cầu).
 // ---------------------------------------------------------------------------
 
-const SCHEMA_VERSION = 8;
+const SCHEMA_VERSION = 9;
 
 const TABLES = [
   `CREATE TABLE IF NOT EXISTS invoices (
@@ -147,6 +147,41 @@ const TABLES = [
     FOREIGN KEY(invoice_id) REFERENCES invoices(id) ON DELETE CASCADE,
     FOREIGN KEY(bank_transaction_id) REFERENCES bank_transactions(id) ON DELETE CASCADE
   )`,
+  // ---- v9: HỖ TRỢ KẾ TOÁN — xuất file "Mẫu bán hàng" để nhập vào MISA AMIS -------
+  // product_master : danh mục hàng hoá nhập từ file Excel `Danhsach.xlsx` của công ty
+  //   (sheet 1, tiêu đề ở hàng 3: STT | Mã | Kho ngầm định | Tên | Đơn vị tính chính |
+  //    Đơn giá mua gần nhất). Dùng để ĐỐI CHIẾU mã hàng trên hoá đơn: mã nào không có
+  //   trong danh mục thì cảnh báo trước khi up lên MISA (nhập vào sẽ tạo hàng mới hoặc lỗi).
+  //   `ma_chuan` = mã đã chuẩn hoá (gộp khoảng trắng THỪA thành một dấu cách, viết hoa) để khớp
+  //   được cả khi hoá đơn ghi "ambi  sap 180g" còn danh mục ghi "AMBI SAP 180G".
+  //   Cố ý KHÔNG xoá hết khoảng trắng: "AMBI SAP 180G" và "AMBI SAP180G" là hai mặt hàng khác nhau.
+  //   KHÔNG phải nguồn số liệu: mọi số tiền/số lượng lấy từ HOÁ ĐƠN.
+  `CREATE TABLE IF NOT EXISTS product_master (
+    ma_hang TEXT PRIMARY KEY,
+    ma_chuan TEXT,
+    ten_chuan TEXT,
+    dvt TEXT,
+    kho TEXT,
+    don_gia_mua REAL,
+    updated_at TEXT
+  )`,
+  // customer_codes : mã khách hàng MISA cấp TỰ ĐỘNG nhưng phải ỔN ĐỊNH theo TÊN khách.
+  //   Cùng một khách ra hai mã khác nhau ⇒ MISA tạo TRÙNG khách hàng và công nợ bị tách sai.
+  //   `ten_chuan` = tên khách đã chuẩn hoá (viết hoa, gộp khoảng trắng) làm khoá.
+  `CREATE TABLE IF NOT EXISTS customer_codes (
+    ten_chuan TEXT PRIMARY KEY,
+    ma_kh TEXT NOT NULL UNIQUE,
+    ten_goc TEXT,
+    created_at TEXT
+  )`,
+  // misa_counters : bộ đếm dùng chung (hiện dùng cho số chứng từ "PT0001" tăng dần).
+  //   Lưu trong data.db để xuất nhiều lần KHÔNG sinh lại từ PT0001 ⇒ không trùng chứng từ
+  //   đã nhập vào MISA ở lượt trước.
+  `CREATE TABLE IF NOT EXISTS misa_counters (
+    name TEXT PRIMARY KEY,
+    value INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT
+  )`,
 ];
 
 const INDEXES = [
@@ -173,6 +208,8 @@ const INDEXES = [
   'CREATE INDEX IF NOT EXISTS idx_bank_file_hash ON bank_files(file_hash)',
   'CREATE INDEX IF NOT EXISTS idx_reconciliation_invoice ON reconciliation_matches(invoice_id)',
   'CREATE INDEX IF NOT EXISTS idx_reconciliation_bank ON reconciliation_matches(bank_transaction_id)',
+  // v9 — tra mã hàng theo mã đã chuẩn hoá (đối chiếu hoá đơn ↔ danh mục công ty).
+  'CREATE INDEX IF NOT EXISTS idx_product_master_chuan ON product_master(ma_chuan)',
 ];
 
 // FTS5 (external content) cho tìm kiếm nhanh ở tab "Kho dữ liệu" (mục §34).

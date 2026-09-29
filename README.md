@@ -28,6 +28,71 @@
 
 7. EXE chạy **không có cửa sổ terminal**. Muốn thoát: đóng cửa sổ app (app cũng tự thoát khi giao diện ngừng phản hồi 2,5 phút). Nhật ký khởi động/lỗi nằm ở `du_lieu/nhat-ky.log`; lỗi nghiêm trọng hiện thêm hộp thoại.
 
+### Quét 10 ngày gần nhất ngay khi thêm khách mới
+
+Thêm khách mới xong là khách **có dữ liệu dùng ngay**, không phải tự bấm tra cứu:
+
+1. Form **Thêm MST** có thêm ô **Thư mục lưu hóa đơn** (dùng chung cho mọi MST). Bấm **Chọn thư mục…** để chọn, hoặc gõ/dán đường dẫn. **Bỏ trống — hoặc bấm Huỷ ở hộp chọn thư mục — thì app dùng mặc định `Documents\CN-invoice`**, không chặn việc thêm MST.
+2. Bấm **Lưu vào danh sách** ⇒ app lưu khách rồi **tự động đăng nhập** (giải CAPTCHA hộ).
+3. **Đăng nhập thành công** ⇒ app tự tải **10 ngày gần nhất** cho **Mua vào trước, Bán ra sau** (không chạy song song), định dạng **XML**, chạy nền — theo dõi ở thanh tiến độ như mọi lượt tải khác.
+4. XML tải về được **tự nhập vào kho dữ liệu**, nên tab **Tổng quan** và **Kho dữ liệu** có số liệu ngay; muốn bảng Excel tổng hợp thì bấm **Tải ngay** như thường.
+5. **Đăng nhập thất bại** ⇒ app **không đánh dấu gì**, nên lần đăng nhập sau **vẫn chạy** luồng này.
+
+Các chốt an toàn (chi tiết quyết định nằm ở `src/first-scan.js`):
+
+- **Chỉ chạy MỘT lần cho mỗi MST.** Trạng thái lưu trong `du_lieu/accounts.json` > `accounts[].firstScan`: `pending` → `running` → `done` (hoặc `failed`).
+- **Chỉ áp cho MST thêm MỚI từ bản này trở đi.** MST có sẵn trong danh sách không có ô nhớ `firstScan` nên **không** bị quét.
+- **Quét lỗi** (mạng/cổng thuế chặn) ⇒ thử lại ở lần đăng nhập sau, nhưng **cách nhau tối thiểu 30 phút** để bấm lia lịa không dội request vào cổng thuế.
+- **Không chen ngang**: MST đang chạy tác vụ khác thì nhường; **chưa chọn thư mục lưu** thì hoãn; **chưa được phép dùng** (license/hết hạn) thì không chạy.
+- Nhiều khách thêm cùng lúc thì quét **lần lượt từng MST một** (hàng đợi tuần tự dùng chung).
+- Tắt app giữa lúc đang quét ⇒ lượt đó ở trạng thái `running`, **không quét lại từ đầu** ở lần mở sau.
+
+### Khoá thư mục lưu — muốn đổi phải xác nhận
+
+Đổi thư mục lưu là app chuyển sang đọc `data.db` và hoá đơn ở **chỗ khác**, nên dữ liệu đã tải ở thư mục cũ **không còn hiện trong app** (Tổng quan, Kho dữ liệu, Sao kê ngân hàng đều đọc thư mục mới). **File không bị xoá** — vẫn nằm nguyên trên đĩa. Chỉ cần gõ nhầm một ký tự là dính, nên:
+
+- **Đã lưu thư mục rồi thì ô đó bị KHOÁ** (nền xám, viền đứt, không sửa được). Nút **Chọn thư mục…** được thay bằng **Đổi thư mục…**.
+- Bấm **Đổi thư mục…** ⇒ hiện hộp thoại cảnh báo nói rõ: dữ liệu cũ sẽ không còn hiện trong app, **file không bị xoá**, và muốn thấy lại thì đổi về thư mục cũ. Chọn **Giữ nguyên** thì không đổi gì.
+- Chốt này nằm ở **cả server**, không chỉ ở giao diện: gọi `/api/folder` để đổi thư mục mà thiếu xác nhận thì server **từ chối** và giữ nguyên thư mục cũ.
+- Trong form **Thêm MST**, nếu đã có thư mục dùng chung thì ô thư mục ở đó cũng bị khoá (thư mục là dùng chung cho mọi MST, đổi ở đó là đổi cho cả app). Chỉ khi **chưa có** thư mục nào thì form mới cho chọn, và bỏ trống thì dùng `Documents\CN-invoice`.
+
+### Tab "Hỗ trợ kế toán" — xuất file nhập vào MISA AMIS
+
+Dùng khi cần **nhập lại hoá đơn bán hàng vào phần mềm kế toán**: tab dọc hoá đơn bán ra trong Kho dữ liệu theo kỳ rồi xuất **file "Mẫu bán hàng" đúng cấu trúc file mẫu MISA** để up thẳng lên AMIS Accounting.
+
+**Cách dùng**
+
+1. Chọn kỳ (**Từ ngày – Đến ngày**, hoặc bấm nhanh *Tháng này / Tháng trước / Quý này / Năm nay*).
+2. (Tuỳ chọn) **Nhập danh mục hàng hoá (Danhsach.xlsx)** — file danh mục hàng của công ty. Chỉ dùng để **đối chiếu mã hàng**, KHÔNG phải nguồn số liệu.
+3. Bấm **Xem trước & kiểm lỗi** để dọc dữ liệu và xem trước đúng những dòng sẽ ghi ra file.
+4. Bấm **Xuất file Mẫu bán hàng (.xls)**.
+
+**Nguyên tắc số liệu**
+
+- **Mọi số liệu lấy từ HOÁ ĐƠN** (số lượng, đơn giá, thành tiền, thuế suất, tên/mã hàng, ĐVT, ngày…). File `Danhsach.xlsx` chỉ để cảnh báo mã hàng lạ.
+- **Chỉ hoá đơn BÁN RA còn hiệu lực** — hoá đơn đã bị thay thế / điều chỉnh / huỷ (`tthai` 4/5/6) **không** được nhập lại.
+- **Một dòng = một dòng hàng hoá**; các cột chứng từ (A→X) lặp lại trên mọi dòng hàng của cùng hoá đơn.
+- **Mã hàng — 3 tầng.** Rất nhiều hoá đơn bán lẻ **để trống cả cột Mã hàng** (đo trên dữ liệu thật: **3.583/34.639 dòng ≈ 10%**), mà MISA lại **bắt buộc** cột này. Cách xử lý, theo thứ tự:
+  1. Hoá đơn **có** mã → dùng mã của hoá đơn.
+  2. Hoá đơn **không có** mã → **tra TÊN trong danh mục công ty** để lấy **đúng mã**. (Tên trùng nhiều mã thì **không tra** — đoán bừa là gắn sai hàng vào sổ.)
+  3. Vẫn không ra mã → **dùng chính TÊN hàng làm mã** (MISA sẽ tạo mặt hàng theo tên này). Đổi được sang **CHẶN XUẤT** bằng ô chọn ở cột lọc, khi đó app báo lỗi và chỉ rõ cách sửa.
+     Mọi việc tự điền đều **hiện ra thành cảnh báo kèm số dòng**, không làm ngầm.
+- **Dòng ghi chú.** Hoá đơn thật có những dòng **không phải mặt hàng** — không số lượng, không đơn giá, không thành tiền (ví dụ *“Đã giảm 44.267 đồng tương ứng 20% mức tỷ lệ % để tính thuế GTGT theo Nghị quyết số 174/2024/QH15”*, *“(Xuất thành 3 giỏ quà )”*, *“Điều chỉnh thông tin hóa đơn …”*). App nhận ra và đánh dấu **`Là dòng ghi chú` = Có** theo đúng quy ước của MISA, để trống số lượng/đơn giá/thành tiền — **không** coi là lỗi và **không** đẩy câu ghi chú lên thành mặt hàng.
+- **Số chứng từ**: mặc định `PT0001`, tăng dần **theo số hoá đơn**, một số cho **mỗi hoá đơn**. Bộ đếm **lưu lại trong `data.db`** nên lượt xuất sau tiếp tục (không quay về PT0001 ⇒ không trùng chứng từ đã nhập). Đổi được tiền tố + số bắt đầu.
+- **Mã khách hàng**: cấp tự động `KH0001`, `KH0002`… **ổn định theo TÊN khách** — cùng khách luôn cùng mã (cấp ngẫu nhiên theo từng dòng sẽ khiến MISA tạo **trùng khách hàng** và tách sai công nợ).
+- **Phương thức thanh toán** suy từ hình thức thanh toán trên hoá đơn (TM / CK / chưa rõ).
+- **Giảm 20% thuế GTGT** suy từ thuế suất (dưới 10% ⇒ `Có`).
+- Để **trống** theo yêu cầu: **Địa chỉ**, **Chi tiết giá vốn (AJ→AM)**, Nhóm ngành nghề, Tỷ lệ CK (%). `Mã tra cứu HĐĐT` lấy từ chính file XML nếu có.
+
+**Chốt "bắt buộc đúng"**
+
+- **Còn lỗi thì KHÔNG xuất file.** App kiểm hết ô bắt buộc (`Ngày hạch toán`, `Ngày chứng từ`, `Số chứng từ`, `Mã hàng`, `Số lượng`, `Đơn giá`, `Thành tiền`) và mọi giá trị phải thuộc danh sách chọn của mẫu, rồi hiện **danh sách lỗi** để sửa trước. Mỗi lỗi nêu **số hoá đơn + ký hiệu + ngày + tên khách + số dòng** để tìm ra ngay.
+- **8 hàng đầu của file xuất giống hệt file mẫu** (tiêu đề, hướng dẫn, 3 ô gộp nhóm `Y7:AI7` / `AJ7:AM7` / `AN7:AO7` và 41 tiêu đề cột) — app đọc thẳng từ `src/template/mau-ban-hang.xls` chứ không dựng lại tiêu đề bằng tay.
+- File ra là **`.xls`** đúng như mẫu, dữ liệu **từ hàng 9**.
+- Tên file: `Mau_ban_hang_<MST>_<từ ngày>-<đến ngày>.xls`.
+
+> **Lưu ý trước khi dùng thật:** hãy thử nhập **một file nhỏ** vào MISA trước để xác nhận cách MISA hiểu cột `Số chứng từ` và `Mã khách hàng` đúng như mong đợi.
+
 Cây thư mục tải về (trong thư mục lưu bạn chọn):
 
 ```
@@ -80,6 +145,7 @@ Cookie và JWT vẫn có thể hết hạn theo cổng thuế. Khi đó chọn M
 - Phiên đăng nhập trực tiếp (token + cookie) và mật khẩu đã nhớ nằm ở `du_lieu/secrets/{MST}.json`, mã hoá bằng DPAPI theo tài khoản Windows hiện tại (`src/secrets.js`), có đường lui AES-256-GCM theo định danh máy nếu DPAPI không dùng được. Chọn lại MST là dùng luôn phiên đã lưu, không cần mở Chrome hay nhập lại CAPTCHA.
 - Request Node tới cổng thuế (`src/tct-api.js`) phải mang bộ header giống Chrome: `User-Agent` + `sec-ch-ua`, `sec-ch-ua-mobile`, `sec-ch-ua-platform` + `sec-fetch-site/mode/dest` + `Origin`/`Referer` + `request-id`. Đo ngày 18/09/2026: POST thiếu bộ này bị WAF trả HTTP 403 `Hệ thống phát hiện hành vi không hợp lệ. Yêu cầu đã bị chặn.`; chỉ thêm `User-Agent` hoặc chỉ thêm client hints vẫn bị chặn, phải đủ cả bộ mới tới được ứng dụng.
 - `src/pace.js` giữ **nhịp** giữa hai request tới cổng thuế (mặc định 900ms + jitter 300ms, đổi bằng `HOADON_NHIP_MS` / `HOADON_NHIP_JITTER_MS`) và **tự nghỉ** khi cổng trả 429 hoặc 403: 429 nghỉ theo `Retry-After` của cổng, không có thì tăng dần 20s → 40s → 80s… (tối đa 10 phút); 403 đúng thông báo chặn thì nghỉ 10 phút. Cả đường tải qua Node (`src/tct-api.js`) và qua trang cổng thuế (`src/browser.js`) đều dùng chung nhịp này. Cổng thuế trả 429 là **quá nhiều yêu cầu** — VNIT không bị vì nó cũng có "nhịp" và tự nghỉ (`NHIP`, `PHUT_NGHI_MIN/MAX`, chế độ an toàn); bản này trước đây gọi tra cứu/tải liên tiếp không chờ nên bị chặn.
+- `src/first-scan.js` quyết định lượt **quét 10 ngày gần nhất** cho MST mới thêm: cửa sổ ngày theo giờ VN (10 ngày trọn, gồm hôm nay), thứ tự **mua vào → bán ra**, định dạng XML, và **có nên chạy hay không** (4 trạng thái `pending`/`running`/`done`/`failed` lưu ở `accounts[].firstScan` trong `du_lieu/accounts.json`). Module thuần, không phụ thuộc server nên test thẳng được (`tests/first-scan.test.js`). Móc vào **cuối `checkLogin()`** — nơi MỌI đường đăng nhập đều đi qua — nên đăng nhập thất bại không đánh dấu gì, và `/api/state` (vòng poll) không kích hoạt được.
 - Không lấy hay thay đổi cookie trong profile Chrome/Edge cá nhân của người dùng.
 - Icon/version: **file Setup** mang icon + thông tin version; khi cài, installer đặt thêm `CN-Tax-Tools.ico` cạnh app và trỏ shortcut Desktop/Start Menu + mục gỡ cài đặt vào icon đó. Không gán icon trực tiếp vào app EXE vì `rcedit` ghi lại PE resource làm hỏng snapshot nhúng của `pkg` (EXE báo `Pkg: Error reading from file`).
 

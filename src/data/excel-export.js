@@ -59,6 +59,20 @@ function rangeConditions(filters, column = 'ngay_lap') {
   return { where, params };
 }
 
+// Bộ lọc TRẠNG THÁI của tab Danh sách, dùng CHUNG cho mọi sheet.
+// MẶC ĐỊNH (không chọn gì) = chỉ hoá đơn còn hiệu lực — giống mọi con số khác của app.
+// Chọn "không hiệu lực" hoặc một mã tthai cụ thể thì theo ĐÚNG lựa chọn đó.
+// Vì sao phải là MỘT hàm: trước đây sheet hàng hoá cứng `activeSql` còn sheet đối tác lại
+// `activeSql AND inactiveSql` (luôn rỗng) ⇒ chọn "không hiệu lực" ra file trắng, không theo bộ lọc.
+// `state` chỉ nhận 'active' / 'inactive' / '1'..'6' (đã chặn bằng regex) nên nối thẳng SQL là an toàn.
+function stateClause(filters, alias = '') {
+  const state = String((filters && filters.state) || '');
+  const prefix = alias ? `${alias}.` : '';
+  if (state === 'inactive') return queries.inactiveSql(alias);
+  if (/^[1-6]$/.test(state)) return `${prefix}tthai = '${state}'`;
+  return queries.activeSql(alias);
+}
+
 // Danh sách hoá đơn MỘT chiều — dùng CHUNG mệnh đề WHERE với tab Danh sách (kể cả tìm kiếm FTS5).
 function invoiceRows(db, direction, filters) {
   const { clause, params } = queries.invoiceWhere(db, { ...filters, direction });
@@ -86,7 +100,7 @@ function invoiceRows(db, direction, filters) {
 // trên màn hình và số trong file Excel không bao giờ lệch nhau.
 function productRows(db, direction, filters) {
   const range = rangeConditions(filters, 'v.ngay_lap');
-  const where = ['v.direction = ?', ...range.where, queries.activeSql('v')];
+  const where = ['v.direction = ?', ...range.where, stateClause(filters, 'v')];
   const params = [direction, ...range.params];
   const text = String(filters.q || '').trim();
   const having = text ? 'HAVING (i.ma_hang LIKE ? OR i.ten_hang LIKE ?)' : '';
@@ -114,11 +128,13 @@ function productRows(db, direction, filters) {
 // nên sheet đối tác cũng phải đủ danh sách. Nếu lọc theo kỳ, kỳ không có hoá đơn mua vào sẽ cho
 // sheet Nhà cung cấp rỗng trong khi màn hình vẫn hiện — đúng lỗi người dùng đã gặp 2 lần.
 const PARTNER_KIND = { supplier: { direction: 'BUY', mst: 'mst_ban', ten: 'ten_ban' }, buyer: { direction: 'SELL', mst: 'mst_mua', ten: 'ten_mua' } };
-function partnerRows(db, kind) {
+function partnerRows(db, kind, filters = {}) {
   const spec = PARTNER_KIND[kind];
+  // KHÔNG lọc theo kỳ (danh bạ đối tác phải đủ), NHƯNG vẫn theo TRẠNG THÁI đang chọn — nếu không
+  // thì chọn "chưa kiểm tra" mà sheet đối tác vẫn gộp cả hoá đơn đã kiểm tra ⇒ lệch với màn hình.
   const rows = db.prepare(`SELECT ${spec.mst} AS mst, ${spec.ten} AS ten,
       COUNT(*) AS so_hoa_don, SUM(tong_tien) AS tong_tien, SUM(tien_thue) AS tong_thue
-    FROM invoices WHERE direction = ? AND ${queries.activeSql()}
+    FROM invoices WHERE direction = ? AND ${stateClause(filters)}
     GROUP BY ${spec.mst}, ${spec.ten}
     ORDER BY tong_tien DESC`).all(spec.direction);
   return rows.map(row => [
@@ -149,19 +165,30 @@ function bankRows(db, filters) {
 // parts: danh sách bảng muốn xuất (thiếu ⇒ xuất TẤT CẢ). Dùng cho "xuất tất cả" và "xuất riêng lẻ".
 const PARTS = ['buy', 'sell', 'productsBuy', 'productsSell', 'suppliers', 'buyers', 'bank'];
 
-// MỌI sheet đều theo ĐÚNG bộ lọc đang xem (q + khoảng ngày), kể cả 2 sheet đối tác.
+// MỌI sheet đều theo ĐÚNG bộ lọc đang xem (q + khoảng ngày + TRẠNG THÁI + CHIỀU), kể cả 2 sheet
+// đối tác. Riêng danh bạ đối tác không lọc theo kỳ (xem partnerRows).
 function buildWorkbook(db, filters = {}, parts) {
   // Danh sách bảng hợp lệ; rỗng hoặc toàn mã lạ ⇒ xuất TẤT CẢ (không bao giờ ra workbook trắng).
   const requested = Array.isArray(parts) ? parts.filter(part => PARTS.includes(part)) : [];
   const wanted = new Set(requested.length ? requested : PARTS);
+  // CHIỀU đang chọn ở tab Danh sách: "Tất cả / Mua vào / Bán ra". Khi xuất TẤT CẢ thì tôn trọng
+  // chiều đó (chọn "Bán ra" mà file vẫn có sheet mua vào là không theo bộ lọc). Người dùng chọn
+  // tay một bảng từ menu "Xuất Excel" thì tôn trọng đúng lựa chọn đó, không cắt thêm.
+  const direction = String(filters.direction || '').toUpperCase();
+  if (!requested.length && (direction === 'BUY' || direction === 'SELL')) {
+    const drop = direction === 'BUY'
+      ? ['sell', 'productsSell', 'buyers']
+      : ['buy', 'productsBuy', 'suppliers'];
+    for (const part of drop) wanted.delete(part);
+  }
   const book = XLSX.utils.book_new();
   const counts = {};
   if (wanted.has('buy')) counts.buy = addSheet(book, SHEET.buy, INVOICE_HEADERS, invoiceRows(db, 'BUY', filters), INVOICE_WIDTHS);
   if (wanted.has('sell')) counts.sell = addSheet(book, SHEET.sell, INVOICE_HEADERS, invoiceRows(db, 'SELL', filters), INVOICE_WIDTHS);
   if (wanted.has('productsBuy')) counts.productsBuy = addSheet(book, SHEET.productsBuy, PRODUCT_HEADERS, productRows(db, 'BUY', filters), PRODUCT_WIDTHS);
   if (wanted.has('productsSell')) counts.productsSell = addSheet(book, SHEET.productsSell, PRODUCT_HEADERS, productRows(db, 'SELL', filters), PRODUCT_WIDTHS);
-  if (wanted.has('suppliers')) counts.suppliers = addSheet(book, SHEET.suppliers, PARTNER_HEADERS, partnerRows(db, 'supplier'), PARTNER_WIDTHS);
-  if (wanted.has('buyers')) counts.buyers = addSheet(book, SHEET.buyers, PARTNER_HEADERS, partnerRows(db, 'buyer'), PARTNER_WIDTHS);
+  if (wanted.has('suppliers')) counts.suppliers = addSheet(book, SHEET.suppliers, PARTNER_HEADERS, partnerRows(db, 'supplier', filters), PARTNER_WIDTHS);
+  if (wanted.has('buyers')) counts.buyers = addSheet(book, SHEET.buyers, PARTNER_HEADERS, partnerRows(db, 'buyer', filters), PARTNER_WIDTHS);
   if (wanted.has('bank')) counts.bank = addSheet(book, SHEET.bank, BANK_HEADERS, bankRows(db, filters), BANK_WIDTHS);
   return { buffer: XLSX.write(book, { type: 'buffer', bookType: 'xlsx' }), counts, parts: [...wanted] };
 }

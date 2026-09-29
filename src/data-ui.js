@@ -38,7 +38,7 @@ const overviewDomCache = new Map();
 const OVERVIEW_CACHE_IDS = [
   'overview-kpis', 'overview-monthly', 'overview-sell', 'overview-buy',
   'overview-reconciliation', 'overview-bank', 'overview-products', 'overview-debt',
-  'overview-tax', 'overview-alerts', 'ai-summary-json',
+  'overview-tax', 'overview-alerts', 'overview-goods-warnings', 'ai-summary-json',
 ];
   let page = 0;
   let size = 50;
@@ -82,12 +82,11 @@ let taxBusinessType = '';
     else console.error(error);
   };
   const isoDate = date => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
-  const shortMoney = value => {
-    const n = Math.round(Number(value) || 0);
-    if (Math.abs(n) >= 1e9) return `${(n / 1e9).toFixed(2).replace(/\.?0+$/, '')} tỷ`;
-    if (Math.abs(n) >= 1e6) return `${(n / 1e6).toFixed(1).replace(/\.?0+$/, '')} tr`;
-    return num.format(n);
-  };
+  // TIỀN: in SỐ ĐẦY ĐỦ, có phân cách nghìn, KHÔNG rút gọn thành "tr"/"tỷ" (yêu cầu người dùng).
+  // Ví dụ 1240000000 -> "1.240.000.000". Dùng Intl vi-VN nên phân cách nghìn là ".".
+  // Giữ nguyên TÊN HÀM `shortMoney` dù nay không còn "short": hàm được gọi ở hơn 30 chỗ, đổi tên
+  // chỉ tạo diff lớn mà không thêm giá trị — đọc chú thích này là đủ.
+  const shortMoney = value => num.format(Math.round(Number(value) || 0));
   const shortWhen = value => {
     if (!value) return '—';
     const date = new Date(value);
@@ -235,6 +234,7 @@ let taxBusinessType = '';
       download: ['TRA CỨU & TẢI', 'Tải hóa đơn điện tử', 'Tra cứu cổng thuế và tải chứng từ theo điều kiện đã chọn.'],
       data: ['KHO DỮ LIỆU', 'Quản lý dữ liệu hóa đơn', 'Tìm kiếm, tổng hợp và xuất dữ liệu đã lưu trên máy.'],
       bank: ['SAO KÊ NGÂN HÀNG', 'Đối chiếu dòng tiền', 'Nhập sao kê, kiểm tra giao dịch và đối chiếu với hóa đơn.'],
+      accounting: ['HỖ TRỢ KẾ TOÁN', 'Xuất file nhập MISA AMIS', 'Dọc hoá đơn bán ra theo kỳ và xuất file “Mẫu bán hàng” đúng cấu trúc để nhập vào phần mềm kế toán.'],
     };
     const info = viewInfo[next] || viewInfo.overview;
     $('view-eyebrow').textContent = info[0];
@@ -243,12 +243,12 @@ let taxBusinessType = '';
     // Pane: bỏ hidden ở cái mới trước khi gán hidden cho cái cũ
     // để animation fadeIn chạy đúng (nếu gán hidden trước, pane mới sẽ
     // bị display:none → không animate được).
-    const allPanes = ['pane-overview', 'pane-download', 'pane-data', 'pane-bank'];
-    const paneMap = { overview:'pane-overview', download:'pane-download', data:'pane-data', bank:'pane-bank' };
+    const allPanes = ['pane-overview', 'pane-download', 'pane-data', 'pane-bank', 'pane-accounting'];
+    const paneMap = { overview:'pane-overview', download:'pane-download', data:'pane-data', bank:'pane-bank', accounting:'pane-accounting' };
     // Bước 1: show pane mới TRƯỚC
     for (const pid of allPanes) $(pid).hidden = pid !== paneMap[next];
     // Bước 2: cập nhật active class trên nút
-    for (const [id, name] of [['view-overview', 'overview'], ['view-download', 'download'], ['view-data', 'data'], ['view-bank', 'bank']]) {
+    for (const [id, name] of [['view-overview', 'overview'], ['view-download', 'download'], ['view-data', 'data'], ['view-bank', 'bank'], ['view-accounting', 'accounting']]) {
       const button = $(id);
       button.classList.toggle('active', name === next);
       button.setAttribute('aria-selected', name === next ? 'true' : 'false');
@@ -288,7 +288,13 @@ let taxBusinessType = '';
   // Dòng thống kê thẻ Tổng quan: [nhãn, giá trị, màu?, ghi chú?]. Ghi chú (nếu có) in DƯỚI nhãn
   // bên trái — dùng cho mục 20/21/22 để gắn thêm TIỀN hoặc điều kiện mà không đẩy cột giá trị
   // ra khỏi thẻ hẹp (mỗi thẻ chỉ rộng 4/12 bề ngang).
-  const overviewRows = rows => `<div class="overview-metrics">${rows.map(([label, value, tone = '', note = '']) => `<div><span>${label}${note ? `<em>${note}</em>` : ''}</span><strong class="${tone}">${value}</strong></div>`).join('')}</div>`;
+  // Ghi chú NGẮN thì nằm CÙNG DÒNG với nhãn (mờ hơn); chỉ ghi chú DÀI mới xuống dòng riêng, đánh
+  // dấu bằng class `has-note`. Trước đây mọi ghi chú đều xuống dòng nên 7 dòng số nở thành 14
+  // dòng chữ — nguồn "rối" lớn nhất của tab Tổng quan. Ngưỡng 26 ký tự: "310,0 tr" (8) ở cùng
+  // dòng; "không cần đối chiếu sao kê · 310,0 tr" (38) quá dài nên xuống dòng.
+  const NOTE_BLOCK_LENGTH = 26;
+  const overviewRows = rows => `<div class="overview-metrics">${rows.map(([label, value, tone = '', note = '']) =>
+    `<div${note && note.length > NOTE_BLOCK_LENGTH ? ' class="has-note"' : ''}><span>${label}${note ? `<em>${note}</em>` : ''}</span><strong class="${tone}">${value}</strong></div>`).join('')}</div>`;
 
   // Vá DOM theo node thay vì gán innerHTML cho cả card. Text/số/thuộc tính đổi tại chỗ nên không
   // mất hover/focus, không nháy card và trình duyệt không phải dựng lại toàn bộ cây con.
@@ -360,6 +366,52 @@ let taxBusinessType = '';
     }).join('') : '<circle cx="58" cy="58" r="48" fill="none" stroke="#e8edf2" stroke-width="16"/>';
     return `<div class="overview-donut"><svg viewBox="0 0 116 116" aria-hidden="true"><g transform="rotate(-90 58 58)">${circles}</g></svg><div class="overview-donut-center"><strong>${num.format(totalValue)}</strong><span>${totalLabel}</span></div></div>`;
   };
+  // Biểu đồ SVG thuần: không thêm thư viện, không canvas, không animation JavaScript.
+  // Mỗi tháng chỉ có một vùng bấm trong suốt nên DOM nhỏ và vẫn mở được danh sách chi tiết.
+  const overviewTrendChart = months => {
+    const rows = Array.isArray(months) ? months : [];
+    const width = 720; const height = 260;
+    // Lề TRÁI rộng 104 (trước là 54) để đủ chỗ cho nhãn trục in SỐ ĐẦY ĐỦ — dài nhất là
+    // "8.000.000.000" (13 ký tự). Lề cũ chỉ chứa được nhãn rút gọn ("8.000 tr"), nay số đầy đủ
+    // sẽ tràn ra ngoài khung và đè lên biểu đồ.
+    const left = 104; const right = 16; const top = 18; const bottom = 38;
+    const chartWidth = width - left - right; const chartHeight = height - top - bottom;
+    const values = rows.flatMap(row => [Number(row.sell || 0), Number(row.buy || 0)]);
+    const maxValue = Math.max(1, ...values);
+    const niceStep = 10 ** Math.floor(Math.log10(maxValue));
+    const scaledStep = Math.ceil(maxValue / niceStep / 4) * niceStep;
+    const axisMax = Math.max(scaledStep * 4, maxValue);
+    const xAt = index => left + (rows.length <= 1 ? chartWidth / 2 : index * chartWidth / (rows.length - 1));
+    const yAt = value => top + chartHeight - (Number(value || 0) / axisMax * chartHeight);
+    const points = key => rows.map((row, index) => `${xAt(index).toFixed(1)},${yAt(row[key]).toFixed(1)}`).join(' ');
+    const area = key => rows.length
+      ? `M ${xAt(0).toFixed(1)} ${top + chartHeight} L ${rows.map((row, index) => `${xAt(index).toFixed(1)} ${yAt(row[key]).toFixed(1)}`).join(' L ')} L ${xAt(rows.length - 1).toFixed(1)} ${top + chartHeight} Z`
+      : '';
+    const grid = Array.from({ length: 5 }, (_, index) => {
+      const ratio = index / 4; const y = top + chartHeight - ratio * chartHeight;
+      // Nhãn trục tung: SỐ ĐẦY ĐỦ (đồng), khớp cách in tiền ở mọi chỗ khác trong app.
+      const label = num.format(axisMax * ratio);
+      return `<g class="trend-grid"><line x1="${left}" y1="${y}" x2="${width - right}" y2="${y}"/><text x="${left - 10}" y="${y + 4}" text-anchor="end">${label}</text></g>`;
+    }).join('');
+    const monthsLayer = rows.map((row, index) => {
+      const x = xAt(index); const hitWidth = chartWidth / Math.max(1, rows.length);
+      return `<g data-month="${row.month}" class="trend-month"><title>Tháng ${row.month}: Bán ${num.format(row.sell || 0)} · Mua ${num.format(row.buy || 0)}</title>`
+        + `<rect class="trend-hit" x="${x - hitWidth / 2}" y="${top}" width="${hitWidth}" height="${chartHeight}"/>`
+        + `<line class="trend-guide" x1="${x}" y1="${top}" x2="${x}" y2="${top + chartHeight}"/>`
+        + `<circle class="trend-point sell" cx="${x}" cy="${yAt(row.sell)}" r="4"/>`
+        + `<circle class="trend-point buy" cx="${x}" cy="${yAt(row.buy)}" r="4"/>`
+        + `<text class="trend-label" x="${x}" y="${height - 12}" text-anchor="middle">T${row.month}</text></g>`;
+    }).join('');
+    const sellTotal = rows.reduce((sum, row) => sum + Number(row.sell || 0), 0);
+    const buyTotal = rows.reduce((sum, row) => sum + Number(row.buy || 0), 0);
+    return `<div class="trend-summary"><span><i class="sell"></i><em>Bán ra</em><strong>${shortMoney(sellTotal)}</strong></span><span><i class="buy"></i><em>Mua vào</em><strong>${shortMoney(buyTotal)}</strong></span></div>`
+      + `<svg class="trend-chart" viewBox="0 0 ${width} ${height}" role="img" aria-label="Biểu đồ xu hướng bán ra và mua vào theo tháng">`
+      + `<defs><linearGradient id="trend-sell-fill" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#0d9488" stop-opacity=".22"/><stop offset="1" stop-color="#0d9488" stop-opacity="0"/></linearGradient><linearGradient id="trend-buy-fill" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#dc4c4c" stop-opacity=".18"/><stop offset="1" stop-color="#dc4c4c" stop-opacity="0"/></linearGradient></defs>`
+      + grid
+      + `<path class="trend-area sell" d="${area('sell')}"/><path class="trend-area buy" d="${area('buy')}"/>`
+      + `<polyline class="trend-line sell" points="${points('sell')}"/><polyline class="trend-line buy" points="${points('buy')}"/>`
+      + monthsLayer + '</svg>';
+  };
   const safeOverviewText = value => String(value ?? '').replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]);
 
   // --------------------------------------------------- CÔNG NỢ (mục 25) — 2 thẻ cuối
@@ -379,13 +431,13 @@ let taxBusinessType = '';
     const unclear = debt.unclearCount
       ? `${shortMoney(debt.unclear)} · ${num.format(debt.unclearCount)} hóa đơn`
       : 'Không có';
-    setOverviewHtml('overview-debt', `<div class="overview-split-grid"><section class="overview-split-panel sell"><span class="overview-caption">PHẢI THU</span>${overviewRows([
+    setOverviewHtml('overview-debt', `<div class="overview-split-grid"><section class="overview-split-panel sell"><span class="overview-caption">PHẢI THU KHÁCH HÀNG</span>${overviewRows([
       ['Tổng phải thu', shortMoney(debt.receivable), debt.receivable ? 'warn' : ''],
       ['Số hóa đơn', num.format(debt.receivableCount || 0)],
-    ])}${parties(debt.customers, 'Khách hàng còn nợ', 'SELL')}</section><section class="overview-split-panel buy"><span class="overview-caption">PHẢI TRẢ</span>${overviewRows([
+    ])}${parties(debt.customers, 'Khách hàng còn phải thu', 'SELL')}</section><section class="overview-split-panel buy"><span class="overview-caption">NỢ NHÀ CUNG CẤP</span>${overviewRows([
       ['Tổng phải trả', shortMoney(debt.payable), debt.payable ? 'warn' : ''],
       ['Số hóa đơn', num.format(debt.payableCount || 0)],
-    ])}${parties(debt.suppliers, 'Nhà cung cấp còn nợ', 'BUY')}</section></div>`
+    ])}${parties(debt.suppliers, 'Nhà cung cấp cần thanh toán', 'BUY')}</section></div>`
       + overviewRows([['Chưa rõ hình thức thanh toán', unclear, debt.unclearCount ? 'warn' : '']])
       + (debt.receivable || debt.payable ? '' : '<p class="hint">Không có khoản nào chưa thu/chưa trả.</p>'));
   }
@@ -460,8 +512,11 @@ let taxBusinessType = '';
       if (rebuild) await post('/api/db/reconciliation/run', {});
       // Kỳ đang chọn ở header đi kèm MỌI lệnh tải của Tổng quan (mục 1).
       const period = periodQuery();
-      const [summary, bank, reconciliation, overview, debt, tax] = await Promise.all([
+      const [summary, bank, reconciliation, overview, annualOverview, debt, tax] = await Promise.all([
         api(`/api/db/summary${period}`), api(`/api/db/bank/summary${period}`), api(`/api/db/reconciliation/summary${period}`), api(`/api/db/overview${period}`),
+        // Biểu đồ luôn là xu hướng cả năm; KPI, hàng hóa và công nợ vẫn theo đúng kỳ đang chọn.
+        // Chạy song song nên không kéo dài chuỗi tải và kết quả vẫn được bảo vệ bởi requestVersion.
+        api('/api/db/overview'),
         // Công nợ (mục 25) + Thuế/ngưỡng (mục 26): đều đọc từ SQLite, không có số nào
         // được giao diện tự tính. THUẾ vẫn theo NĂM + loại hình (mục 26) nên không lọc theo kỳ.
         api(`/api/db/debts${period}`),
@@ -522,16 +577,10 @@ let taxBusinessType = '';
         const open = filter ? `<button type="button" class="overview-kpi kpi-link" data-filter="${filter}">` : '<div class="overview-kpi">';
         return `${open}<span>${label}</span><strong class="${tone}">${value}</strong><small>${note}</small>${filter ? '</button>' : '</div>'}`;
       }).join(''));
-      const maxMonth = Math.max(1, ...overview.months.flatMap(month => [Number(month.sell || 0), Number(month.buy || 0)]));
-      overviewYear = Number(overview.year) || overviewYear;
-      $('overview-monthly-title').textContent = `Bán ra và mua vào · ${overview.year} — bấm một tháng để xem hóa đơn`;
-      const chartBars = overview.months.map((month, index) => {
-        const x = 31 + index * 48;
-        const sellHeight = Math.max(2, Number(month.sell || 0) / maxMonth * 160);
-        const buyHeight = Math.max(2, Number(month.buy || 0) / maxMonth * 160);
-        return `<g data-month="${month.month}"><title>T${month.month}: Bán ${num.format(month.sell)} · Mua ${num.format(month.buy)}</title><rect class="sell" x="${x}" y="${175 - sellHeight}" width="13" height="${sellHeight}" rx="3"/><rect class="buy" x="${x + 16}" y="${175 - buyHeight}" width="13" height="${buyHeight}" rx="3"/><text x="${x + 14}" y="198" text-anchor="middle">T${month.month}</text></g>`;
-      }).join('');
-      setOverviewHtml('overview-monthly', `<svg viewBox="0 0 610 205" preserveAspectRatio="none" aria-label="Biểu đồ bán ra và mua vào theo tháng"><line x1="12" y1="175" x2="600" y2="175"/>${chartBars}</svg>`);
+      overviewYear = Number(annualOverview.year) || Number(overview.year) || overviewYear;
+      // Số tiền nay in ĐẦY ĐỦ (không còn quy về "triệu") nên tiêu đề KHÔNG ghi đơn vị nữa.
+      $('overview-monthly-title').textContent = `Dòng tiền theo tháng · ${overviewYear}`;
+      setOverviewHtml('overview-monthly', overviewTrendChart(annualOverview.months || overview.months));
       // MỤC 4 — HAI THẺ TÁCH CHIỀU: "Bán ra — Khách hàng (tiền vào)" và "Mua vào — Nhà cung cấp
       // (tiền ra)". Mỗi thẻ tự có phân loại tiền mặt/chuyển khoản + kết quả đối chiếu của CHÍNH
       // chiều đó ⇒ không còn gộp tiền vào với tiền ra thành một con số chung (nhìn là biết bên nào).
@@ -638,10 +687,15 @@ let taxBusinessType = '';
           ['Số lượng mua', num.format(goods.qtyBuy || 0)],
           ['Giá trị mua', shortMoney(goods.amountBuy)],
         ])}${goodsTop('Top hàng mua', overview.topProductsBuy, 'BUY')}</section></div>`
-          + overviewRows([['Tổng số mặt hàng', num.format(goods.total || 0)]])
-          + (goodsWarnings.length
-            ? `<div class="overview-caption overview-group">Cần xem lại</div>${goodsWarnings.map(([kind, count]) => `<button type="button" class="goods-warn" data-warn="${kind}" title="Bấm để xem danh sách mặt hàng"><strong>${num.format(count)}</strong> ${GOODS_WARNINGS[kind] || kind}<span class="alert-go" aria-hidden="true">›</span></button>`).join('')}`
-            : ''));
+          + overviewRows([['Tổng số mặt hàng', num.format(goods.total || 0)]]));
+      // MỤC 24 — 4 CẢNH BÁO HÀNG HÓA nay có THẺ RIÊNG ("Cần xem lại") ở hàng 1, KHÔNG còn nằm
+      // trong thẻ Hàng hóa: người dùng chốt sơ đồ hàng 1 = Dòng tiền · Cần kiểm tra · Cần xem lại.
+      // Vẫn đọc từ CÙNG payload overview.goods nên số ở thẻ này và top hàng hóa không thể lệch.
+      setOverviewHtml('overview-goods-warnings', goodsWarnings.length
+        ? goodsWarnings.map(([kind, count]) => `<button type="button" class="goods-warn" data-warn="${kind}" title="Bấm để xem danh sách mặt hàng"><strong>${num.format(count)}</strong> ${GOODS_WARNINGS[kind] || kind}<span class="alert-go" aria-hidden="true">›</span></button>`).join('')
+        : (Number(goods.total || 0) === 0
+          ? '<p class="hint">Chưa có dữ liệu hàng hóa.</p>'
+          : '<p class="overview-clear">Không có cảnh báo hàng hóa.</p>'));
       renderDebt(debt);
       renderTax(tax);
       // MỤC 29 — dựng sẵn JSON thống kê (không gọi AI) từ đúng 3 payload vừa đọc ở trên.
@@ -1260,7 +1314,9 @@ let taxBusinessType = '';
     if (exportBusy) return;
     exportBusy = true;
     const filters = activeFilters();
-    const params = new URLSearchParams({ q: filters.q || '', from: filters.from || '', to: filters.to || '', state: tabState.list.state === 'all' ? '' : (tabState.list.state || '') });
+    // Gửi ĐỦ bộ lọc đang xem: tìm kiếm + khoảng ngày + TRẠNG THÁI + CHIỀU (mua vào/bán ra).
+    // Trước đây thiếu `direction` nên chọn "Bán ra" mà file xuất vẫn có cả sheet mua vào.
+    const params = new URLSearchParams({ q: filters.q || '', from: filters.from || '', to: filters.to || '', state: tabState.list.state === 'all' ? '' : (tabState.list.state || ''), direction: tabState.list.dir || '' });
     if (chosen !== 'all') params.set('parts', chosen);
     const label = summary.textContent;
     summary.setAttribute('aria-busy', 'true');
@@ -1926,10 +1982,20 @@ Xoá luôn ${num.format(file.rows_imported || 0)} giao dịch của file này. K
 
   // ------------------------------------------------------------------ gắn sự kiện
   function bind() {
+    // Tiêu đề nghiệp vụ ngắn gọn, khớp đúng hai chiều đang hiển thị trong từng bảng.
+    const productsTitle = document.querySelector('.overview-products-card h3');
+    const debtTitle = document.querySelector('.overview-debt-card h3');
+    if (productsTitle) productsTitle.textContent = 'Bán ra - Mua vào';
+    if (debtTitle) debtTitle.textContent = 'Nợ Nhà cung cấp - Phải thu Khách hàng';
     $('view-overview').onclick = () => showView('overview');
     $('view-download').onclick = () => showView('download');
     $('view-data').onclick = () => showView('data');
     $('view-bank').onclick = () => showView('bank');
+    // Tab Hỗ trợ kế toán — PHẢI nối ở đây: mỗi nút tab được gán onclick riêng, thêm nút vào
+    // index.html mà quên dòng này thì bấm vào KHÔNG có gì xảy ra.
+    // Gọi loadMiaCatalog() Ở ĐÂY (không gọi trong showView) vì khối Hỗ trợ kế toán nằm ở scope
+    // này — gọi từ showView sẽ ném ReferenceError và chặn luôn phần bật/tắt nút active.
+    $('view-accounting').onclick = () => { showView('accounting'); loadMiaCatalog(); };
     $('overview-refresh').onclick = () => {
       const restore = busyButton($('overview-refresh'), 'Đang đối chiếu…');
       void refreshOverview(true).finally(restore);
@@ -1973,6 +2039,12 @@ Xoá luôn ${num.format(file.rows_imported || 0)} giao dịch của file này. K
       if (warn) { openGoodsWarn(warn.dataset.warn).catch(fail); return; }
       const product = event.target.closest('[data-product]');
       if (product) openProduct(product.dataset.product, product.dataset.direction || 'SELL').catch(fail);
+    };
+    // MỤC 24 + MỤC 27 — 4 cảnh báo hàng hóa nay nằm ở THẺ RIÊNG "Cần xem lại" (hàng 1 của Tổng
+    // quan), nên phải nối click riêng: bấm một dòng mở đúng danh sách mặt hàng bị dính.
+    $('overview-goods-warnings').onclick = event => {
+      const warn = event.target.closest('[data-warn]');
+      if (warn) openGoodsWarn(warn.dataset.warn).catch(fail);
     };
     // MỤC 7 — nút ở chân các thẻ → mở đúng danh sách chi tiết của con số trong thẻ:
     //   [data-filter] → popup "Cần kiểm tra" · [data-invoices] → popup hoá đơn theo chiều
@@ -2083,6 +2155,160 @@ Xoá luôn ${num.format(file.rows_imported || 0)} giao dịch của file này. K
     bindSegment('data-seg-bank', button => { tabState.bank.flow = button.dataset.flow || ''; bankPage = 0; loadBank().catch(ignoreAbort); });
     $('data-bank-prev').onclick = () => { if (bankPage > 0) { bankPage -= 1; loadBank().catch(ignoreAbort); } };
     $('data-bank-next').onclick = () => { bankPage += 1; loadBank().catch(ignoreAbort); };
+    // ------------------------------------------------------------------ HỖ TRỢ KẾ TOÁN (MISA)
+    // Xuất file "Mẫu bán hàng" để nhập vào MISA AMIS. Số liệu lấy từ HOÁ ĐƠN BÁN RA trong data.db;
+    // file Danhsach.xlsx của công ty chỉ dùng để ĐỐI CHIẾU mã hàng (chỉ cảnh báo, không chặn).
+    // Mọi việc dựng dòng/kiểm lỗi nằm ở server (src/data/misa-export.js) — giao diện chỉ hiện.
+    const MIA_PREVIEW_COLS = 12;   // chỉ hiện 12 cột đầu cho dễ đọc; file xuất vẫn đủ 41 cột
+    let miaPreviewData = null;
+
+    const miaLocal = date => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+
+    function miaApplyRange(kind) {
+      const now = new Date();
+      let from; let to;
+      if (kind === 'this-month') { from = new Date(now.getFullYear(), now.getMonth(), 1); to = new Date(now.getFullYear(), now.getMonth() + 1, 0); }
+      else if (kind === 'last-month') { from = new Date(now.getFullYear(), now.getMonth() - 1, 1); to = new Date(now.getFullYear(), now.getMonth(), 0); }
+      else if (kind === 'this-quarter') { const q = Math.floor(now.getMonth() / 3); from = new Date(now.getFullYear(), q * 3, 1); to = new Date(now.getFullYear(), q * 3 + 3, 0); }
+      else { from = new Date(now.getFullYear(), 0, 1); to = new Date(now.getFullYear(), 11, 31); }
+      $('mia-from').value = miaLocal(from);
+      $('mia-to').value = miaLocal(to);
+      miaPreviewData = null;
+      setMiaBadge('idle');
+    }
+
+    const miaParams = () => {
+      const params = new URLSearchParams({
+        from: $('mia-from').value, to: $('mia-to').value,
+        prefix: $('mia-prefix').value.trim() || 'PT',
+        missingCode: $('mia-missing').value === 'block' ? 'block' : 'name',
+        // .xlsx giữ được danh sách chọn của mẫu — thứ MISA dùng để ghép cột.
+        format: $('mia-format').value === 'xls' ? 'xls' : 'xlsx',
+      });
+      const start = $('mia-start').value.trim();
+      if (start) params.set('startNo', start);
+      return params;
+    };
+
+    function setMiaBadge(state, errorCount) {
+      const badge = $('mia-badge');
+      badge.classList.toggle('ok', state === 'ok');
+      badge.classList.toggle('bad', state === 'bad');
+      badge.textContent = state === 'ok' ? 'Sẵn sàng xuất' : state === 'bad' ? `${num.format(errorCount || 0)} lỗi cần sửa` : 'Chưa kiểm';
+    }
+
+    async function loadMiaCatalog() {
+      try {
+        const value = await api('/api/db/misa/catalog');
+        $('mia-catalog-note').textContent = value.count
+          ? `Danh mục hàng hoá: ${num.format(value.count)} mã (cập nhật ${shortWhen(value.updatedAt)}).`
+          : 'Danh mục hàng hoá: chưa nhập — vẫn xuất được, nhưng sẽ không kiểm được mã hàng lạ.';
+      } catch { $('mia-catalog-note').textContent = 'Danh mục hàng hoá: chưa đọc được.'; }
+    }
+
+    function renderMiaPreview(value) {
+      miaPreviewData = value;
+      const stats = value.stats || {};
+      $('mia-stats').innerHTML = [
+        ['Hoá đơn bán ra', num.format(stats.invoices || 0)],
+        ['Dòng hàng', num.format(stats.lines || 0)],
+        ['Số chứng từ', stats.firstVoucher ? `${stats.firstVoucher} → ${stats.lastVoucher}` : '—'],
+        ['Khách hàng', num.format(stats.customers || 0)],
+        ['Danh mục đã nhập', num.format(stats.catalog || 0)],
+        ['Mã hàng lạ', num.format(stats.unmatched || 0), stats.unmatched ? 'warn' : ''],
+        // Hai ô này nói rõ app đã TỰ ĐIỀN mã cho bao nhiêu dòng — khác với hoá đơn nên phải hiện.
+        ['Mã lấy theo tên', num.format(stats.codeFromName || 0), stats.codeFromName ? 'ok' : ''],
+        ['Dùng tên làm mã', num.format(stats.codeFallback || 0), stats.codeFallback ? 'warn' : ''],
+      ].map(([label, val, tone]) => `<div class="mia-stat ${tone || ''}"><span>${label}</span><strong>${val}</strong></div>`).join('');
+
+      const blockers = $('mia-blockers');
+      if (value.errorTotal) {
+        blockers.hidden = false;
+        blockers.innerHTML = `<h4>Còn ${num.format(value.errorTotal)} lỗi — CHƯA xuất được</h4><ul>${value.errors.map(text => `<li>${safeOverviewText(text)}</li>`).join('')}</ul>`;
+      } else { blockers.hidden = true; blockers.innerHTML = ''; }
+      $('mia-warnings').textContent = value.warnings && value.warnings.length ? `Lưu ý: ${value.warnings.join(' · ')}` : '';
+
+      const cols = value.headers.slice(0, MIA_PREVIEW_COLS);
+      $('mia-head-row').innerHTML = `<th>#</th>${cols.map(name => `<th>${safeOverviewText(name)}</th>`).join('')}`;
+      $('mia-rows').innerHTML = value.rows.map((row, index) =>
+        `<tr><td>${index + 1}</td>${row.slice(0, MIA_PREVIEW_COLS).map(cell => `<td>${cell === null || cell === undefined ? '' : safeOverviewText(typeof cell === 'number' ? num.format(cell) : cell)}</td>`).join('')}</tr>`).join('');
+      $('mia-empty').hidden = value.rows.length > 0;
+      if (!value.rows.length) $('mia-empty').textContent = 'Kỳ đã chọn không có hoá đơn bán ra nào trong Kho dữ liệu.';
+      setMiaBadge(value.errorTotal ? 'bad' : 'ok', value.errorTotal);
+    }
+
+    async function miaPreview() {
+      const restore = busyButton($('mia-preview'), 'Đang kiểm…');
+      $('mia-bar').hidden = false; $('mia-bar').value = 40;
+      try {
+        const params = miaParams();
+        const value = await post('/api/db/misa/preview', { from: params.get('from'), to: params.get('to'), prefix: params.get('prefix'), startNo: params.get('startNo') || '', missingCode: params.get('missingCode') });
+        renderMiaPreview(value);
+        return value;
+      } catch (error) { noticeFail(error.message); setMiaBadge('idle'); return null; }
+      finally { $('mia-bar').hidden = true; restore(); }
+    }
+
+    $('mia-quick').onclick = event => { const button = event.target.closest('[data-mia-range]'); if (button) miaApplyRange(button.dataset.miaRange); };
+    $('mia-from').onchange = $('mia-to').onchange = () => { miaPreviewData = null; setMiaBadge('idle'); };
+    // Đổi cách xử lý mã hàng ⇒ kết quả cũ không còn đúng, bắt kiểm lại.
+    $('mia-missing').onchange = () => { miaPreviewData = null; setMiaBadge('idle'); $('mia-preview').focus(); };
+    $('mia-preview').onclick = () => miaPreview();
+
+    // Nhập file danh mục: dùng đúng đường chọn file của tab Sao kê (input type=file → base64 → server).
+    $('mia-catalog').onclick = () => {
+      const input = document.createElement('input');
+      input.type = 'file';
+      input.accept = '.xlsx,.xls';
+      input.onchange = async () => {
+        const file = input.files && input.files[0];
+        if (!file) return;
+        const restore = busyButton($('mia-catalog'), 'Đang nhập…');
+        try {
+          const data = await new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(String(reader.result).split(',')[1] || '');
+            reader.onerror = () => reject(new Error('Đọc file không được.'));
+            reader.readAsDataURL(file);
+          });
+          const value = await post('/api/db/misa/catalog', { fileName: file.name, data });
+          notice(`Đã nhập danh mục hàng hoá: ${num.format(value.imported)} mã (bỏ qua ${num.format(value.skipped)} dòng).`);
+          await loadMiaCatalog();
+          miaPreviewData = null; setMiaBadge('idle');
+        } catch (error) { noticeFail(error.message); }
+        finally { restore(); }
+      };
+      input.click();
+    };
+
+    // XUẤT FILE: luôn KIỂM LẠI trước; còn lỗi thì KHÔNG xuất (đây là chốt "bắt buộc đúng").
+    $('mia-export').onclick = async () => {
+      const value = await miaPreview();
+      if (!value) return;
+      if (value.errorTotal) { noticeFail(`Còn ${num.format(value.errorTotal)} lỗi — sửa xong mới xuất được. Xem danh sách phía trên.`); return; }
+      if (!value.allRows) { notice('Kỳ đã chọn không có dòng hoá đơn bán ra nào để xuất.'); return; }
+      const params = miaParams();
+      const restore = busyButton($('mia-export'), 'Đang xuất…');
+      // Đuôi file theo ĐÚNG định dạng đã chọn (preview luôn trả tên .xls).
+      const ext = params.get('format') === 'xls' ? 'xls' : 'xlsx';
+      let name = String(value.fileName || 'Mau_ban_hang').replace(/\.xls$/, `.${ext}`);
+      try {
+        const response = await fetch(`/api/db/misa/export?${params.toString()}`);
+        if (!response.ok) {
+          const payload = await response.json().catch(() => ({}));
+          throw new Error(payload.error || `Máy chủ trả HTTP ${response.status}.`);
+        }
+        const blob = await response.blob();
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url; link.download = name;
+        document.body.appendChild(link); link.click(); link.remove();
+        URL.revokeObjectURL(url);
+        notice(`Đã xuất ${name} — ${num.format(value.stats.lines)} dòng hàng / ${num.format(value.stats.invoices)} hoá đơn.`);
+      } catch (error) { noticeFail(error.message); }
+      finally { restore(); }
+    };
+
     $('data-bank-import').onclick = importBankFile;
     $('data-bank-files').onclick = openBankFiles;
     $('bank-file-close').onclick = () => $('bank-file-dialog').close();

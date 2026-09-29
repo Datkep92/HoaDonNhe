@@ -72,7 +72,7 @@ try {
   const shrink = [];
   try {
     console.log('\nRút gọn tài sản giao diện (tools/minify-ui.cjs):');
-    for (const item of require('./minify-ui.cjs').minify()) shrink.push(`src/${item.out}`);
+    for (const item of require('./minify-ui.cjs').minify()) shrink.push(item.out); // pkg nhúng tên file không có tiền tố src/
   } catch (error) {
     console.log(`⚠ ${error.message} — EXE sẽ phục vụ bản gốc (nặng hơn ~27%).`);
   }

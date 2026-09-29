@@ -58,8 +58,11 @@ test('server: tra cứu/tải TRẢ LỜI NGAY — tác vụ chạy nền, app t
   // Bấm là UI có phản hồi: server trả snapshot ngay, tác vụ dài chạy nền (fire-and-forget có sổ sách).
   const server = read('src/server.js');
   assert.ok(server.includes('function runDetached(target, jobId, label, fn)'), 'phải có runDetached');
-  // Regex cũng khớp đúng dòng khai báo hàm — bỏ khai báo ra trước khi đếm 4 lời gọi.
-  assert.equal((server.replace('function runDetached(target, jobId, label, fn)', '').match(/runDetached\(target/g) || []).length, 4, 'search/stream/download/resume đều phải chạy nền');
+  // Regex cũng khớp đúng dòng khai báo hàm — bỏ khai báo ra trước khi đếm.
+  // 4 lời gọi của các endpoint (search / stream / download / resume) + 1 lời gọi của LƯỢT QUÉT LẦN
+  // ĐẦU cho MST mới thêm (maybeFirstScan). Lượt quét đó CŨNG phải chạy nền và CŨNG phải nằm trong
+  // sổ detachedTasks, để thoát app là tạm dừng đúng lượt thay vì cắt ngang giữa lúc đang tải.
+  assert.equal((server.replace('function runDetached(target, jobId, label, fn)', '').match(/runDetached\(target/g) || []).length, 5, 'search/stream/download/resume + quét lần đầu đều phải chạy nền');
   assert.ok(server.includes('for (const item of detachedTasks) { try { item.target.pause(); } catch {} }'), 'thoát app phải tạm dừng mọi tác vụ nền');
 });
 

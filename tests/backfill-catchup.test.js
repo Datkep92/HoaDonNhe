@@ -376,7 +376,14 @@ test('server thật: đổi "Thư mục lưu" thì dòng MST KHÔNG còn hiện 
     assert.equal(before.value.output, folderA);
     assert.equal(before.value.accounts[0].catchup.scannedTo, '2026-08-31');
 
-    await call('POST', '/api/folder', { path: folderB });
+    // ĐỔI THƯ MỤC LƯU phải kèm XÁC NHẬN: đổi thư mục là app chuyển sang đọc kho dữ liệu khác nên
+    // dữ liệu đã tải ở thư mục cũ KHÔNG còn hiện trong app. Thiếu xác nhận ⇒ server TỪ CHỐI và
+    // thư mục GIỮ NGUYÊN (chốt nằm ở server, không chỉ ở giao diện nên không đường nào lách qua).
+    const refused = await call('POST', '/api/folder', { path: folderB });
+    assert.match(String(refused.error || ''), /xác nhận/i, 'phải từ chối đổi thư mục khi chưa xác nhận');
+    assert.equal((await call('GET', '/api/state')).value.output, folderA, 'thư mục phải GIỮ NGUYÊN sau khi bị từ chối');
+
+    await call('POST', '/api/folder', { path: folderB, confirm: true });
     const after = await call('GET', '/api/state');
     assert.equal(after.value.output, folderB);
     assert.equal(after.value.accounts[0].catchup.scannedTo, '', 'vẫn hiện sổ quét bù của thư mục CŨ');

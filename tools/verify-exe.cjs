@@ -38,6 +38,12 @@ const REQUIRED = [
   'common.onnx', 'common.json', 'onnxruntime',
   // Tài nguyên dựng hoá đơn A4
   'viewinvoice-bg.jpg', 'sign-check.jpg', 'qrcode.js',
+  // MẪU MISA cho tab "Hỗ trợ kế toán": file xuất giữ NGUYÊN 8 hàng đầu của chính file này (tiêu đề
+  // + hướng dẫn + 3 ô gộp nhóm), và TIÊM khối danh sách chọn của mẫu vào file .xlsx.
+  // Thiếu bất kỳ file nào ⇒ tab đó KHÔNG xuất được file MISA đọc được — đúng loại "bản khuyết im
+  // lặng" mà bước kiểm này sinh ra để chặn.
+  'mau-ban-hang.xls',
+  'mau-ban-hang-dv.xml',
   // KHÔNG đòi 'thong-bao.mp3': đó là âm thanh TUỲ CHỌN (server.js ghi rõ "bỏ file ... không có thì
   // dùng tiếng mặc định") và file chưa từng có trong repo. Đòi nó sẽ khiến MỌI build đều đỏ vô cớ.
   // (Đây cũng là nguồn của cảnh báo "Warning Cannot stat, ENOENT" của pkg — do glob

@@ -181,3 +181,60 @@ test('buildExcelBuffer LUÔN settle: worker báo lỗi + đường đồng bộ 
   assert.notEqual(outcome, 'TREO', 'buildExcelBuffer phải settle — không được treo promise');
   assert.ok(String(outcome).startsWith('rejected'), `phải reject để lượt tải báo lỗi thay vì treo, nhận: ${outcome}`);
 });
+
+// ---- XUẤT PHẢI THEO ĐÚNG BỘ LỌC ĐANG XEM ----
+// Người dùng báo: "SỬA LẠI ĐỂ XUẤT FILE THEO BỘ LỌC". Bản cũ bỏ qua bộ lọc TRẠNG THÁI ở sheet
+// hàng hoá/đối tác, và giao diện không gửi CHIỀU (mua vào/bán ra) nên chọn "Bán ra" vẫn ra cả file.
+
+// buildWorkbook trả { buffer, counts, parts } — phải đọc lại buffer mới thấy tên sheet/nội dung.
+const asBook = result => XLSX.read(result.buffer, { type: 'buffer' });
+const sheetNames = result => asBook(result).SheetNames;
+const readSheet = (result, sheet) => XLSX.utils.sheet_to_json(asBook(result).Sheets[sheet], { header: 1, blankrows: false, defval: null });
+
+test('bộ lọc CHIỀU: chọn "Bán ra" thì file KHÔNG có sheet mua vào', () => {
+  withDb(db => {
+    seed(db);
+    const all = excelExport.buildWorkbook(db, {}, undefined);
+    assert.ok(sheetNames(all).includes(excelExport.SHEET.buy), 'không lọc chiều thì có đủ hai chiều');
+    const onlySell = excelExport.buildWorkbook(db, { direction: 'SELL' }, undefined);
+    assert.ok(!sheetNames(onlySell).includes(excelExport.SHEET.buy), 'chọn Bán ra ⇒ KHÔNG được có sheet mua vào');
+    assert.ok(!sheetNames(onlySell).includes(excelExport.SHEET.suppliers), 'chọn Bán ra ⇒ không có nhà cung cấp');
+    assert.ok(sheetNames(onlySell).includes(excelExport.SHEET.sell), 'vẫn phải có sheet bán ra');
+    const onlyBuy = excelExport.buildWorkbook(db, { direction: 'BUY' }, undefined);
+    assert.ok(!sheetNames(onlyBuy).includes(excelExport.SHEET.sell), 'chọn Mua vào ⇒ không có sheet bán ra');
+    assert.ok(!sheetNames(onlyBuy).includes(excelExport.SHEET.buyers), 'chọn Mua vào ⇒ không có khách hàng');
+  });
+});
+
+test('chọn TAY một bảng từ menu "Xuất Excel" thì tôn trọng đúng lựa chọn đó', () => {
+  withDb(db => {
+    seed(db);
+    // Chọn tay "hoá đơn mua vào" dù bộ lọc chiều đang là Bán ra ⇒ vẫn phải ra sheet mua vào.
+    const picked = excelExport.buildWorkbook(db, { direction: 'SELL' }, ['buy']);
+    assert.deepEqual(sheetNames(picked), [excelExport.SHEET.buy], 'lựa chọn tay phải thắng bộ lọc chiều');
+  });
+});
+
+test('bộ lọc TRẠNG THÁI áp cho CẢ sheet hàng hoá và đối tác (trước đây bị bỏ qua)', () => {
+  withDb(db => {
+    seed(db);
+    // Tạo 1 hoá đơn KHÔNG còn hiệu lực (tthai = 6): mọi sheet phải loại nó khi lọc 'active'.
+    insertInvoice(db, sample({ soHd: '00000009', direction: 'SELL', mstBan: MST, mstMua: null, tenMua: 'Khách đã huỷ' }));
+    db.prepare("UPDATE invoices SET tthai = '6' WHERE so_hd = '00000009'").run();
+
+    const active = excelExport.buildWorkbook(db, { state: 'active' }, undefined);
+    const goodsSell = readSheet(active, excelExport.SHEET.productsSell);
+    assert.ok(!goodsSell.flat().includes('Khách đã huỷ'), 'sheet hàng hoá phải bỏ hoá đơn không hiệu lực');
+    const buyers = readSheet(active, excelExport.SHEET.buyers);
+    assert.ok(!buyers.flat().includes('Khách đã huỷ'), 'sheet khách hàng phải theo trạng thái đang chọn');
+
+    // Lọc ngược lại: chỉ hoá đơn KHÔNG hiệu lực ⇒ phải có dòng hàng hoá của hoá đơn đã huỷ.
+    const inactive = excelExport.buildWorkbook(db, { state: 'inactive' }, undefined);
+    assert.ok(readSheet(inactive, excelExport.SHEET.productsSell).length > 1,
+      'lọc "không hiệu lực" phải có dòng hàng hoá của hoá đơn đã huỷ');
+    // Lọc đúng một mã tthai.
+    const one = excelExport.buildWorkbook(db, { state: '6' }, undefined);
+    assert.ok(readSheet(one, excelExport.SHEET.sell).length > 1, 'lọc tthai = 6 phải ra hoá đơn đó');
+    assert.equal(readSheet(one, excelExport.SHEET.buy).length, 1, 'hoá đơn mua vào không có tthai 6 ⇒ chỉ còn hàng tiêu đề');
+  });
+});

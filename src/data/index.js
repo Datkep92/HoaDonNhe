@@ -26,4 +26,7 @@ module.exports = {
   bankStatement: require('./bank-statement'),
   reconciliation: require('./reconciliation'),
   identityCandidates: require('./identity-candidates'),
+  // v9 — HỖ TRỢ KẾ TOÁN: xuất file "Mẫu bán hàng" cho MISA AMIS + danh mục hàng hoá công ty.
+  misaExport: require('./misa-export'),
+  productMaster: require('./product-master'),
 };

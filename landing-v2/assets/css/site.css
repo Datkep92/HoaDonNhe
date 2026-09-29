@@ -586,6 +586,135 @@ h2 { font-size: clamp(26px, 3.2vw, 38px); line-height: 1.18; letter-spacing: -.8
 .mk .inp-t { fill: #6c7d91; font-size: 8.2px; }
 
 /* ==========================================================================
+   MOBILE MOCKUP — khung điện thoại tối giản (chỉ hiện ≤860px)
+   ========================================================================== */
+.mob-shot { display: none; }
+
+@media (max-width: 860px) {
+  .mob-shot {
+    display: block;
+    position: relative;
+    max-width: 300px;
+    margin: 0 auto;
+  }
+  .mob-phone {
+    position: relative;
+    background: var(--paper);
+    border: 2px solid var(--navy);
+    border-radius: 28px;
+    padding: 10px;
+    box-shadow: var(--sh-4);
+  }
+  .mob-notch {
+    width: 110px; height: 20px; margin: 0 auto 8px;
+    background: var(--navy); border-radius: 0 0 12px 12px;
+  }
+  .mob-screen {
+    background: var(--bg);
+    border-radius: 18px;
+    overflow: hidden;
+    aspect-ratio: 9 / 16;
+    display: flex;
+    flex-direction: column;
+  }
+  .mob-status {
+    height: 22px; background: var(--paper-2);
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 0 12px; font-size: 9px; font-weight: 700; color: var(--ink);
+  }
+  .mob-body { flex: 1; display: flex; flex-direction: column; padding: 10px; gap: 8px; }
+  .mob-header {
+    display: flex; align-items: center; gap: 8px;
+    padding: 8px 10px; background: var(--paper);
+    border-radius: 10px; border: 1px solid var(--line);
+  }
+  .mob-header .dot {
+    width: 24px; height: 24px; border-radius: 7px;
+    background: var(--brand); flex: none;
+  }
+  .mob-header .ttl { font-size: 11px; font-weight: 700; color: var(--ink); }
+  .mob-header .sub { font-size: 8.5px; color: var(--muted); }
+  .mob-tabs { display: flex; gap: 4px; }
+  .mob-tab {
+    flex: 1; text-align: center; padding: 5px 2px;
+    font-size: 8.5px; font-weight: 700; color: var(--muted);
+    border-radius: 6px; background: var(--paper-2);
+  }
+  .mob-tab.on { background: var(--brand); color: #fff; }
+  .mob-card {
+    background: var(--paper); border: 1px solid var(--line);
+    border-radius: 10px; padding: 10px;
+  }
+  .mob-card .lbl { font-size: 8px; font-weight: 800; letter-spacing: .5px; color: var(--muted); margin-bottom: 6px; }
+  .mob-row {
+    display: flex; align-items: center; gap: 8px;
+    padding: 6px 0; border-bottom: 1px solid var(--line);
+  }
+  .mob-row:last-child { border-bottom: 0; }
+  .mob-row .ico {
+    width: 22px; height: 22px; border-radius: 6px; flex: none;
+    background: var(--mint-soft); display: grid; place-items: center;
+  }
+  .mob-row .ico svg { width: 12px; height: 12px; color: var(--brand); }
+  .mob-row .txt { flex: 1; min-width: 0; }
+  .mob-row .txt b { display: block; font-size: 9.5px; color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .mob-row .txt span { font-size: 8px; color: var(--muted); }
+  .mob-row .amt { font-size: 9.5px; font-weight: 700; color: var(--ink); white-space: nowrap; }
+  .mob-row .amt.green { color: var(--brand); }
+  .mob-kpi { display: flex; gap: 6px; }
+  .mob-kpi .k {
+    flex: 1; background: var(--paper); border: 1px solid var(--line);
+    border-radius: 10px; padding: 8px 6px; text-align: center;
+  }
+  .mob-kpi .k b { display: block; font-size: 13px; font-weight: 800; color: var(--ink); }
+  .mob-kpi .k span { font-size: 7.5px; color: var(--muted); }
+  .mob-btn {
+    display: flex; align-items: center; justify-content: center; gap: 6px;
+    padding: 9px; border-radius: 10px;
+    background: var(--brand); color: #fff;
+    font-size: 10.5px; font-weight: 700;
+  }
+  .mob-btn svg { width: 13px; height: 13px; }
+  .mob-list { display: flex; flex-direction: column; gap: 6px; }
+  .mob-list .li {
+    display: flex; align-items: center; gap: 8px;
+    padding: 7px 10px; background: var(--paper);
+    border: 1px solid var(--line); border-radius: 8px;
+  }
+  .mob-list .li .dot { width: 6px; height: 6px; border-radius: 50%; flex: none; }
+  .mob-list .li .dot.g { background: var(--brand); }
+  .mob-list .li .dot.b { background: #3b82f6; }
+  .mob-list .li .dot.o { background: #f59e0b; }
+  .mob-list .li .txt { flex: 1; font-size: 9px; color: var(--ink); }
+  .mob-list .li .val { font-size: 9px; font-weight: 700; color: var(--muted); }
+  .mob-table { width: 100%; border-collapse: collapse; }
+  .mob-table th {
+    font-size: 7.5px; font-weight: 800; letter-spacing: .3px;
+    color: var(--muted); text-align: left; padding: 5px 6px;
+    border-bottom: 1px solid var(--line-2);
+  }
+  .mob-table td {
+    font-size: 8.5px; color: var(--ink-2); padding: 5px 6px;
+    border-bottom: 1px solid var(--line);
+  }
+  .mob-table td.num { text-align: right; font-weight: 600; }
+  .mob-table .badge {
+    display: inline-block; padding: 1px 6px; border-radius: 4px;
+    font-size: 7.5px; font-weight: 700;
+  }
+  .mob-table .badge.g { background: var(--mint-soft); color: var(--brand-ink); }
+  .mob-table .badge.b { background: #e0f2fe; color: #0369a1; }
+  .mob-footer {
+    display: flex; align-items: center; justify-content: space-around;
+    padding: 8px 0 4px; background: var(--paper);
+    border-top: 1px solid var(--line);
+  }
+  .mob-footer .fi { display: flex; flex-direction: column; align-items: center; gap: 2px; font-size: 7.5px; color: var(--muted); }
+  .mob-footer .fi svg { width: 16px; height: 16px; }
+  .mob-footer .fi.on { color: var(--brand); font-weight: 700; }
+}
+
+/* ==========================================================================
    Responsive
    ========================================================================== */
 @media (max-width: 1080px) {
@@ -600,7 +729,12 @@ h2 { font-size: clamp(26px, 3.2vw, 38px); line-height: 1.18; letter-spacing: -.8
 
 @media (max-width: 860px) {
   :root { --gut: 18px; }
-  .sec { padding: 68px 0; }
+  .sec { padding: 52px 0; }
+  .gal-screen { display: none; }
+  .gal-view { background: transparent; border: 0; box-shadow: none; }
+  .gal-view .shot-bar { display: none; }
+  .gal-note { margin-top: 14px; padding: 14px 16px; }
+  .gal-note p { font-size: 13.5px; }
   .nav {
     position: fixed; inset: var(--nav-h) 0 auto; flex-direction: column; align-items: stretch;
     gap: 2px; padding: 14px var(--gut) 22px; margin: 0;

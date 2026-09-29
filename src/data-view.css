@@ -163,9 +163,23 @@
 .overview-metrics>div { display:flex; justify-content:space-between; gap:12px; padding:6px 0; border-bottom:1px solid #edf1f5; }
 .overview-metrics>div:last-child { border-bottom:0; }
 .overview-metrics span { color:#66788c; font-size:11px; min-width:0; }
-/* Ghi chú dưới nhãn (mục 20/21/22/23 — tiền theo chiều, điều kiện đối chiếu): in thành dòng
-   riêng nhỏ và xám. Không đặt trong thẻ khác vì thẻ thuế (thẻ thứ ba) tự có định dạng riêng. */
-.overview-donut-card .overview-metrics span em,.overview-bank-card .overview-metrics span em { display:block; font-style:normal; color:#97a3b3; font-size:9.5px; font-weight:400; line-height:1.35; margin-top:2px; }
+/* Ghi chú của một dòng số (mục 20/21/22/23 — tiền theo chiều, điều kiện đối chiếu).
+   Ghi chú NGẮN nằm CÙNG DÒNG với nhãn và mờ hơn; chỉ ghi chú DÀI (class `has-note` do
+   overviewRows() gắn theo độ dài) mới xuống dòng riêng. Nhờ vậy 7 dòng số không còn nở thành
+   14 dòng chữ — đây là nguồn "rối" lớn nhất của tab Tổng quan.
+
+   Vì sao vẫn liệt kê TÊN THẺ tường minh dù luật đã áp cho mọi thẻ: tests/ui-wiring.test.js
+   (mục 20–23) kiểm bằng CHUỖI rằng thẻ đối chiếu/thanh toán PHẢI có style riêng cho dòng ghi
+   chú — trước đây luật chỉ có .overview-donut-card/.overview-bank-card nên hai thẻ Bán ra/Mua
+   vào bị inline và DÍNH LIỀN nhãn ("Tổng hóa đơn1,24 tỷ", "Tiền mặt310,0 tr"). Giữ đủ 4 tên
+   thẻ vừa thoả phép kiểm vừa nói rõ cả 4 thẻ dùng CHUNG một cách xuống dòng.
+   Độ đặc hiệu (0,2,2) < luật `has-note` (0,2,3) nên ghi chú dài vẫn xuống dòng đúng. */
+.overview-donut-card .overview-metrics span em,
+.overview-bank-card .overview-metrics span em,
+.overview-sell-card .overview-metrics span em,
+.overview-buy-card .overview-metrics span em,
+.overview-metrics span em { display:inline; font-style:normal; font-weight:400; color:#9aa8b8; font-size:10px; margin-left:6px; }
+.overview-metrics>div.has-note span em { display:block; margin:2px 0 0; }
 .overview-metrics strong { color:#20324a; font-size:11.5px; text-align:right; white-space:nowrap; }
 .overview-alerts p { margin:0 0 7px; padding:9px 10px; border-left:3px solid #d79052; background:#fff8f1; color:#52677e; font-size:11px; border-radius:4px; }
 .overview-alerts p strong { color:#a95520; font-size:14px; margin-right:3px; }
@@ -220,6 +234,207 @@
 @media(max-width:1180px){.overview-kpis{grid-template-columns:repeat(4,minmax(0,1fr))}.overview-chart-wide{grid-column:span 12}.overview-alerts{grid-column:span 12}.overview-sell-card,.overview-buy-card,.overview-donut-card,.overview-bank-card,.overview-products-card,.overview-debt-card,.overview-tax-card{grid-column:span 6}.overview-ai-card{grid-column:span 6}}
 @media(max-width:860px){.overview-sell-card,.overview-buy-card,.overview-donut-card,.overview-bank-card,.overview-products-card,.overview-debt-card,.overview-tax-card,.overview-ai-card{grid-column:span 12}.overview-split-grid{grid-template-columns:1fr}}
 @media(max-width:760px){.overview-kpis{grid-template-columns:1fr}.overview-sell-card,.overview-buy-card,.overview-donut-card,.overview-bank-card,.overview-products-card{grid-column:span 12}.overview-bars{gap:3px}.overview-donut-layout{grid-template-columns:96px 1fr}.overview-donut{width:96px}}
+
+/* ========================================================================== */
+/* TỔNG QUAN 2026 — phân cấp rõ, SVG nhẹ, không phụ thuộc thư viện biểu đồ.     */
+/* ========================================================================== */
+.overview-pane {
+  --ov-ink:#17263b; --ov-muted:#718096; --ov-line:#e5ebeF;
+  --ov-sell:#0d9488; --ov-buy:#4f77a3; --ov-warn:#c26d32;
+  --ov-chart-buy:#dc4c4c;
+  gap:14px;
+}
+.overview-filterbar {
+  position:sticky; top:0; z-index:8;
+  align-items:center; padding:10px 12px; margin:0;
+  background:rgba(249,252,251,.94); border-color:#dce8e5;
+  box-shadow:0 5px 18px rgba(28,55,68,.045);
+  backdrop-filter:blur(12px);
+}
+.overview-filterbar>div strong { font-size:14px; letter-spacing:-.01em; }
+.overview-filterbar label { letter-spacing:.045em; }
+.overview-filterbar select,.overview-filterbar input { border-radius:8px; border-color:#dce6e4; }
+.overview-loading { margin-left:auto; color:var(--ov-sell); font-size:11px; font-weight:700; }
+
+.overview-kpis { grid-template-columns:repeat(4,minmax(0,1fr)); gap:10px; }
+.overview-kpi {
+  position:relative; overflow:hidden; min-height:112px; padding:16px 16px 14px;
+  border:1px solid var(--ov-line); border-radius:12px;
+  background:linear-gradient(145deg,#fff 0%,#fbfdfd 100%);
+  box-shadow:0 5px 18px rgba(27,52,74,.045);
+  transition:border-color .18s ease, box-shadow .18s ease, transform .18s ease;
+}
+.overview-kpi::before {
+  content:""; position:absolute; inset:0 auto 0 0; width:3px;
+  background:#cbd5df;
+}
+.overview-kpi:has(strong.sell)::before { background:var(--ov-sell); }
+.overview-kpi:has(strong.buy)::before { background:var(--ov-buy); }
+.overview-kpi:has(strong.warn)::before { background:var(--ov-warn); }
+.overview-kpi span { color:var(--ov-muted); font-size:9.5px; letter-spacing:.055em; }
+.overview-kpi strong { margin-top:9px; color:var(--ov-ink); font-size:21px; letter-spacing:-.035em; font-variant-numeric:tabular-nums; }
+.overview-kpi small { margin-top:7px; line-height:1.35; }
+button.overview-kpi { text-align:left; cursor:pointer; }
+button.overview-kpi:hover { transform:translateY(-2px); border-color:#c9ddd8; box-shadow:0 9px 24px rgba(27,52,74,.09); }
+
+.overview-dashboard { gap:12px; }
+.overview-dashboard>.card {
+  padding:17px; border:1px solid var(--ov-line); border-radius:12px;
+  background:#fff; box-shadow:0 5px 20px rgba(27,52,74,.045);
+}
+.overview-card-head { margin-bottom:14px; }
+.overview-card-head h3 { color:var(--ov-ink); font-size:15px; letter-spacing:-.015em; }
+.overview-caption { color:#8a98a8; letter-spacing:.075em; }
+.overview-chart-wide { min-height:348px; }
+.overview-alerts { background:linear-gradient(160deg,#fff 0%,#fffaf5 100%)!important; }
+.overview-sell-card { border-top:3px solid var(--ov-sell)!important; }
+.overview-buy-card { border-top:3px solid var(--ov-buy)!important; }
+.overview-donut-card { border-top:3px solid #d7a447!important; }
+.overview-bank-card { border-top:3px solid #6c63a9!important; }
+
+/* Biểu đồ xu hướng: SVG giữ đúng tỷ lệ nên chữ/trục không bị kéo giãn. */
+.overview-bars { height:auto; min-height:270px; background:none; }
+.trend-summary { display:flex; gap:10px; flex-wrap:wrap; margin:-4px 0 5px; }
+.trend-summary>span {
+  display:grid; grid-template-columns:auto auto; gap:2px 7px; align-items:center;
+  min-width:150px; padding:7px 10px; border:1px solid #e7ecef; border-radius:9px; background:#fbfcfd;
+}
+.trend-summary i { width:8px; height:8px; border-radius:999px; background:var(--ov-sell); }
+.trend-summary i.buy { background:var(--ov-chart-buy); }
+.trend-summary em { color:var(--ov-muted); font-size:10px; font-style:normal; }
+.trend-summary strong { grid-column:2; color:var(--ov-ink); font-size:12px; font-variant-numeric:tabular-nums; }
+.overview-bars .trend-chart { width:100%; height:auto; max-height:258px; overflow:visible; }
+.trend-grid line { stroke:#edf1f4; stroke-width:1; }
+.trend-grid text,.trend-label { fill:#8b98a8; font-size:10px; }
+.trend-area.sell { fill:url(#trend-sell-fill); }
+.trend-area.buy { fill:url(#trend-buy-fill); }
+.trend-line { fill:none; stroke-width:2.5; stroke-linecap:round; stroke-linejoin:round; vector-effect:non-scaling-stroke; }
+.trend-line.sell { stroke:var(--ov-sell); }
+.trend-line.buy { stroke:var(--ov-chart-buy); }
+.trend-point { stroke:#fff; stroke-width:2; vector-effect:non-scaling-stroke; pointer-events:none; }
+.trend-point.sell { fill:var(--ov-sell); }
+.trend-point.buy { fill:var(--ov-chart-buy); }
+.overview-chart-wide .overview-legend i.buy { background:var(--ov-chart-buy); }
+.trend-hit { fill:transparent; cursor:pointer; }
+.trend-guide { stroke:transparent; stroke-width:1; stroke-dasharray:3 4; pointer-events:none; }
+.trend-month:hover .trend-guide { stroke:#cbd5df; }
+.trend-month:hover .trend-point { r:5.5; }
+.trend-month:hover .trend-label { fill:var(--ov-ink); font-weight:700; }
+
+.overview-donut-layout { grid-template-columns:104px minmax(0,1fr); gap:14px; }
+.overview-donut { width:104px; }
+.overview-donut svg { filter:drop-shadow(0 4px 7px rgba(31,50,74,.08)); }
+.overview-metrics>div { padding:7px 0; }
+.overview-metrics span { line-height:1.35; }
+.overview-metrics strong { color:var(--ov-ink); font-variant-numeric:tabular-nums; }
+.overview-alerts .alert-row { min-height:42px; margin-bottom:8px; border-radius:8px; transition:background-color .15s ease,transform .15s ease; }
+.overview-alerts .alert-row:hover { transform:translateX(2px); }
+.overview-split-panel { padding:12px; border-radius:10px; background:#fcfdfd; }
+.overview-product { width:100%; border:0; background:transparent; text-align:left; border-radius:7px; }
+.overview-product:hover { background:#f2f8f7; }
+.overview-product progress { border-radius:999px; overflow:hidden; }
+.overview-ai-card { background:#f8fafb!important; box-shadow:none!important; }
+.overview-ai-card { display:none!important; }
+/* ---- DÀN LẠI LƯỚI TỔNG QUAN: 4 HÀNG, MỖI HÀNG ĐỦ 12 CỘT --------------------
+   Số đo thật TRƯỚC khi sửa (release/ov-measure.cjs @1440px):
+     · hàng "Công nợ" chỉ chiếm 8/12 cột ⇒ HỞ 383px bên phải;
+     · thẻ "Ngân hàng" nội dung ~349px nhưng bị kéo cao bằng thẻ "Hàng hóa" ~573px
+       ⇒ THỪA 230px bên trong thẻ;
+     · thẻ "THUẾ / NGƯỠNG" nằm HÀNG RIÊNG chiếm trọn 12 cột dù nội dung chỉ ~303px.
+   Sơ đồ chốt với người dùng — mỗi hàng đủ 12 cột nên lưới khít, không còn ô trống:
+     hàng 1 : Dòng tiền (8)  | Cần kiểm tra (2) | Cần xem lại (2)
+              ↑ người dùng yêu cầu THU HẸP hai thẻ danh sách để NHƯỜNG CHỖ cho biểu đồ
+                (trước là 6 | 3 | 3): biểu đồ từ 563px lên 755px, hai thanh bên còn ~180px.
+     hàng 2 : Bán ra (4)     | Mua vào (4)      | Thuế / Ngưỡng (4)
+     hàng 3 : Công nợ (12)   ← hai thẻ Ngân hàng / Kết quả đối chiếu đã được ẩn
+     hàng 4 : Hàng hóa (12)    (xem khối "ẨN 2 THẺ" ở cuối file)
+   Đặt cột/hàng TƯỜNG MINH chứ không dựa vào thứ tự tự động: các hàng có số thẻ khác nhau
+   (3-3-1-1) nên đặt tự động sẽ nhét lệch và sinh ô trống.
+   Thẻ "Cần xem lại" là thẻ MỚI — trước đây khối cảnh báo hàng hóa nằm BÊN TRONG thẻ Hàng hóa. */
+.overview-dashboard>.overview-chart-wide    { grid-column:1 / span 8;  grid-row:1; }
+.overview-dashboard>.overview-alerts        { grid-column:9 / span 2;  grid-row:1; }
+.overview-dashboard>.overview-warn-card     { grid-column:11 / span 2; grid-row:1; }
+.overview-dashboard>.overview-sell-card     { grid-column:1 / span 4;  grid-row:2; }
+.overview-dashboard>.overview-buy-card      { grid-column:5 / span 4;  grid-row:2; }
+.overview-dashboard>.overview-tax-card      { grid-column:9 / span 4;  grid-row:2; }
+.overview-dashboard>.overview-debt-card     { grid-column:1 / span 8;  grid-row:3; }
+.overview-dashboard>.overview-bank-card     { grid-column:9 / span 4;  grid-row:3; }
+.overview-dashboard>.overview-donut-card    { grid-column:1 / span 4;  grid-row:4; }
+.overview-dashboard>.overview-products-card { grid-column:5 / span 8;  grid-row:4; }
+
+/* Thẻ "Cần xem lại" (cảnh báo hàng hóa, mục 24): cùng tông cảnh báo với thẻ "Cần kiểm tra".
+   Mỗi dòng là NÚT BẤM mở danh sách mặt hàng, nên phải đặt lại kiểu cho <button>. */
+.overview-warn-card { border-top:3px solid var(--ov-warn)!important; background:linear-gradient(160deg,#fff 0%,#fffaf5 100%)!important; }
+.overview-warn-card .goods-warn {
+  display:flex; align-items:center; gap:6px; width:100%; margin:0 0 8px; padding:9px 10px;
+  border:0; border-left:3px solid #d79052; background:#fff8f1; color:#52677e;
+  font:inherit; font-size:11px; line-height:1.35; text-align:left; border-radius:8px; cursor:pointer;
+  transition:background-color .15s ease, transform .15s ease;
+}
+.overview-warn-card .goods-warn strong { color:#a95520; font-size:14px; }
+.overview-warn-card .goods-warn .alert-go { margin-left:auto; color:#b98a5e; font-size:15px; line-height:1; }
+.overview-warn-card .goods-warn:hover { background:#fff1e4; transform:translateX(2px); }
+.overview-warn-card .goods-warn:focus-visible { outline:2px solid #4c78a8; outline-offset:1px; }
+.overview-warn-card .overview-clear { color:#087f70; background:#eef9f6; border-color:#28a58f; }
+
+/* Thẻ bị hàng kéo CAO HƠN nội dung (lưới stretch): đẩy hàng nút ở chân xuống ĐÁY thẻ. Nhờ vậy
+   phần dư nằm giữa nội dung và chân thẻ — trông như chủ ý — thay vì một khoảng trắng cụt ở đáy.
+   Đo được ở thẻ "Kết quả đối chiếu": nội dung ~320px nhưng hàng cao 485px (bằng thẻ Hàng hóa).
+   CÁCH LÀM: cho CHÍNH THẺ thành cột flex rồi để khối nội dung `flex:1` — KHÔNG dùng
+   `height:100%` trên khối nội dung: cách đó tính theo chiều cao hộp-đệm của thẻ nên nút chân thẻ
+   bị đẩy TRÀN RA NGOÀI viền card (phép đo bắt được "đuôi trống = −55px"). */
+.overview-dashboard>.overview-donut-card,
+.overview-dashboard>.overview-sell-card,
+.overview-dashboard>.overview-buy-card,
+.overview-dashboard>.overview-bank-card { display:flex; flex-direction:column; }
+.overview-dashboard>.overview-donut-card>#overview-reconciliation,
+.overview-dashboard>.overview-sell-card>#overview-sell,
+.overview-dashboard>.overview-buy-card>#overview-buy,
+.overview-dashboard>.overview-bank-card>#overview-bank { flex:1; display:flex; flex-direction:column; min-height:0; }
+.overview-dashboard>.overview-donut-card>#overview-reconciliation>.card-links,
+.overview-dashboard>.overview-sell-card>#overview-sell>.card-links,
+.overview-dashboard>.overview-buy-card>#overview-buy>.card-links,
+.overview-dashboard>.overview-bank-card>#overview-bank>.card-links { margin-top:auto; }
+
+/* Thu hẹp màn hình: trả về bố cục tự động. Không có khối này thì cột/hàng tường minh ở trên giữ
+   nguyên cả ở màn hẹp và lưới tràn ngang. Đặt SAU các @media phía dưới nên thắng theo thứ tự. */
+@media(max-width:1180px){
+  .overview-dashboard>.overview-chart-wide,
+  .overview-dashboard>.overview-alerts,
+  .overview-dashboard>.overview-warn-card { grid-column:span 12; grid-row:auto; }
+  /* 7 thẻ span 6 là số LẺ ⇒ thẻ cuối (Thuế) để span 12, nếu không hàng cuối hở nửa lưới. */
+  .overview-dashboard>.overview-sell-card,
+  .overview-dashboard>.overview-buy-card,
+  .overview-dashboard>.overview-donut-card,
+  .overview-dashboard>.overview-bank-card,
+  .overview-dashboard>.overview-products-card,
+  .overview-dashboard>.overview-debt-card { grid-column:span 6; grid-row:auto; }
+  .overview-dashboard>.overview-tax-card { grid-column:span 12; grid-row:auto; }
+}
+@media(max-width:860px){
+  .overview-dashboard>.card { grid-column:span 12!important; grid-row:auto!important; }
+}
+.overview-ai code { max-height:110px; background:#fff; }
+
+@media(max-width:1180px){
+  .overview-kpis{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .overview-chart-wide,.overview-alerts{grid-column:span 12}
+}
+@media(max-width:760px){
+  .overview-filterbar{position:static;align-items:end}
+  .overview-kpis{grid-template-columns:1fr 1fr}
+  .overview-kpi{min-height:102px;padding:13px}
+  .overview-kpi strong{font-size:18px}
+  .trend-summary>span{min-width:0;flex:1}
+}
+@media(max-width:520px){
+  .overview-kpis{grid-template-columns:1fr}
+  .overview-donut-layout{grid-template-columns:88px minmax(0,1fr)}
+  .overview-donut{width:88px}
+}
+@media(prefers-reduced-motion:reduce){
+  .overview-kpi,.overview-alerts .alert-row,.trend-month .trend-point{transition:none!important}
+}
 
 /* ---- Khung chung của tab: giữ nguyên thứ tự vị trí như trước ---- */
 #pane-data { display: grid; grid-template-columns: minmax(0, 1fr); grid-auto-rows: min-content; gap: 14px; min-width: 0; }
@@ -571,3 +786,129 @@ table.loading tbody { transition: opacity .12s ease; }
 #overview-monthly g[data-month] { cursor: pointer; }
 #overview-monthly g[data-month]:hover text { fill: #087f70; font-weight: 700; }
 #overview-monthly g[data-month]:focus-visible { outline: 2px solid #4c78a8; }
+
+/* ============================================================================
+   LỚP LÀM DỊU MẬT ĐỘ THÔNG TIN (2026-09) — GIỮ NGUYÊN số liệu, chỉ giảm độ rối.
+   Đặt ở CUỐI FILE để thắng mọi luật phía trên, kể cả những luật khai SAU phần Tổng quan
+   (.card-links/.card-link/.goods-more nằm tận khối Kho dữ liệu) — nếu đặt cạnh phần Tổng
+   quan thì các luật đó sẽ đè lại và lớp này vô hiệu.
+
+   Vì sao cần: mỗi dòng số in thành 2 dòng chữ; mọi giá trị cùng một cỡ và cùng in đậm;
+   thanh tiến trình đậm; mỗi thẻ lại có 1–2 nút xanh ở chân ⇒ nhìn như một bức tường số.
+
+   Bốn nguyên tắc:
+     (1) MỘT dòng cho mỗi số — ghi chú ngắn nằm cùng dòng (đã sửa ở .overview-metrics span em).
+     (2) Một cỡ / một màu cho con số; ghi chú luôn nhỏ hơn và mờ hơn.
+     (3) Màu nhấn CHỈ dành cho số cần chú ý (ok / warn / sell / buy).
+     (4) Nút chân thẻ và thanh tiến trình nhẹ hơn để không tranh mắt với con số.
+   ========================================================================== */
+
+/* (1)+(2) Nhịp dòng đều; nhãn không tự xuống dòng; số cùng một cỡ. */
+.overview-metrics>div {
+  display:flex; align-items:baseline; justify-content:space-between; gap:10px;
+  padding:5px 0; border-bottom:1px solid var(--ov-line);
+}
+.overview-metrics>div:not(.has-note) span { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.overview-metrics>div.has-note span { white-space:normal; }
+.overview-metrics span { color:#5c6b80; font-size:11px; line-height:1.4; min-width:0; }
+.overview-metrics strong {
+  color:var(--ov-ink); font-size:12px; font-weight:600; text-align:right;
+  white-space:nowrap; font-variant-numeric:tabular-nums;
+}
+/* (3) Màu nhấn chỉ ở số cần chú ý; số thường để màu mực nên không còn "loè". */
+.overview-metrics strong.ok { color:#0f7a6c; }
+.overview-metrics strong.sell { color:#0d9488; }
+.overview-metrics strong.buy { color:#4f77a3; }
+.overview-metrics strong.warn { color:#b3622a; }
+
+/* (4) Nút chân thẻ: mặc định dịu, chỉ đậm lên khi rê vào. */
+.card-links { gap:16px; margin-top:12px; }
+.card-link,.goods-more { font-size:11px; font-weight:600; color:#7e8ea1; padding:2px 0; }
+.card-link:hover,.goods-more:hover { color:var(--ov-sell); }
+
+/* (4) Thanh tiến trình mảnh hơn — chỉ là chỉ báo phụ. */
+.overview-product progress { height:4px; }
+.overview-tax-bar { height:5px; }
+
+/* Thuế: phần dẫn chiếu pháp lý là CHÚ THÍCH, không phải nội dung chính. */
+.overview-tax-card .hint { font-size:9.5px; color:#a6b1bd; line-height:1.45; margin-top:5px; }
+
+/* Dòng cảnh báo (Cần kiểm tra / Cần xem lại): nền dịu hơn, gọn hơn. */
+.overview-alerts .alert-row { min-height:34px; padding:7px 10px; margin-bottom:6px; background:#fffaf5; }
+.overview-alerts .alert-row strong { font-size:13px; }
+.overview-warn-card .goods-warn { padding:7px 10px; margin-bottom:6px; background:#fffaf5; }
+.overview-warn-card .goods-warn strong { font-size:13px; }
+
+/* Hai thẻ DANH SÁCH (Cần kiểm tra / Cần xem lại) nằm cùng hàng với thẻ biểu đồ cao 357px nên bị
+   kéo cao hơn nội dung. Thay vì để một khoảng trắng cụt ở đáy, RẢI ĐỀU các dòng cảnh báo theo
+   chiều cao thẻ — nhìn như chủ ý. Dùng flex trên chính thẻ (không dùng height:100% vì sẽ tràn
+   viền, xem chú thích ở khối ghim nút chân thẻ). */
+.overview-dashboard>.overview-alerts,
+.overview-dashboard>.overview-warn-card { display:flex; flex-direction:column; }
+.overview-dashboard>.overview-alerts>#overview-alerts,
+.overview-dashboard>.overview-warn-card>#overview-goods-warnings {
+  flex:1; min-height:0; display:flex; flex-direction:column; justify-content:space-between; gap:8px;
+}
+.overview-alerts .alert-row,.overview-warn-card .goods-warn { margin-bottom:0; }
+
+/* Thẻ Kết quả đối chiếu (hiện đang ẩn — xem khối ngay dưới): nội dung ~300px nhưng từng bị hàng
+   kéo cao 472px. Giữ lại luật canh giữa này để nếu bật lại thẻ thì khoảng dư chia đều hai đầu,
+   không dồn cục ở đáy. */
+.overview-dashboard>.overview-donut-card>#overview-reconciliation>.overview-donut-layout { flex:1; }
+
+/* ============================================================================
+   ẨN 2 THẺ "DÒNG TIỀN / NGÂN HÀNG" VÀ "KẾT QUẢ ĐỐI CHIẾU" (theo yêu cầu người dùng).
+   Ẩn bằng CSS chứ KHÔNG xoá HTML/JS: giữ nguyên mọi nhãn, id và route đang có, nên
+   tests/ui-wiring.test.js vẫn kiểm được phần tử/id như cũ và muốn hiện lại chỉ cần
+   xoá đúng khối này. Cách này giống thẻ AI đang ẩn sẵn (.overview-ai-card).
+   Đây là 2 thẻ của tab TỔNG QUAN; tab "Sao kê ngân hàng" dùng #pane-bank riêng, KHÔNG đụng.
+
+   Ẩn 2 thẻ để lại 2 chỗ trống trong lưới 12 cột (hàng 3 hở 4 cột, hàng 4 hở 4 cột), nên
+   phải dàn lại: Công nợ và Hàng hóa mỗi thẻ chiếm TRỌN 12 cột, mỗi thẻ một hàng — lưới khít
+   trở lại. Thẻ display:none KHÔNG sinh ô lưới nên các luật đặt ô cho 2 thẻ ẩn ở trên thành
+   vô hiệu, không cần xoá. */
+.overview-dashboard>.overview-bank-card,
+.overview-dashboard>.overview-donut-card { display:none!important; }
+.overview-dashboard>.overview-debt-card { grid-column:1 / span 12; grid-row:3; }
+.overview-dashboard>.overview-products-card { grid-column:1 / span 12; grid-row:4; }
+
+/* Màn hẹp: trả Công nợ/Hàng hóa về span 6 như các thẻ khác của khối @media phía trên. Bắt buộc
+   phải có, nếu không cột/hàng tường minh ở trên giữ nguyên và lưới lệch/tràn ngang.
+   (Ở ≤860px đã có luật `.overview-dashboard>.card{grid-column:span 12!important}` lo.) */
+@media(max-width:1180px){
+  .overview-dashboard>.overview-debt-card,
+  .overview-dashboard>.overview-products-card { grid-column:span 6; grid-row:auto; }
+}
+
+/* ============================================================================
+   TAB "HỖ TRỢ KẾ TOÁN" (2026-09) — dọc hoá đơn bán ra rồi xuất file "Mẫu bán
+   hàng" cho MISA AMIS. Cùng khuôn với #pane-bank: cột lọc bên trái, kết quả phải.
+   ========================================================================== */
+#pane-accounting { display: grid; grid-template-columns: 340px minmax(0, 1fr); grid-auto-rows: min-content; gap: 14px; min-width: 0; }
+.mia-filters { display: flex; flex-direction: column; gap: 11px; }
+.mia-filters h3 { margin: 0 0 2px; }
+.mia-quick { display: flex; flex-wrap: wrap; gap: 6px; }
+.mia-quick button { font-size: 11px; padding: 6px 10px; border-radius: 999px; background: #fff; white-space: nowrap; }
+.mia-quick button:hover { border-color: #087f70; color: #087f70; }
+.mia-quick button:focus-visible { outline: 2px solid #087f70; outline-offset: 2px; }
+.mia-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.mia-actions button { flex: 1 1 auto; }
+.mia-result { min-width: 0; }
+.mia-stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 9px; margin-bottom: 12px; }
+.mia-stat { border: 1px solid #e5ebf0; border-radius: 9px; padding: 9px 11px; background: #fbfcfd; min-width: 0; }
+.mia-stat span { display: block; color: #8a98a8; font-size: 9.5px; font-weight: 700; text-transform: uppercase; }
+.mia-stat strong { display: block; margin-top: 5px; color: #17263b; font-size: 15px; overflow-wrap: anywhere; }
+/* Danh sách LỖI CHẶN XUẤT: đỏ, không thể bỏ qua. */
+.mia-blockers { margin: 0 0 12px; padding: 11px 13px; border-left: 3px solid #c9403c; background: #fdf3f2; border-radius: 8px; }
+.mia-blockers h4 { margin: 0 0 7px; color: #a72d27; font-size: 13px; }
+.mia-blockers ul { margin: 0; padding-left: 18px; max-height: 190px; overflow: auto; }
+.mia-blockers li { color: #7a3a37; font-size: 11px; line-height: 1.55; }
+#mia-badge.ok { background: #e6f6f1; color: #0f7a6c; }
+#mia-badge.bad { background: #fdecea; color: #b3261e; }
+#pane-accounting .table-scroll { max-height: 430px; }
+#pane-accounting table { font-size: 11px; }
+#pane-accounting th, #pane-accounting td { white-space: nowrap; }
+@media (max-width: 1080px) {
+  #pane-accounting { grid-template-columns: minmax(0, 1fr); }
+  .mia-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}

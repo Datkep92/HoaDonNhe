@@ -6,3 +6,7 @@ dialog{border:1px solid #dce4ee;border-radius:16px;padding:26px;width:min(600px,
 #mst-form label{display:block;font-size:12px;font-weight:600;margin-bottom:16px}
 #mst-form input{font-size:14px;padding:12px}
 #mst-error{color:#a72d27;background:#fff1ee;padding:12px;border-radius:8px;font-size:12px;margin:12px 0 0}
+/* Nút trong hàng "Thư mục lưu": KHÔNG cho co lại và KHÔNG xuống dòng. Ô nhập chiếm hết bề ngang nên
+   flex mặc định bóp nút thành 2 dòng ("Chọn thư / mục…", "Đổi thư / mục…") — ảnh chụp kiểm tra bắt
+   được ở CẢ form Thêm MST lẫn tab Tra cứu & tải. */
+.folder button{flex:0 0 auto;white-space:nowrap}

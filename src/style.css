@@ -619,3 +619,14 @@ body.app-ready > aside, body.app-ready > main { animation: app-enter .55s cubic-
   .account-tools { margin-left: 0; }
   .account-title { flex: 1 1 100%; }
 }
+
+/* Ô "Thư mục lưu" khi ĐÃ KHOÁ: đổi thư mục là app chuyển sang đọc kho dữ liệu khác nên dữ liệu đã
+   tải không còn hiện — khoá lại để không gõ nhầm. Muốn đổi phải bấm "Đổi thư mục…" và xác nhận.
+   Nền xám nhạt + con trỏ "not-allowed" để nhìn là biết không sửa được. */
+#output.locked {
+  background: #eef2f6;
+  color: #52677e;
+  border-style: dashed;
+  cursor: not-allowed;
+}
+#output.locked:focus { outline: none; border-color: #d6e0eb; }

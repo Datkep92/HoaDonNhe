@@ -62,6 +62,6 @@ tài nguyên nội bộ (`src`/`href`) có tồn tại thật không.
 `.github/workflows/deploy.yml` đẩy thư mục `landing-v2/` lên GitHub Pages bằng
 Actions (không ảnh hưởng workflow `release.yml` của ứng dụng).
 
-URL dự kiến: <https://datkep92.github.io/cntaxtools/>
+URL dự kiến: <https://datkep92.github.io/cntaxtools-landing-v2/>
 
 > Bản landing cũ ở thư mục `landing-page/` được giữ nguyên, không sửa.

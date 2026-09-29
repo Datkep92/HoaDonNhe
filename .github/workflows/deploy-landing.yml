@@ -1,0 +1,63 @@
+name: Deploy landing
+
+# Đẩy riêng thư mục landing-v2/ lên GitHub Pages.
+# Không liên quan tới workflow release.yml (đóng gói EXE) và không đụng thư mục landing-page/ (bản v1).
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - 'landing-v2/**'
+      - '.github/workflows/deploy-landing.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Không chồng nhiều lần push; lần mới hơn thì hủy lần cũ.
+concurrency:
+  group: pages-deploy
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      # Trang là static thuần (không framework, không build step) — chỉ cần bản đảm bảo
+      # các tài nguyên nội bộ thật sự tồn tại trước khi publish.
+      - name: Kiểm tra tài nguyên nội bộ
+        shell: bash
+        run: |
+          missing=0
+          for f in $(grep -oE '(src|href)="[^"]+"' landing-v2/index.html | sed -E 's/.*="([^"]+)"/\1/' | grep -v '^https\?:' | grep -v '^#' | sort -u); do
+            if [ ! -e "landing-v2/${f#./}" ]; then
+              echo "Thiếu tài nguyên: $f"
+              missing=1
+            fi
+          done
+          [ "$missing" -eq 0 ] || exit 1
+          test -f landing-v2/assets/img/og-cover.png || { echo "Thiếu og-cover.png"; exit 1; }
+          echo "OK: mọi tài nguyên nội bộ đều tồn tại."
+
+      - name: Cấu hình Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: landing-v2
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@v4

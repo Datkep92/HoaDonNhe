@@ -32,7 +32,8 @@ function schemaVersion(db) {
   return Number(row && row.user_version) || 0;
 }
 
-// Nâng schema theo bước: v0 (file mới) → v1 → v2 → v3 (FTS5) → v4 (cột tthai).
+// Nâng schema theo bước: v0 (file mới) → v1 → v2 → v3 (FTS5) → v4 (cột tthai)
+// → v5 (bảng sao kê) → v6 (cột payment_method) → v7 (cột kết quả đối chiếu).
 //
 // THỨ TỰ BẮT BUỘC: bảng → thêm cột còn thiếu → index → FTS.
 // DB cũ đã có bảng `invoices` nhưng CHƯA có cột `tthai`; nếu tạo index trên cột đó TRƯỚC khi
@@ -47,15 +48,62 @@ function ensureColumn(db, table, column, definition) {
   return true;
 }
 
+// Đường dẫn file của kết nối này ('' nếu là DB trong bộ nhớ) — dùng cho bước BACKUP ở dưới.
+function databaseFile(db) {
+  try {
+    const row = db.prepare('PRAGMA database_list').get();
+    return row && row.file ? String(row.file) : '';
+  } catch { return ''; }
+}
+
+// MỤC 15 — BACKUP → MIGRATION → VALIDATION → TEST: trước khi nâng cấp schema phải có bản sao
+// data.db. `VACUUM INTO` tạo snapshot NHẤT QUÁN đọc qua chính kết nối (bao gồm phần WAL) mà không
+// cần đóng DB. DB mới tạo thì bỏ qua (chưa có gì để mất).
+// Snapshot lỗi KHÔNG chặn mở app (migration của mình chỉ ADD COLUMN, không xoá gì) nhưng phải trả
+// về cho người gọi biết để báo ra ngoài thay vì im lặng.
+function backupBeforeMigration(db) {
+  const file = databaseFile(db);
+  if (!file || !tableNames(db).includes('invoices')) return null;
+  const target = `${file}.bak`;
+  try {
+    if (fs.existsSync(target)) fs.rmSync(target);
+    db.exec(`VACUUM INTO '${target.replaceAll("'", "''")}'`);
+    return { file: target, size: fs.statSync(target).size };
+  } catch (error) {
+    return { error: error && error.message ? error.message : String(error) };
+  }
+}
+
 function applySchema(db) {
   const current = schemaVersion(db);
   if (current === SCHEMA_VERSION) return { changed: false, version: current };
   if (current > SCHEMA_VERSION) {
     throw new Error(`data.db đang ở schema ${current}, mới hơn bản app này hỗ trợ (${SCHEMA_VERSION}).`);
   }
+  // BACKUP (mục 15) phải chạy TRƯỚC MIGRATION.
+  const backup = backupBeforeMigration(db);
   withTransaction(db, () => {
     for (const sql of TABLES) db.exec(sql);
     if (current < 4) ensureColumn(db, 'invoices', 'tthai', 'TEXT');
+    if (current < 6) {
+      ensureColumn(db, 'invoices', 'payment_method_raw', 'TEXT');
+      ensureColumn(db, 'invoices', 'payment_method', "TEXT NOT NULL DEFAULT 'UNKNOWN'");
+    }
+    // v7: cột kết quả đối chiếu. PHẢI chạy TRƯỚC khi tạo index (mục 4 ở dưới) — nếu index
+    // ra trước thì SQLite báo "no such column" và app không mở được data.db.
+    // Chỉ ALTER TABLE ADD COLUMN ⇒ dữ liệu hoá đơn/sao kê cũ giữ nguyên 100%.
+    if (current < 7) {
+      ensureColumn(db, 'invoices', 'reconciliation_status', 'TEXT');
+      ensureColumn(db, 'invoices', 'reconciliation_issues', 'TEXT');
+      ensureColumn(db, 'bank_transactions', 'reconciliation_status', 'TEXT');
+      ensureColumn(db, 'bank_transactions', 'reconciliation_issues', 'TEXT');
+    }
+    // v8: cột phân loại THỦ CÔNG do người dùng bấm (mục 3) — chỉ ALTER TABLE ADD COLUMN,
+    // dữ liệu hoá đơn cũ giữ nguyên 100% và backup đã chạy trước transaction này.
+    if (current < 8) {
+      ensureColumn(db, 'invoices', 'review_status', 'TEXT');
+      ensureColumn(db, 'invoices', 'reviewed_at', 'TEXT');
+    }
     for (const sql of INDEXES) db.exec(sql);
     for (const sql of FTS5) db.exec(sql);
     // Backfill FTS cho DB tạo trước v3 (câu lệnh này chạy sau khi trigger đã tạo).
@@ -64,7 +112,8 @@ function applySchema(db) {
     if (current < 3) backfillFts(db);
     db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
   });
-  return { changed: true, version: SCHEMA_VERSION };
+  // VALIDATION: trả kết quả BACKUP kèm theo để người gọi biết bản sao đã tạo hay bị lỗi.
+  return { changed: true, version: SCHEMA_VERSION, backup };
 }
 
 // Đổ toàn bộ hoá đơn hiện có vào index FTS5 (dùng cho nâng cấp schema).
@@ -105,4 +154,19 @@ function tableNames(db) {
     .all().map(row => row.name);
 }
 
-module.exports = { openDatabase, closeDatabase, withTransaction, applySchema, schemaVersion, tableNames, tableColumns, ensureColumn, backfillFts, SCHEMA_VERSION };
+// KHOẢNG NGÀY CỦA MỘT KỲ — bộ chọn kỳ trên header (Tháng này / Tháng trước / Quý này / Năm nay).
+// Trả về fragment `WHERE …` hoặc `AND …` (tùy câu đã có WHERE) kèm tham số. Cột ngày mặc định là
+// `ngay_lap` (hoá đơn); đổi sang `tran_date` khi lọc sao kê. Chỉ nhận ngày YYYY-MM-DD hợp lệ ⇒
+// không bao giờ nối chuỗi tùy ý vào SQL. Không có from/to → chuỗi rỗng, câu lệnh chạy như cũ.
+function dateRange(range, { alias = '', column = 'ngay_lap' } = {}) {
+  const value = range || {};
+  const col = `${alias ? `${alias}.` : ''}${column}`;
+  const parts = [];
+  const params = [];
+  if (/^\d{4}-\d{2}-\d{2}$/.test(String(value.from || ''))) { parts.push(`${col} >= ?`); params.push(String(value.from)); }
+  if (/^\d{4}-\d{2}-\d{2}$/.test(String(value.to || ''))) { parts.push(`${col} <= ?`); params.push(String(value.to)); }
+  const sql = parts.join(' AND ');
+  return { where: sql ? `WHERE ${sql}` : '', and: sql ? `AND ${sql}` : '', params };
+}
+
+module.exports = { openDatabase, closeDatabase, withTransaction, applySchema, backupBeforeMigration, dateRange, schemaVersion, tableNames, tableColumns, ensureColumn, backfillFts, SCHEMA_VERSION };

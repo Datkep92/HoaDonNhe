@@ -122,6 +122,9 @@ test(`§69.11 + §72 – ${INVOICES.toLocaleString('vi-VN')} hoá đơn: UI đ�
     time('lọc theo chiều + khoảng ngày', () => queries.listInvoices(db, { direction: 'BUY', from: '2026-03-01', to: '2026-09-30', limit: 50 }), 3000);
     time('tổng hợp hàng hoá (GROUP BY)', () => queries.products(db, { limit: 100 }), 5000);
     time('tổng quan', () => queries.summary(db), 1500);
+    // Mục 33: overview() giờ còn thêm GROUP BY hàng hoá + cảnh báo chất lượng dữ liệu (mục 24)
+    // — vẫn phải chạy trong mức thoáng, không biến màn Tổng quan thành chỗ nặng nhất app.
+    time('biểu đồ tổng quan (12 tháng + hàng hoá)', () => queries.overview(db), 3000);
     void elapsed;
 
     const size = fs.statSync(path.join(dir, 'data.db')).size;

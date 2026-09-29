@@ -5,6 +5,7 @@
 ## Tải và cài bản mới nhất
 
 - Trang tải: <https://github.com/Datkep92/HoaDonNhe/releases/latest>
+- `Datkep92/HoaDonNhe` là **một repo công khai duy nhất**: chứa cả **mã nguồn** lẫn **Releases**. App tự cập nhật đọc đúng repo đó (`src/version.js` > `repository`), nên link tải và self-update luôn khớp nhau — xem *Một repo công khai: mã nguồn + phát hành*.
 - Người dùng chỉ cần **một file**: `CN-Tax-Tools-Setup-vX.Y.Z.exe` (tải kèm `…exe.sha256`). Chạy file đó rồi chọn **CÀI ĐẶT VÀO WINDOWS** hoặc **PORTABLE** — xem mục *Phát hành (Release)* bên dưới.
 - Kiểm file trước khi cài (tuỳ chọn):
 
@@ -71,7 +72,7 @@ Cookie và JWT vẫn có thể hết hạn theo cổng thuế. Khi đó chọn M
 
 ## Kiến trúc
 
-- Node 16 được đóng gói thành một EXE duy nhất bằng `pkg`.
+- Node 24 được đóng gói thành một EXE duy nhất bằng `@yao-pkg/pkg` (bản `pkg` được duy trì). Runtime bắt buộc là Node 22+ vì tầng dữ liệu dùng module built-in `node:sqlite`.
 - EXE được vá PE subsystem `3 (console)` → `2 (GUI)` bằng `tools/hide-console.cjs` (đã gộp vào `npm run build`) nên mở app **không hiện cửa sổ terminal**. Vì không còn console: khởi động/lỗi ghi vào `du_lieu/nhat-ky.log`, lỗi nghiêm trọng hiện hộp thoại, và app tự thoát khi cửa sổ giao diện đóng (tiến trình Chrome kết thúc **và** giao diện đã ngừng gọi `/api/state`) hoặc khi giao diện im lặng quá 2,5 phút.
 - Chrome/Edge hệ thống chạy với `--user-data-dir` riêng cho từng MST.
 - EXE điều khiển tab cổng thuế qua Chrome DevTools Protocol, chỉ bind debug port ở `127.0.0.1`.
@@ -98,10 +99,12 @@ node tests/browser-regression.js release/CN-Tax-Tools-v<version>.exe
 `npm run build` **tự chặn bản build khuyết** (đúng lỗi của các bản 1.0.4–1.0.6: EXE phát hành thiếu model OCR nên không giải được CAPTCHA, phải build lại):
 
 1. trước khi đóng gói — thiếu `src/onnx/common.onnx` (54.088.400 byte) hoặc `common.json` (90.092 byte), hoặc sai kích thước ⇒ **dừng ngay**, không đóng gói;
-2. sau khi đóng gói — kiểm đủ **32/32 file nhúng bắt buộc**; thiếu ⇒ **xoá EXE** + báo lỗi;
+2. sau khi đóng gói — kiểm đủ **toàn bộ file nhúng bắt buộc** (danh sách ở `tools/verify-exe.cjs` > `REQUIRED`, cộng thêm mọi thư viện native quét động trong `node_modules`); thiếu ⇒ **xoá EXE** + báo lỗi;
 3. chạy chính EXE vừa build với `--ocr-check` (giải một ảnh CAPTCHA mẫu): không giải được ⇒ **xoá EXE** + báo lỗi.
 
 `npm run fetch-onnx` tải model từ prerelease `ocr-model-v1` của chính repo này (không phải bản phát hành sản phẩm). Chỉ khi cố ý build bản không OCR: `HOADON_ALLOW_NO_OCR=1` — khi đó app sẽ không giải được CAPTCHA.
+
+Repo `Datkep92/HoaDonNhe` là **public**, nên `npm run fetch-onnx` tải model ẩn danh được, không cần token. Nếu sau này chuyển repo sang **private** thì phải đặt token: `GH_TOKEN` (hoặc `GITHUB_TOKEN`) — tool sẽ hỏi GitHub API để lấy file. Workflow đã tự truyền `secrets.GITHUB_TOKEN`, không cần làm gì thêm. Token chỉ gửi tới `api.github.com`, không gửi sang host khi chuyển hướng.
 
 `npm run smoke` kiểm tra server và việc tìm Chrome/Edge. `npm test` kiểm tra phân trang, XML ZIP, resume, chống trùng, tạm dừng và cách ly tài khoản. Cần đăng nhập thật để kiểm chứng API GDT cho từng MST.
 
@@ -116,7 +119,7 @@ Chỉ phát hành **một file duy nhất**: `CN-Tax-Tools-Setup-vX.Y.Z.exe`. Ng
 - **CÀI ĐẶT VÀO WINDOWS** — cài vào `%LOCALAPPDATA%\Programs\CN Tax Tools` (không cần Administrator), tạo shortcut Desktop + Start Menu, có mục gỡ cài đặt trong Windows, có tuỳ chọn chạy ngay sau khi cài.
 - **PORTABLE** — chỉ giải nén `CN-Tax-Tools.exe` vào thư mục người dùng chọn để chạy trực tiếp; không ghi vào Windows, không có gỡ cài đặt.
 
-Cả hai chế độ lưu dữ liệu vào thư mục `du_lieu` **nằm cạnh `CN-Tax-Tools.exe`**, nên bản Portable mang cả thư mục sang máy khác là dùng được. Cả hai đều KHÔNG cần Node.js/Python/Chromium/dependency ngoài: app dùng **Google Chrome hoặc Microsoft Edge** có sẵn trên máy (Edge có sẵn trong Windows 10/11); installer kiểm tra và nhắc nếu máy thiếu cả hai. Bản build hiện tại là **Windows 64-bit (x64)** (pkg target `node16-win-x64`).
+Cả hai chế độ lưu dữ liệu vào thư mục `du_lieu` **nằm cạnh `CN-Tax-Tools.exe`**, nên bản Portable mang cả thư mục sang máy khác là dùng được. Cả hai đều KHÔNG cần Node.js/Python/Chromium/dependency ngoài: app dùng **Google Chrome hoặc Microsoft Edge** có sẵn trên máy (Edge có sẵn trong Windows 10/11); installer kiểm tra và nhắc nếu máy thiếu cả hai. Bản build hiện tại là **Windows 64-bit (x64)** (pkg target `node24-win-x64`).
 
 Chạy im lặng (tuỳ chọn, cho triển khai script):
 
@@ -124,21 +127,39 @@ Chạy im lặng (tuỳ chọn, cho triển khai script):
 CN-Tax-Tools-Setup-vX.Y.Z.exe /S /PORTABLE /D="C:\ThuMuc\CN Tax Tools"   # giải nén, không shortcut/gỡ cài đặt
 ```
 
+### Một repo công khai: mã nguồn + phát hành
+
+Bản phát hành nằm **ngay trên `Datkep92/HoaDonNhe`** — cũng chính là nơi chứa mã nguồn:
+
+| Repo | Ai xem được | Chứa gì |
+| --- | --- | --- |
+| `Datkep92/HoaDonNhe` (**public**) | mọi người | mã nguồn, tag, 4 file trong Releases, prerelease `ocr-model-v1` |
+
+Đây là ràng buộc **kỹ thuật**, không phải chọn cho gọn:
+
+- App trong máy người dùng chỉ biết **một** repo, lấy từ `src/version.js` > `repository` + `releasesUrl` (hiện là `Datkep92/HoaDonNhe`), và **từ chối** mọi URL tải không thuộc repo đó (xem `src/updater.js` và `tests/updater.test.js`).
+- Repo phát hành để **private** thì mọi lời gọi API/tải file của người dùng đều nhận **404** ⇒ tự cập nhật hỏng.
+- Nên `repository` trong `src/version.js` và repo mà workflow tạo Release **phải luôn là cùng một repo**. `.github/workflows/release.yml` chạy `gh release create` trên chính repo đang chạy workflow, tức `Datkep92/HoaDonNhe` — không có repo phát hành thứ hai, không dùng `RELEASE_REPO`/`RELEASE_REPO_TOKEN`.
+
+Workflow chỉ cần `secrets.GITHUB_TOKEN` (GitHub tự cấp) cho bước tải model OCR — không cần PAT hay secret phụ nào.
+
+**Tải model OCR khi chạy tay:** repo là **public** nên link tải ẩn danh vẫn chạy. Nếu sau này chuyển repo sang private thì phải đặt token `GH_TOKEN` (hoặc `GITHUB_TOKEN`); token chỉ gửi tới `api.github.com`, không gửi sang host khi chuyển hướng.
+
 ### Phát hành bằng GitHub Actions
 
 Workflow `.github/workflows/release.yml` chạy khi push tag dạng `cntax-vX.Y.Z` (hoặc `vX.Y.Z`) trên runner `windows-latest`:
 
 ```powershell
-node tools/set-version.cjs 1.0.8   # (tuỳ chọn) đồng bộ version ở máy, nên commit cùng
+node tools/set-version.cjs 1.0.9   # (tuỳ chọn) đồng bộ version ở máy, nên commit cùng
 npm test                           # kiểm tra trước khi tag (CI cũng chạy lại)
 git add -A
-git commit -m "release: CN Tax Tools v1.0.8"
-git tag -a cntax-v1.0.8 -m "CN Tax Tools v1.0.8"
+git commit -m "release: CN Tax Tools v1.0.9"
+git tag -a cntax-v1.0.9 -m "CN Tax Tools v1.0.9"
 git push origin main
-git push origin cntax-v1.0.8
+git push origin cntax-v1.0.9
 ```
 
-Workflow tự làm: checkout → cài dependency → **đồng bộ version theo tag** → chạy test → **tải model OCR (`npm run fetch-onnx`)** → build app EXE (`npm run build`, có 3 chốt chống bản khuyết ở mục *Build*) → tính SHA-256 cho payload self-update → cài NSIS → đóng gói Setup (`npm run installer`) → tạo GitHub Release và upload **cả 4 file** (`CN-Tax-Tools-Setup-vX.Y.Z.exe` + `.sha256`, `CN-Tax-Tools-vX.Y.Z.exe` + `.sha256`). Không cần build tay trên máy cá nhân.
+Workflow tự làm: checkout → cài dependency → **đồng bộ version theo tag** → chạy test → **tải model OCR (`npm run fetch-onnx`)** → build app EXE (`npm run build`, có 3 chốt chống bản khuyết ở mục *Build*) → tính SHA-256 cho payload self-update → cài NSIS → đóng gói Setup (`npm run installer`) → **tạo Release trên chính repo `Datkep92/HoaDonNhe`** và upload **cả 4 file** (`CN-Tax-Tools-Setup-vX.Y.Z.exe` + `.sha256`, `CN-Tax-Tools-vX.Y.Z.exe` + `.sha256`); chạy lại cùng tag thì ghi đè file (không lỗi). Không cần build tay trên máy cá nhân. Nếu bước phát hành lỗi, artifact dự phòng vẫn được lưu để tải về.
 
 ### Version
 
@@ -146,7 +167,7 @@ Workflow tự làm: checkout → cài dependency → **đồng bộ version theo
 
 ### Tự cập nhật (self-update)
 
-App đọc bản phát hành mới nhất trên GitHub Releases **một lần khi mở** (hoặc khi bấm kiểm tra lại) — không polling. Nếu có bản mới, một hộp thoại hiện ra:
+App đọc bản phát hành mới nhất trên repo khai ở `src/version.js` > `repository` (hiện là `Datkep92/HoaDonNhe`, **công khai**) **một lần khi mở** (hoặc khi bấm kiểm tra lại) — không polling. Nếu có bản mới, một hộp thoại hiện ra:
 
 ```
 Có phiên bản mới vX.Y.Z

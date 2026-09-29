@@ -12,14 +12,16 @@ const { spawn } = require('node:child_process');
 const {
   Updater, applySelfUpdate, parseApplyArgs, compareVersions, planUpdate, parseSha256,
   trustedAssetUrl, canWriteDir, cleanupUpdateTemp, updateTempDir, waitForExit,
-  appNameFor, appShaNameFor, setupNameFor, NEW_BINARY_NAME, BACKUP_SUFFIX,
+  appNameFor, appShaNameFor, setupNameFor, NEW_BINARY_NAME, BACKUP_SUFFIX, REPO,
 } = require('../src/updater');
+const versionInfo = require('../src/version');
 
 const tempDir = prefix => fs.mkdtempSync(path.join(os.tmpdir(), prefix));
 const NEW_BYTES = Buffer.from('MZ new binary payload for self-update tests\n'.repeat(32));
 const NEW_SHA = crypto.createHash('sha256').update(NEW_BYTES).digest('hex');
 const OLD_BYTES = Buffer.from('MZ old binary still running\n'.repeat(16));
-const REL = 'https://github.com/Datkep92/HoaDonNhe/releases/download/v1.0.2/';
+// Repo phát hành đến từ src/version.js (repo công khai dành riêng cho file cài).
+const REL = `https://github.com/${REPO}/releases/download/v1.0.2/`;
 
 function releaseFor(version, options = {}) {
   const { withSha = true, draft = false, binaryUrl = `${REL}${appNameFor(version)}`, shaUrl = `${REL}${appShaNameFor(version)}` } = options;
@@ -119,8 +121,8 @@ test('KHÔNG hạ cấp: bản phát hành cũ hơn thì bỏ qua', () => {
 });
 
 test('payload phải đúng repo/HTTPS/tên quy ước, và phải có .sha256', () => {
-  assert.equal(trustedAssetUrl(`${REL}${appNameFor('1.0.2')}`, appNameFor('1.0.2')).startsWith('https://github.com/Datkep92/'), true);
-  assert.equal(trustedAssetUrl(`http://github.com/Datkep92/HoaDonNhe/releases/download/v1.0.2/${appNameFor('1.0.2')}`, appNameFor('1.0.2')), '');
+  assert.equal(trustedAssetUrl(`${REL}${appNameFor('1.0.2')}`, appNameFor('1.0.2')), `${REL}${appNameFor('1.0.2')}`);
+  assert.equal(trustedAssetUrl(`http://github.com/${REPO}/releases/download/v1.0.2/${appNameFor('1.0.2')}`, appNameFor('1.0.2')), '');
   assert.equal(trustedAssetUrl(`https://evil.example/${appNameFor('1.0.2')}`, appNameFor('1.0.2')), '');
   assert.equal(planUpdate(releaseFor('1.0.2', { withSha: false }), '1.0.1').ok, false, 'thiếu .sha256 thì không cập nhật');
   assert.equal(planUpdate(releaseFor('1.0.2', { binaryUrl: 'https://evil.example/CN-Tax-Tools-v1.0.2.exe' }), '1.0.1').ok, false);
@@ -358,4 +360,15 @@ test('tag có tiền tố thương hiệu (cntax-v1.0.2): nhận đúng và ch�
   // Setup không bao giờ được dùng làm payload self-update.
   const setupOnly = { tag_name: 'cntax-v1.0.2', draft: false, prerelease: false, assets: [{ name: 'CN-Tax-Tools-Setup-v1.0.2.exe', size: 1, browser_download_url: `${REL}CN-Tax-Tools-Setup-v1.0.2.exe` }] };
   assert.equal(planUpdate(setupOnly, '1.0.1').ok, false, 'không dùng Setup cho self-update');
+});
+
+test('chỉ nhận file từ repo phát hành đã cấu hình, không nhận repo khác', () => {
+  assert.equal(versionInfo.repository, REPO, 'updater phải dùng đúng repo phát hành trong src/version.js');
+  assert.equal(versionInfo.releasesUrl, `https://github.com/${versionInfo.repository}/releases`, 'trang tải trong app phải là repo phát hành');
+
+  // URL trỏ về repo KHÁC bị từ chối — đây chính là cái bẫy nếu ai đó đổi repo phát hành mà quên đồng bộ.
+  const foreignRel = 'https://github.com/Datkep92/CnTaxTools/releases/download/v1.0.2/';
+  assert.equal(trustedAssetUrl(`${foreignRel}${appNameFor('1.0.2')}`, appNameFor('1.0.2')), '');
+  const fromForeign = releaseFor('1.0.2', { binaryUrl: `${foreignRel}${appNameFor('1.0.2')}`, shaUrl: `${foreignRel}${appShaNameFor('1.0.2')}` });
+  assert.equal(planUpdate(fromForeign, '1.0.1').ok, false, 'không tải payload từ repo khác');
 });

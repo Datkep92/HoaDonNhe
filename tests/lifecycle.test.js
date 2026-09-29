@@ -144,7 +144,8 @@ test('icon: ICO nhiều kích cỡ (khay + shortcut) và favicon cho cửa sổ 
   assert.ok(favicon.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])), 'favicon phải là PNG');
   assert.equal(favicon.readUInt32BE(16), 64, 'favicon phải 64×64');
   assert.ok(fs.readFileSync(path.join(root, 'src', 'index.html'), 'utf8').includes('rel="icon"'), 'index.html phải khai báo favicon');
-  assert.ok(source.includes("'/icon.png'") && source.includes("staticFile(res, 'icon.png', 'image/png')"), 'server phải phục vụ /icon.png');
+  // staticFile nhận (req, res, file, type) sau khi refector — vẫn phải phục vụ đúng /icon.png.
+  assert.ok(source.includes("'/icon.png'") && source.includes("staticFile(req, res, 'icon.png', 'image/png')"), 'server phải phục vụ /icon.png');
   const assets = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')).pkg.assets;
   assert.ok(assets.includes('src/icon.png'), 'EXE đóng gói phải kèm src/icon.png');
   assert.ok(functionBody('trayIconPath').includes("'CN-Tax-Tools.ico'"), 'nhận cả tên icon do bộ cài NSIS đặt cạnh app');

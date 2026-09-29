@@ -17,6 +17,7 @@
 // ---------------------------------------------------------------------------
 
 const { buildInvoiceKey } = require('./invoice-key');
+const { normalizePaymentMethod } = require('./payment-method');
 const vnDate = require('../vn-date');
 
 const blockRe = tag => new RegExp(`<${tag}>([\\s\\S]*?)</${tag}>`);
@@ -134,6 +135,8 @@ function parseInvoiceXml(xml) {
     dchiBan: textIn(nban, 'DChi') || null,
     dchiMua: textIn(nmua, 'DChi') || null,
     httToan: textIn(ttchung, 'HTTToan') || null,
+    paymentMethodRaw: textIn(ttchung, 'HTTToan') || null,
+    paymentMethod: normalizePaymentMethod(textIn(ttchung, 'HTTToan')),
     dvtTe: textIn(ttchung, 'DVTTe') || null,
     tgIa: textIn(ttchung, 'TGia') || null,
     msttcgp: textIn(ttchung, 'MSTTCGP') || null,

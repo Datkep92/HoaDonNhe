@@ -49,6 +49,20 @@ function findMakensis() {
 // thứ người dùng nhận được (bản 1.0.7 phát hành thiếu hẳn tab Sao kê ngân hàng mà không ai biết).
 // Bản không có trong bảng thì bỏ qua mục này, phần cài đặt/cập nhật vẫn đầy đủ.
 const WHATS_NEW = {
+  '1.0.9': [
+    '- **Tab “Tổng quan” đầy đủ**: KPI, biểu đồ bán ra/mua vào theo 12 tháng, tổng hợp hàng hoá,',
+    '  công nợ phải thu – phải trả, doanh thu luỹ kế kèm **ngưỡng thuế theo năm + loại hình kinh doanh**',
+    '  (số liệu lấy 100% từ SQLite, không hard-code) và bản **JSON thống kê** để sẵn cho AI.',
+    '- **Đối chiếu sao kê ngân hàng với hoá đơn**: tự phân loại **tiền mặt / chuyển khoản**, khớp từng giao dịch,',
+    '  phát hiện **hoá đơn chuyển khoản chưa có sao kê**, **sao kê chưa có hoá đơn**, **lệch số tiền**,',
+    '  **lệch đối tượng**. Dòng “Cần kiểm tra” trên Tổng quan bấm được để xem từng chi tiết, kèm nút',
+    '  **Đọc lại file hoá đơn gốc** bù hình thức thanh toán còn thiếu (không sửa file, không sửa số tiền).',
+    '- **Quét bù lịch sử**: tự nhận ra khoảng ngày còn thiếu và quét lại, ưu tiên MST lâu chưa quét nhất.',
+    '- **Khởi động nhanh hơn**: màn hình khởi động có tiến trình, nhớ đúng MST đang chọn khi mở lại app,',
+    '  và cache tài sản tĩnh bằng ETag nên mở lại giao diện nhanh hơn.',
+    '- **EXE nhẹ hơn**: tài sản giao diện được rút gọn ngay lúc đóng gói; bản gốc vẫn nằm trong EXE làm đường lùi.',
+    '- Sửa: toàn bộ hộp thoại xác nhận/nhập liệu dùng popup đồng bộ của app (không còn hộp native của trình duyệt).',
+  ],
   '1.0.8': [
     '- **Tab “Sao kê ngân hàng”**: nhập sao kê Excel/CSV, đọc **PDF có chữ ngay trong máy** (không gửi lên mạng),',
     '  chuẩn hoá ngày/số tiền, tự bỏ giao dịch trùng, lọc theo ngày – khoảng tiền – tiền vào/tiền ra,',

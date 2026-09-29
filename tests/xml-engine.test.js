@@ -15,10 +15,11 @@ const os = require('node:os');
 const path = require('node:path');
 
 const { parseInvoiceXml, buildImportRecord, detectDirection, toVietnamDate } = require('../src/data/xml-parser');
-const { scanXmlFolder, listMstXmlFiles } = require('../src/data/xml-scanner');
+const { scanXmlFolder, reprocessPaymentMethods, listMstXmlFiles } = require('../src/data/xml-scanner');
 const { createXmlWatcher } = require('../src/data/xml-watcher');
 const { runImport } = require('../src/data/xml-import');
 const { openDatabase, closeDatabase } = require('../src/data/sqlite');
+const reconciliation = require('../src/data/reconciliation');
 const { findInvoiceByKey, countInvoices, countItems, itemsOfInvoice } = require('../src/data/repository');
 
 const MST = '0312345678';
@@ -39,6 +40,10 @@ function buildXml(options = {}) {
   const khhDon = options.khhDon || 'C26TNT';
   const shDon = options.shDon || '00075757';
   const nlap = options.nlap || '2026-09-21';
+  // HTTToan = hình thức thanh toán. Cho phép đổi để test REPROCESS (mục 32):
+  //   httt: null  → XML KHÔNG có thẻ HTTToan (không được tự đoán)
+  const httt = options.httt === undefined ? 'TM/CK' : options.httt;
+  const htttTag = httt === null ? '' : `<HTTToan>${httt}</HTTToan>`;
   const mccqt = options.mccqt || '';
   const items = options.items || [sampleItem(1), sampleItem(2)];
   const buyer = options.buyerNoMst
@@ -46,7 +51,7 @@ function buildXml(options = {}) {
     : `<NMua><Ten>CÔNG TY VÍ DỤ NGƯỜI MUA</Ten><MST>${buyerMst}</MST><DChi>Địa chỉ ví dụ</DChi></NMua>`;
   return `<HDon><DLHDon Id="VIDU01"><TTChung><PBan>2.1.0</PBan><THDon>Hóa đơn giá trị gia tăng</THDon>` +
     `<KHMSHDon>${khmshDon}</KHMSHDon><KHHDon>${khhDon}</KHHDon><SHDon>${shDon}</SHDon><NLap>${nlap}</NLap>` +
-    `<DVTTe>VND</DVTTe><TGia>1.00</TGia><HTTToan>TM/CK</HTTToan><HDCTTChinh>0</HDCTTChinh>` +
+    `<DVTTe>VND</DVTTe><TGia>1.00</TGia>${htttTag}<HDCTTChinh>0</HDCTTChinh>` +
     `<TTKhac><TTin><TTruong>ListStockName</TTruong><KDLieu>string</KDLieu><DLieu>Kho ví dụ</DLieu></TTin></TTKhac>` +
     `${mccqt ? `<MCCQT>${mccqt}</MCCQT>` : ''}</TTChung><NDHDon>` +
     `<NBan><Ten>CÔNG TY VÍ DỤ NHÀ CUNG CẤP &amp; ĐỐI TÁC</Ten><MST>${sellerMst}</MST><DChi>Địa chỉ ví dụ</DChi></NBan>` +
@@ -332,5 +337,55 @@ test('MST khác ⇒ database khác, dữ liệu không lẫn nhau (mục 5)', as
     } finally {
       fs.rmSync(otherDir, { recursive: true, force: true });
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// MỤC 32 – REPROCESS PAYMENT METHOD: hoá đơn nhập TRƯỚC khi hệ thống có cột
+// payment_method phải được đọc LẠI từ file XML gốc để bù vào. KHÔNG đoán,
+// KHÔNG sửa XML, KHÔNG sửa số tiền; file XML đã mất thì giữ nguyên giá trị cũ.
+// ---------------------------------------------------------------------------
+test('REPROCESS: bù hình thức thanh toán cho hoá đơn cũ từ XML gốc, file mất thì giữ nguyên', async () => {
+  await withScannerDir(async ({ dir, db }) => {
+    write(dir, 'Mua_vao', 'ck.xml', buildXml({ shDon: '00000051', httt: 'Chuyển khoản' }));
+    write(dir, 'Mua_vao', 'no-tag.xml', buildXml({ shDon: '00000052', httt: null }));
+    const goneFile = path.join(dir, 'Mua_vao', 'gone.xml');
+    fs.writeFileSync(goneFile, buildXml({ shDon: '00000053', httt: 'Tiền mặt' }));
+    await scanXmlFolder({ db, mst: MST, mstDir: dir });
+    assert.equal(countInvoices(db), 3);
+
+    // Giả lập hoá đơn nhập hồi chưa có cột này (DB nâng cấp từ schema cũ).
+    db.prepare("UPDATE invoices SET payment_method_raw = NULL, payment_method = 'UNKNOWN'").run();
+    const statusOf = soHd => db.prepare('SELECT reconciliation_status FROM invoices WHERE so_hd = ?').get(soHd).reconciliation_status;
+    const rawOf = soHd => db.prepare('SELECT payment_method_raw, payment_method FROM invoices WHERE so_hd = ?').get(soHd);
+
+    const first = await reprocessPaymentMethods({ db, mstDir: dir });
+    assert.deepEqual(
+      { candidates: first.candidates, updated: first.updated, empty: first.empty, missing: first.missing, failed: first.failed },
+      { candidates: 3, updated: 2, empty: 1, missing: 0, failed: 0 });
+    assert.deepEqual({ ...rawOf('00000051') }, { payment_method_raw: 'Chuyển khoản', payment_method: 'TRANSFER' }, 'lấy đúng chữ gốc + giá trị chuẩn hoá');
+    assert.deepEqual({ ...rawOf('00000052') }, { payment_method_raw: '', payment_method: 'UNKNOWN' }, 'XML không ghi HTTToan → UNKNOWN; đã đọc rồi thì ghi chuỗi rỗng để khỏi đọc lại file');
+    assert.deepEqual({ ...rawOf('00000053') }, { payment_method_raw: 'Tiền mặt', payment_method: 'CASH' });
+    // Đối chiếu phải tính lại theo hình thức VỪA bù (chưa có sao kê → thiếu sao kê, KHÔNG phải thiếu phương thức).
+    assert.equal(statusOf('00000051'), 'TRANSFER_BANK_NOT_FOUND');
+    assert.equal(statusOf('00000053'), 'CASH_NO_BANK_REQUIRED');
+    assert.equal(statusOf('00000052'), 'PAYMENT_METHOD_UNKNOWN');
+
+    // Lần 2: không còn gì cần đọc (2 dòng kia đã ghi chuỗi rỗng, không còn NULL).
+    const again = await reprocessPaymentMethods({ db, mstDir: dir });
+    assert.equal(again.candidates, 0, 'đã đọc rồi thì không đọc lại file mỗi lần');
+
+    // File XML bị xoá + đưa hoá đơn về trạng thái CHƯA ĐỌC (giống DB cũ thật: cột trạng thái còn NULL)
+    fs.unlinkSync(goneFile);
+    db.prepare(`UPDATE invoices SET payment_method_raw = NULL, payment_method = 'UNKNOWN',
+      reconciliation_status = NULL, reconciliation_issues = NULL WHERE so_hd = '00000053'`).run();
+    const third = await reprocessPaymentMethods({ db, mstDir: dir });
+    assert.equal(third.candidates, 1);
+    assert.equal(third.missing, 1, 'file mất phải được đếm riêng');
+    assert.deepEqual({ ...rawOf('00000053') }, { payment_method_raw: null, payment_method: 'UNKNOWN' }, 'không có file ⇒ giữ nguyên, KHÔNG tự biến thành CASH hay TRANSFER');
+    assert.equal(statusOf('00000053'), null, 'KHÔNG tự bịa kết quả đối chiếu khi chưa đọc được gì');
+    // Tổng quan tự chữa số liệu: đọc summary() là tính lại theo payment_method thật.
+    reconciliation.summary(db);
+    assert.equal(statusOf('00000053'), 'PAYMENT_METHOD_UNKNOWN');
   });
 });

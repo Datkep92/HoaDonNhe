@@ -20,7 +20,7 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
-const { buildImportRecord } = require('./xml-parser');
+const { buildImportRecord, parseInvoiceXml } = require('./xml-parser');
 const { insertInvoice, upsertInvoice, findInvoiceByKey, recordImportedFile } = require('./repository');
 const { withTransaction } = require('./sqlite');
 const { isExcluded } = require('./invoice-state');
@@ -205,6 +205,45 @@ function folderOf(mstDir, filePath) {
   return Object.prototype.hasOwnProperty.call(FOLDER_DIRECTION, first) ? first : '';
 }
 
+// ---------------------------------------------------------------------------
+// REPROCESS PAYMENT METHOD — MASTER TASK mục 32.
+//
+// Hoá đơn nhập TRƯỚC khi có cột payment_method sẽ mang giá trị NULL ở payment_method_raw.
+// Chức năng này đọc LẠI file XML gốc (XML vẫn là nguồn gốc) và chỉ BỔ SUNG 2 cột
+//   payment_method_raw  = chữ ghi trong <HTTToan> (nguyên bản)
+//   payment_method      = giá trị đã chuẩn hoá
+// KHÔNG sửa số tiền, KHÔNG sửa ngày, KHÔNG sửa file XML, KHÔNG đoán khi XML không ghi.
+//
+// Phân biệt 2 trạng thái để không phải đọc lại file mỗi lượt:
+//   payment_method_raw IS NULL  → CHƯA đọc lại (chưa biết XML ghi gì)
+//   payment_method_raw = ''     → ĐÃ đọc lại, XML không ghi hình thức → giữ UNKNOWN
+// File XML đã bị xoá/không đọc được → đếm riêng, GIỮ NGUYÊN giá trị cũ.
+// ---------------------------------------------------------------------------
+async function reprocessPaymentMethods({ db, mstDir, onFile, limit = 0 } = {}) {
+  const rows = db.prepare(`SELECT id, so_hd, file_xml FROM invoices
+    WHERE payment_method_raw IS NULL ORDER BY id${Number(limit) > 0 ? ` LIMIT ${Number(limit)}` : ''}`).all();
+  const result = { candidates: rows.length, updated: 0, empty: 0, missing: 0, failed: 0 };
+  const update = db.prepare('UPDATE invoices SET payment_method_raw = ?, payment_method = ? WHERE id = ?');
+  for (const row of rows) {
+    if (typeof onFile === 'function') onFile({ ...result, current: row.file_xml });
+    await yieldToLoop();
+    let source;
+    try {
+      if (!row.file_xml || !fs.existsSync(row.file_xml)) { result.missing += 1; continue; }
+      source = fs.readFileSync(row.file_xml, 'utf8');
+    } catch { result.missing += 1; continue; }
+    let record;
+    try { record = parseInvoiceXml(source).record; } catch { result.failed += 1; continue; }
+    const raw = record.paymentMethodRaw || '';
+    const method = record.paymentMethod || 'UNKNOWN';
+    update.run(raw, method, row.id);
+    if (raw) result.updated += 1; else result.empty += 1;
+  }
+  // Hình thức thay đổi ⇒ kết quả đối chiếu cũ không còn đúng (UNKNOWN → CASH/TRANSFER).
+  if (result.updated > 0) require('./reconciliation').forceReconcile(db);
+  return result;
+}
+
 async function scanXmlFolder({ db, mst, identifiers, mstDir, folders = Object.keys(FOLDER_DIRECTION), onlyFiles, onFile, observeCandidates = defaultObserveCandidates }) {
   const summary = { scanned: 0, imported: 0, updated: 0, duplicates: 0, skipped: 0, errors: 0, inactive: 0, items: 0, warningCount: 0, files: [] };
   const notify = () => { if (typeof onFile === 'function') onFile(summary); };
@@ -246,7 +285,11 @@ async function scanXmlFolder({ db, mst, identifiers, mstDir, folders = Object.ke
       pendingRescan = observed.added.length > 0;
     } catch { /* vết phụ — không được làm hỏng kết quả quét chính */ }
   }
+  // Hóa đơn mới vào kho ⇒ kết quả đối chiếu cũ lệch → tính lại NGAY.
+  // reconcile() chỉ chạy thật khi có dòng chưa có trạng thái (tức là có gì đó đổi),
+  // nên lượt quét không có gì mới chỉ tốn 2 câu COUNT — không làm chậm auto sync / watcher.
+  require('./reconciliation').reconcile(db);
   return { ...summary, pendingRescan };
 }
 
-module.exports = { scanXmlFolder, alreadyImported, previousFile, processFile, stateChanged, collectXmlFiles, listMstXmlFiles, folderOf, readStates, FOLDER_DIRECTION, IMPORT_BATCH_SIZE, STATE_FILE, LEGACY_SUPERSEDED_FILE };
+module.exports = { scanXmlFolder, reprocessPaymentMethods, alreadyImported, previousFile, processFile, stateChanged, collectXmlFiles, listMstXmlFiles, folderOf, readStates, FOLDER_DIRECTION, IMPORT_BATCH_SIZE, STATE_FILE, LEGACY_SUPERSEDED_FILE };

@@ -20,6 +20,10 @@ const path = require('node:path');
 const REQUIRED = [
   // Giao diện
   'index.html', 'style.css', 'login.css', 'data-view.css', 'icon.png',
+  // Logo thương hiệu trong sidebar: index.html trỏ tới file riêng này (KHÔNG nhúng base64 để
+  // index.html nhẹ). Thiếu nó thì app vẫn chạy nhưng sidebar trắng logo — đúng kiểu "bản khuyết
+  // im lặng" mà bước kiểm này sinh ra để chặn.
+  'brand-logo.png',
   // Mã chạy trong cửa sổ app
   'renderer.js', 'tax-login.js', 'chat-widget.js', 'app-settings.js', 'update-ui.js',
   'app-lock.js', 'support.js', 'period.js', 'mst-format.js', 'data-ui.js',
@@ -40,9 +44,13 @@ const REQUIRED = [
   // src/template/*.mp3 không khớp file nào, KHÔNG phải do thiếu model như tôi từng đoán sai.)
 ];
 
-function verify(exePath) {
+// `extra`: tên các file BẮT BUỘC THÊM cho riêng lần build này. build-app dùng để đòi luôn BẢN RÚT
+// GỌN tài sản giao diện khi bước rút gọn đã chạy: bản gốc vẫn nằm trong EXE làm đường lùi, nên nếu
+// quên khai `src/*.min.*` vào pkg.assets thì app VẪN chạy đúng — nghĩa là lỗi sẽ im lặng và bản
+// phát hành lại nặng như cũ. Đòi thẳng tên file ở đây thì build ĐỎ, không thể quên.
+function verify(exePath, extra = []) {
   const bytes = fs.readFileSync(exePath);
-  const required = [...REQUIRED, ...nativeNames()];
+  const required = [...REQUIRED, ...nativeNames(), ...extra];
   const missing = required.filter(name => bytes.indexOf(Buffer.from(name)) < 0);
   return { missing, size: bytes.length, total: required.length };
 }

@@ -20,9 +20,13 @@ const ROOT = path.resolve(__dirname, '..');
 const SOURCE = path.join(ROOT, 'resources', 'icon-source.png');
 const OUT_ICO = path.join(ROOT, 'resources', 'icon.ico');
 const OUT_FAVICON = path.join(ROOT, 'src', 'icon.png');
+const OUT_BRAND = path.join(ROOT, 'src', 'brand-logo.png');
 const SIZES = [16, 20, 24, 32, 40, 48, 64, 128, 256];
 const SOURCE_SIZE = 512; // nguồn chuẩn lưu trong repo: đủ cho icon 256 + favicon, vẫn nhẹ
 const FAVICON_SIZE = 64;
+// Logo ở sidebar (`.brand-logo`) cao 44px → 88×88 là bản 2× cho màn HiDPI, không thừa điểm ảnh.
+// Trước đây ảnh này nhúng thẳng base64 1024×1024 vào index.html, làm trang nặng 2 MB.
+const BRAND_SIZE = 88;
 
 // --- PNG: giải mã ----------------------------------------------------------
 function paeth(a, b, c) {
@@ -345,5 +349,10 @@ const favicon = encodePng(FAVICON_SIZE, FAVICON_SIZE, getRgba(FAVICON_SIZE));
 fs.mkdirSync(path.dirname(OUT_FAVICON), { recursive: true });
 fs.writeFileSync(OUT_FAVICON, favicon);
 
+const brand = encodePng(BRAND_SIZE, BRAND_SIZE, getRgba(BRAND_SIZE));
+fs.mkdirSync(path.dirname(OUT_BRAND), { recursive: true });
+fs.writeFileSync(OUT_BRAND, brand);
+
 console.log(`Đã tạo ${path.relative(ROOT, OUT_ICO)} (${(ico.length / 1024).toFixed(0)} KB, ${SIZES.length} kích cỡ: ${SIZES.join('/')})`);
 console.log(`Đã tạo ${path.relative(ROOT, OUT_FAVICON)} (${(favicon.length / 1024).toFixed(1)} KB, ${FAVICON_SIZE}×${FAVICON_SIZE}) — favicon cho cửa sổ app.`);
+console.log(`Đã tạo ${path.relative(ROOT, OUT_BRAND)} (${(brand.length / 1024).toFixed(1)} KB, ${BRAND_SIZE}×${BRAND_SIZE}) — logo sidebar (2× của 44px).`);

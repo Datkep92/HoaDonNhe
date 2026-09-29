@@ -16,6 +16,10 @@ ctl3.txt
 /banra/
 /*.png
 
+# Sao kê ngân hàng / bảng kê khách hàng ở gốc project — KHÔNG đẩy lên GitHub
+/*.xlsx
+/*.xls
+
 # Build/archive artifacts
 *.zip
 
@@ -44,3 +48,23 @@ backup/
 # Scratch của phiên làm việc (script dò, thư mục dữ liệu thử) — không phải mã dự án
 *.tmp.cjs
 du_lieu_*_tmp/
+
+# Bản rút gọn tài sản giao diện — SINH RA lúc đóng gói (tools/minify-ui.cjs), không phải mã nguồn:
+#   node tools/minify-ui.cjs   ->   npm run build
+src/*.min.js
+src/*.min.css
+
+# Nguồn extension Chrome "pdf conver" — chỉ được NHẮC trong chú thích (đã port logic sang
+# src/bank-pdf.js), KHÔNG được require() và KHÔNG khai trong pkg.assets ⇒ không vào EXE.
+/src/pdf conver/
+
+# Bản landing CŨ (v1) là một repo git RIÊNG (remote cntaxtools-landing.git) — KHÔNG nằm trong repo này.
+# Thêm vào đây sẽ thành "gitlink" rỗng, clone về là mất nội dung. Nơi deploy là landing-v2/ (workflow deploy-landing.yml).
+/landing-page/
+
+# Ghi chú/đề bài phía người dùng + script dò một lần — không phải mã dự án.
+# (Kiểm bằng: git grep -l cho thấy chỉ có chú thích nhắc tới, không nơi nào require.)
+/.agents/
+/tmp-sk-pdf-test.cjs
+/# MASTER TASK*.md
+/*SQlite.md

@@ -11,6 +11,7 @@
 
 const { buildInvoiceKey } = require('./invoice-key');
 const { withTransaction } = require('./sqlite');
+const { normalizePaymentMethod } = require('./payment-method');
 
 function nowIso() {
   return new Date().toISOString();
@@ -39,7 +40,9 @@ function normalizeRecord(record) {
     mstBan: record.mstBan, khmshDon: record.khmsHd, khhDon: record.khhHd, shDon: record.soHd,
   });
   // tthai đến từ kết quả tra cứu (XML không mang). Không có thì để null — KHÔNG suy đoán là '1'.
-  return { ...record, direction, fileXml, invoiceKey, tthai: normalizeState(record.tthai) };
+  const paymentMethodRaw = normalizeState(record.paymentMethodRaw ?? record.httToan);
+  return { ...record, direction, fileXml, invoiceKey, tthai: normalizeState(record.tthai),
+    paymentMethodRaw, paymentMethod: normalizePaymentMethod(paymentMethodRaw) };
 }
 
 function normalizeItems(items) {
@@ -95,8 +98,8 @@ function insertInvoice(db, record) {
     try {
       info = db.prepare(`INSERT INTO invoices
         (invoice_key, direction, mst_ban, mst_mua, ten_ban, ten_mua, ngay_lap, khms_hd, khh_hd, so_hd,
-         loai_hoa_don, tthai, tien_truoc_thue, tien_thue, tong_tien, file_xml, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+         loai_hoa_don, tthai, payment_method_raw, payment_method, tien_truoc_thue, tien_thue, tong_tien, file_xml, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
         value.invoiceKey,
         value.direction,
         value.mstBan ?? null,
@@ -109,6 +112,8 @@ function insertInvoice(db, record) {
         value.soHd ?? null,
         value.loaiHoaDon ?? null,
         value.tthai ?? null,
+        value.paymentMethodRaw,
+        value.paymentMethod,
         asNumber(value.tienTruocThue, 'invoices.tien_truoc_thue'),
         asNumber(value.tienThue, 'invoices.tien_thue'),
         asNumber(value.tongTien, 'invoices.tong_tien'),
@@ -146,7 +151,7 @@ function upsertInvoice(db, record) {
   return withTransaction(db, () => {
     db.prepare(`UPDATE invoices SET
       direction = ?, mst_ban = ?, mst_mua = ?, ten_ban = ?, ten_mua = ?, ngay_lap = ?,
-      khms_hd = ?, khh_hd = ?, so_hd = ?, loai_hoa_don = ?, tthai = ?, tien_truoc_thue = ?,
+      khms_hd = ?, khh_hd = ?, so_hd = ?, loai_hoa_don = ?, tthai = ?, payment_method_raw = ?, payment_method = ?, tien_truoc_thue = ?,
       tien_thue = ?, tong_tien = ?, file_xml = ?, updated_at = ? WHERE id = ?`).run(
       value.direction,
       value.mstBan ?? null,
@@ -159,6 +164,8 @@ function upsertInvoice(db, record) {
       value.soHd ?? null,
       value.loaiHoaDon ?? null,
       value.tthai ?? null,
+      value.paymentMethodRaw,
+      value.paymentMethod,
       asNumber(value.tienTruocThue, 'invoices.tien_truoc_thue'),
       asNumber(value.tienThue, 'invoices.tien_thue'),
       asNumber(value.tongTien, 'invoices.tong_tien'),
@@ -200,6 +207,50 @@ function listInvoices(db, { limit = 50, offset = 0, direction = '' } = {}) {
   return db.prepare('SELECT * FROM invoices ORDER BY ngay_lap DESC, id DESC LIMIT ? OFFSET ?').all(size, skip);
 }
 
+// ---------------------------------------------------------------------------
+// PHÂN LOẠI THỦ CÔNG (mục 3 của yêu cầu 2026-09) — CHỈ ghi giá trị NGƯỜI DÙNG bấm:
+//   checked / processed / missing_docs / complete_docs / error  → mức độ đã soát
+//   cash_manual / transfer_manual                               → ghi nhận TM / CK cho hoá đơn
+// Hai mục cash/transfer còn đổi CỘT payment_method: XML ghi "TM/CK" nên MÁY KHÔNG tự phân loại
+// được — người dùng tự xác nhận "khớp sao kê ⇒ CK, chưa khớp ⇒ TM" (mục 3).
+// payment_method_raw GIỮ NGUYÊN: đó là giá trị gốc từ XML, không bao giờ bị ghi đè (mục 5).
+// ---------------------------------------------------------------------------
+const REVIEW_ACTIONS = Object.freeze({
+  checked: { status: 'checked' },
+  processed: { status: 'processed' },
+  missing_docs: { status: 'missing_docs' },
+  complete_docs: { status: 'complete_docs' },
+  error: { status: 'error' },
+  cash_manual: { status: 'cash_manual', paymentMethod: 'CASH' },
+  transfer_manual: { status: 'transfer_manual', paymentMethod: 'TRANSFER' },
+});
+
+function setReview(db, { id, action }) {
+  const rule = REVIEW_ACTIONS[String(action || '')];
+  if (!rule) throw new Error('Trạng thái phân loại không hợp lệ.');
+  const invoiceId = Number(id);
+  if (!Number.isFinite(invoiceId)) throw new Error('Thiếu mã hoá đơn.');
+  const stamped = nowIso();
+  return withTransaction(db, () => {
+    const before = db.prepare('SELECT id, payment_method FROM invoices WHERE id = ?').get(invoiceId);
+    if (!before) throw new Error('Không tìm thấy hoá đơn này trong kho dữ liệu.');
+    if (rule.paymentMethod) {
+      db.prepare('UPDATE invoices SET payment_method = ?, review_status = ?, reviewed_at = ? WHERE id = ?')
+        .run(rule.paymentMethod, rule.status, stamped, invoiceId);
+    } else {
+      db.prepare('UPDATE invoices SET review_status = ?, reviewed_at = ? WHERE id = ?')
+        .run(rule.status, stamped, invoiceId);
+    }
+    const changedMethod = !!rule.paymentMethod && before.payment_method !== rule.paymentMethod;
+    return {
+      id: invoiceId,
+      status: rule.status,
+      paymentMethod: rule.paymentMethod || before.payment_method,
+      changedMethod,
+    };
+  });
+}
+
 function setSyncState(db, key, value) {
   db.prepare(`INSERT INTO sync_state (key, value, updated_at) VALUES (?, ?, ?)
     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`)
@@ -212,4 +263,4 @@ function getSyncState(db, key) {
   try { return JSON.parse(row.value); } catch { return row.value; }
 }
 
-module.exports = { insertInvoice, upsertInvoice, findInvoiceByKey, recordImportedFile, countInvoices, countItems, itemsOfInvoice, listInvoices, setSyncState, getSyncState, normalizeRecord, normalizeItems };
+module.exports = { insertInvoice, upsertInvoice, findInvoiceByKey, recordImportedFile, countInvoices, countItems, itemsOfInvoice, listInvoices, setReview, REVIEW_ACTIONS, setSyncState, getSyncState, normalizeRecord, normalizeItems };

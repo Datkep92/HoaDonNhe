@@ -11,7 +11,8 @@
 //     với cờ `--apply-update`, rồi thoát. Bản mới đóng vai trò updater.
 //   * Updater chỉ đổi ĐÚNG file chương trình: backup -> thay -> kiểm tra -> mở lại; lỗi ở
 //     bước nào cũng khôi phục bản cũ. Không đụng tới `du_lieu` hay bất kỳ dữ liệu người dùng.
-//   * Chỉ tải asset thuộc `Datkep92/HoaDonNhe`, HTTPS, đúng tên quy ước, và SHA-256 phải khớp.
+//   * Chỉ tải asset thuộc REPO PHÁT HÀNH (src/version.js > repository), HTTPS, đúng tên quy
+//     ước, và SHA-256 phải khớp. Repo mã nguồn để private nên KHÔNG bao giờ được dùng ở đây.
 //   * Chỉ nâng cấp (latest > current), không bao giờ hạ cấp.
 //   * Không truyền dữ liệu từ Internet vào shell: chỉ spawn với mảng tham số.
 // ---------------------------------------------------------------------------
@@ -23,7 +24,8 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const { spawn } = require('node:child_process');
 
-const REPO = 'Datkep92/HoaDonNhe';
+// Repo PHÁT HÀNH (public) — nguồn duy nhất là src/version.js, không hardcode ở đây.
+const REPO = require('./version').repository;
 const RELEASE_HOST = 'github.com';
 const ALLOWED_REDIRECT_HOSTS = new Set([RELEASE_HOST, 'objects.githubusercontent.com', 'release-assets.githubusercontent.com', 'github-releases.githubusercontent.com']);
 const USER_AGENT = 'CN-Tax-Tools-Updater';
@@ -78,8 +80,8 @@ function planUpdate(release, currentVersion) {
 
   const binaryUrl = trustedAssetUrl(binary.browser_download_url, binaryName);
   const shaUrl = trustedAssetUrl(sha.browser_download_url, shaName);
-  if (!binaryUrl) return { ok: false, error: 'URL tải không hợp lệ (phải là HTTPS thuộc Datkep92/HoaDonNhe).', latest: tag };
-  if (!shaUrl) return { ok: false, error: 'URL SHA-256 không hợp lệ (phải là HTTPS thuộc Datkep92/HoaDonNhe).', latest: tag };
+  if (!binaryUrl) return { ok: false, error: `URL tải không hợp lệ (phải là HTTPS thuộc ${REPO}).`, latest: tag };
+  if (!shaUrl) return { ok: false, error: `URL SHA-256 không hợp lệ (phải là HTTPS thuộc ${REPO}).`, latest: tag };
 
   return {
     ok: true,

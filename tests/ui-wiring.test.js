@@ -46,11 +46,33 @@ test('index.html không dùng inline style hay handler inline (CSP style-src sel
 });
 
 test('file nội bộ index.html tham chiếu đều tồn tại và đã khai báo trong pkg.assets', () => {
+  // Tài sản SINH RA LÚC CHẠY, không phải file trên đĩa: `/boot-cache.js` là ảnh chụp danh sách MST
+  // cho khung hình đầu, dựng từ du_lieu/accounts.json nên không thể là file tĩnh (xem
+  // bootCacheScript trong src/server.js). Không cần khai trong pkg.assets — pkg chỉ đóng gói file.
+  const generated = new Set(['boot-cache.js']);
   const referenced = [...html.matchAll(/(?:src|href)="([^":]+)"/g)].map(match => match[1]).filter(name => !name.startsWith('http'));
-  const missingOnDisk = referenced.filter(name => !fs.existsSync(path.join(root, 'src', name)));
+  const missingOnDisk = referenced.filter(name => !generated.has(name) && !fs.existsSync(path.join(root, 'src', name)));
   assert.deepEqual(missingOnDisk, [], `index.html trỏ tới file không có trên đĩa: ${missingOnDisk.join(', ')}`);
-  const notPackaged = referenced.filter(name => !packaged(name));
+  const notPackaged = referenced.filter(name => !generated.has(name) && !packaged(name));
   assert.deepEqual(notPackaged, [], `file chưa khai báo trong pkg.assets (sẽ thiếu khi đóng gói EXE): ${notPackaged.join(', ')}`);
+});
+
+test('index.html nhẹ: KHÔNG nhúng ảnh base64, logo thương hiệu là file riêng', () => {
+  // Đã từng có logo PNG 1024×1024 (~2 MB) nhúng thẳng base64 vào HTML, chiếm 87% payload
+  // trang (2,08 MB HTML / 2,35 MB tổng) để hiển thị ở 44px. Nay logo là file tĩnh `brand-logo.png`.
+  const inlineData = [...html.matchAll(/data:[a-z/+.-]+;base64,([A-Za-z0-9+/=]+)/g)];
+  const biggest = inlineData.reduce((max, match) => Math.max(max, match[1].length), 0);
+  assert.ok(biggest < 4096, `index.html nhúng ảnh base64 ${biggest} ký tự — phải để thành file tĩnh (payload trang tăng vọt)`);
+  const bytes = Buffer.byteLength(html, 'utf8');
+  assert.ok(bytes < 100 * 1024, `index.html nặng ${Math.round(bytes / 1024)} KB — ngưỡng là 100 KB, xem lại có tài sản lớn nhúng thẳng không`);
+  assert.match(html, /<img class="brand-logo"[^>]*src="brand-logo\.png"/, 'logo sidebar phải trỏ tới brand-logo.png');
+  // CSS hiển thị 44px ⇒ file nguồn phải ≥ 88px cạnh để không bị nhoè trên màn HiDPI.
+  const png = fs.readFileSync(path.join(root, 'src', 'brand-logo.png'));
+  assert.equal(png.subarray(1, 4).toString('ascii'), 'PNG', 'brand-logo.png không phải PNG hợp lệ');
+  const width = png.readUInt32BE(16);
+  const height = png.readUInt32BE(20);
+  assert.ok(width >= 88 && height >= 88, `brand-logo.png là ${width}×${height} — cần ≥ 88×88 cho HiDPI`);
+  assert.ok(png.length < 64 * 1024, `brand-logo.png nặng ${Math.round(png.length / 1024)} KB — quá lớn cho một logo 44px`);
 });
 
 test('giao diện Kho dữ liệu có đủ các vùng chính', () => {
@@ -67,7 +89,9 @@ test('Kho dữ liệu: bộ lọc gọn ở đầu tab + mỗi bảng có nút c
     assert.ok(ids.has(id), `thiếu ô lọc/ghi chú #${id} ở khối đầu tab`);
   }
   assert.ok(!ids.has('data-range-note'), 'bỏ dòng chữ khoảng ngày (đã có sẵn trong 2 ô ngày)');
-  assert.ok(!/data-filters[\s\S]*?<span>[^<]+<\/span>/.test(html), 'khu lọc không còn nhãn chữ, chỉ còn control');
+  // Chỉ soi TRONG khối lọc (trước đây quét cả tài liệu nên hộp thoại khác nằm sau bị tính nhầm).
+  const filterBlock = html.slice(html.indexOf('class="data-filters"'), html.indexOf('</section>', html.indexOf('class="data-filters"')));
+  assert.ok(!/<span>[^<]+<\/span>/.test(filterBlock), 'khu lọc không còn nhãn chữ, chỉ còn control');
 });
 
 test('Kho dữ liệu: toàn bộ bộ lọc nằm trên MỘT dòng, đúng thứ tự (tìm kiếm → lịch → xoá lọc → nút ngày)', () => {
@@ -520,4 +544,327 @@ test('tab Sao kê ngân hàng: dải số trải hết 2 cột, bộ lọc ở c
     /\.bank-overview \{[^}]*grid-column: 1 \/ -1/.test(css),
     '.bank-overview phải trải hết cả 2 cột để bộ lọc về cột trái và bảng về cột phải',
   );
+});
+
+test('nhập sao kê: PDF-có-chữ đọc local không ra dữ liệu thì phải có đường chuyển sang AI', () => {
+  // Luồng cũ: PDF có chữ nhưng bố cục lạ khiến đọc local ra 0 dòng ⇒ BÁO LỖI RỒI DỪNG,
+  // không có đường nào dùng AI. Nay phải rơi về AI (có hỏi trước vì tốn 1 lượt).
+  const ui = fs.readFileSync(path.join(root, 'src', 'data-ui.js'), 'utf8');
+  assert.ok(ui.includes('const unusable = '), 'phải có hàm xét kết quả đọc local "không dùng được"');
+  assert.ok(/preview-rows/.test(ui) && /aiPreview\(/.test(ui), 'phải có cả đường local (preview-rows) lẫn đường AI dùng chung');
+  // Nhánh pdf-text: sau khi đọc local, nếu không dùng được thì hỏi rồi gọi AI.
+  const branch = ui.slice(ui.indexOf("parsed.kind === 'pdf-text'"), ui.indexOf("parsed.kind === 'pdf-scan'"));
+  assert.ok(/unusable\(preview\)/.test(branch), 'nhánh PDF-có-chữ phải kiểm tra kết quả đọc local');
+  assert.ok(/askConfirm\(/.test(branch) && /aiPreview\(/.test(branch), 'phải XIN PHÉP (hộp xác nhận của app) trước khi gửi AI đọc lại');
+  assert.ok(branch.indexOf('askConfirm(') < branch.indexOf('aiPreview('), 'hộp xác nhận phải đứng TRƯỚC lời gọi AI');
+  // Excel / PDF-scan / ảnh giữ nguyên hành vi cũ.
+  assert.ok(/parsed.kind === 'pdf-scan' \|\| parsed.kind === 'image'/.test(ui), 'nhánh PDF-scan/ảnh không được đổi');
+});
+
+test('nhập sao kê: hộp "AI đọc lại" có đủ bảng đối chiếu + nhãn tin cậy', () => {
+  // Phải nhờ AI đọc lại thì mở hộp riêng (không dùng confirm chữ) để user thấy rõ
+  // ĐỌC TỰ ĐỘNG vs AI, và biết AI đáng tin tới đâu trước khi lưu.
+  for (const id of ['bank-check-dialog', 'bank-check-sub', 'bank-check-why', 'bank-check-compare',
+    'bank-check-local-rows', 'bank-check-local-in', 'bank-check-local-out', 'bank-check-local-note',
+    'bank-check-ai-rows', 'bank-check-ai-in', 'bank-check-ai-out', 'bank-check-ai-note', 'bank-check-ai-badge',
+    'bank-check-verdict', 'bank-check-issues', 'bank-check-save', 'bank-check-cancel']) {
+    assert.ok(ids.has(id), `thiếu phần tử #${id} trong hộp AI đọc lại`);
+  }
+  const ui = fs.readFileSync(path.join(root, 'src', 'data-ui.js'), 'utf8');
+  const save = ui.slice(ui.indexOf('function askBankSave('), ui.indexOf('// Nhập file sao kê —'));
+  assert.ok(/askBankSave\(/.test(ui), 'phải gọi hộp riêng khi phải nhờ AI (không chỉ confirm)');
+  assert.ok(/bank-check-local-rows'\).textContent = shown\(/.test(save), 'lần đọc tự động không ra dòng nào thì hiện "—", không hiện 0 rối mắt');
+  assert.ok(/balanceBreaks/.test(save) && /badge\.className = 'bank-compare-badge warn'/.test(save), 'nhãn AI phải đổi theo kết quả kiểm tra số dư (khớp / lệch)');
+  assert.ok(/bank-check-why'\).textContent/.test(save), 'phải nói rõ vì sao phải nhờ AI (đọc tự động không ra dữ liệu)');
+  assert.ok(save.indexOf("$('bank-check-issues')") > 0 && /issues\.hidden = !lines\.length/.test(save), 'chi tiết dòng sai phải ẩn khi không có vấn đề');
+  // CSS: 2 cột khi rộng, dồn 1 cột khi hẹp.
+  const css = fs.readFileSync(path.join(root, 'src', 'data-view.css'), 'utf8');
+  assert.ok(/\.bank-compare \{ display: grid; grid-template-columns: repeat\(2/.test(css), 'bảng đối chiếu phải 2 cột trên màn rộng');
+  assert.ok(/@media \(max-width: 640px\) \{ \.bank-compare \{ grid-template-columns: minmax\(0, 1fr\)/.test(css), 'màn hẹp phải dồn thành 1 cột');
+});
+
+test('nhập sao kê: có popup tiến trình → kết quả, đồng bộ với hệ thống toast', () => {
+  // Khi nhập file, tiến trình phải hiện dạng popup CÙNG CHỖ/CÙNG KHUNG với toast,
+  // rồi tự biến thành KẾT QUẢ theo từng đường đọc (Excel/CSV · PDF AI · PDF text).
+  const renderer = fs.readFileSync(path.join(root, 'src', 'renderer.js'), 'utf8');
+  assert.ok(/function noticeProgress\(/.test(renderer), 'renderer.js phải có hàm noticeProgress');
+  assert.ok(/window\.noticeProgress = noticeProgress/.test(renderer), 'noticeProgress phải được công khai qua window');
+  assert.ok(/class(Name)? = 'toast toast-progress'/.test(renderer), 'popup tiến trình phải dùng chung khung .toast');
+  const css = fs.readFileSync(path.join(root, 'src', 'style.css'), 'utf8');
+  assert.ok(/\.toast\.toast-progress/.test(css) && /\.toast-bar/.test(css), 'style.css phải có style cho toast tiến trình + thanh chạy');
+  // data-ui.js: mỗi đường đọc đặt nhãn riêng và kết quả nêu rõ đường nào.
+  const ui = fs.readFileSync(path.join(root, 'src', 'data-ui.js'), 'utf8');
+  assert.ok(/noticeProgress\(`Đang đọc \$\{file\.name\}/.test(ui), 'nhập file phải mở popup tiến trình ngay khi bắt đầu');
+  for (const route of ["'Excel/CSV'", "'PDF text'", "'PDF AI (đọc lại)'", "'PDF AI'", "'Ảnh AI'"]) {
+    assert.ok(ui.includes(route), `phải gắn nhãn đường đọc ${route}`);
+  }
+  assert.ok(/job\.finish\('ok'/.test(ui) && /job\.finish\('error'/.test(ui), 'tiến trình phải tự biến thành kết quả xong/hỏng');
+});
+
+test('hộp xác nhận: thay confirm() gốc bằng popup đồng bộ hệ thống (không dùng <dialog>)', () => {
+  // Hộp xám "127.0.0.1 says" của trình duyệt nhìn lệch hẳn tông app ⇒ luồng nhập sao kê
+  // phải dùng hộp xác nhận riêng (div + nền mờ), trả về Promise<boolean> như confirm().
+  const renderer = fs.readFileSync(path.join(root, 'src', 'renderer.js'), 'utf8');
+  assert.ok(/function askConfirm\(/.test(renderer), 'renderer.js phải có hàm askConfirm dùng chung');
+  assert.ok(/window\.askConfirm = askConfirm/.test(renderer), 'askConfirm phải được công khai qua window');
+  // Vẫn phải rơi về hộp gốc của trình duyệt khi bản cũ thiếu HTML:
+  // confirm() cho xác nhận, prompt() khi hộp đó cần ô nhập chữ — cả hai đều trả kết quả được.
+  assert.ok(/if \(!box\) return Promise\.resolve\((options\.input \? prompt\(|confirm\()/.test(renderer),
+    'bản cũ không có HTML thì phải rơi về confirm()/prompt() để không vỡ luồng');
+  for (const id of ['app-confirm', 'app-confirm-title', 'app-confirm-text', 'app-confirm-input', 'app-confirm-ok', 'app-confirm-cancel']) {
+    assert.ok(ids.has(id), `index.html phải có sẵn phần tử #${id}`);
+  }
+  const block = html.slice(html.indexOf('id="app-confirm"'), html.indexOf('id="notice-stack"'));
+  assert.ok(!/<dialog/.test(block), 'hộp xác nhận phải dựng bằng div, KHÔNG dùng <dialog>');
+  const ui = fs.readFileSync(path.join(root, 'src', 'data-ui.js'), 'utf8');
+  // Luồng nhập sao kê (xác nhận tài khoản · hỏi gửi AI · kết quả khớp/cảnh báo · xoá file) không còn confirm() gốc.
+  for (const title of ['Kiểm tra tài khoản trước khi nhập', 'CẢNH BÁO — kiểm tra kỹ trước khi lưu', 'Số liệu KHỚP — lưu vào kho?',
+    'Xoá file sao kê', 'Xoá toàn bộ sao kê của MST này', 'PDF có chữ nhưng đọc tự động không ra dữ liệu']) {
+    assert.ok(ui.includes(title), `phải dùng hộp xác nhận của app cho: ${title}`);
+  }
+  const bankFlow = ui.slice(ui.indexOf('async function importBankFile('), ui.indexOf('// ---- Hộp quản lý file sao kê'));
+  assert.ok(!/[^k]confirm\(/.test(bankFlow), 'luồng nhập sao kê không được còn confirm() gốc');
+  const css = fs.readFileSync(path.join(root, 'src', 'style.css'), 'utf8');
+  assert.ok(/\.app-confirm \{/.test(css) && /\.app-confirm-card\.tone-warn/.test(css), 'style.css phải có style hộp xác nhận + kiểu màu cảnh báo');
+});
+
+test('toàn app: hết hộp native confirm()/alert()/prompt(), chỉ còn lưới an toàn khi thiếu HTML', () => {
+  // Hộp xám của trình duyệt ("127.0.0.1:55978 says") nhìn lệch hẳn tông app ⇒ mọi chỗ hỏi
+  // người dùng trong mã nguồn phải đi qua hộp của app. Chỉ hai nhánh dự phòng khi index.html
+  // không có sẵn phần tử (bản cũ) được phép gọi hộp native, và phải nằm trong Promise.resolve(...).
+  const ownFiles = fs.readdirSync(path.join(root, 'src')).filter(name => name.endsWith('.js'))
+    .map(name => `src/${name}`)
+    .concat(fs.readdirSync(path.join(root, 'src', 'data')).filter(name => name.endsWith('.js')).map(name => `src/data/${name}`));
+  for (const relative of ownFiles) {
+    const offenders = fs.readFileSync(path.join(root, relative), 'utf8').split('\n')
+      .filter(line => /(^|[^.\w])(confirm|alert|prompt)\s*\(/.test(line))
+      .filter(line => !/^\s*(\/\/|\*)/.test(line))
+      .filter(line => !/Promise\.resolve\(/.test(line)); // lưới an toàn khi thiếu HTML
+    assert.deepStrictEqual(offenders, [], `${relative} còn hộp native: ${offenders.join(' | ')}`);
+  }
+  // Nút "Chuyển MST…" trước đây gõ tay bằng prompt() ⇒ nay là hộp của app có ô nhập + gợi ý bấm chọn.
+  const ui = fs.readFileSync(path.join(root, 'src', 'data-ui.js'), 'utf8');
+  assert.ok(/title: 'Chuyển file sang MST khác'[\s\S]{0,220}input: \{ placeholder: 'MST đích', options: mstOptions \}/.test(ui),
+    'nút Chuyển MST phải dùng hộp của app có ô nhập + danh sách MST gợi ý');
+  const css = fs.readFileSync(path.join(root, 'src', 'style.css'), 'utf8');
+  assert.ok(/\.app-confirm-input input/.test(css) && /\.app-confirm-chips \{/.test(css),
+    'style.css phải có style ô nhập + dãy gợi ý của hộp xác nhận');
+});
+
+test('Tổng quan: mỗi dòng "Cần kiểm tra" là nút bấm → mở đúng danh sách chi tiết (mục 27)', () => {
+  const ui = fs.readFileSync(path.join(root, 'src', 'data-ui.js'), 'utf8');
+  const server = fs.readFileSync(path.join(root, 'src', 'server.js'), 'utf8');
+  // Hộp thoại danh sách phải tồn tại sẵn trong HTML (dây nối $('id') → id thật).
+  for (const id of ['pending-dialog', 'pending-title', 'pending-close', 'pending-actions', 'pending-reprocess', 'pending-rows', 'pending-empty']) {
+    assert.ok(ids.has(id), `index.html phải có sẵn phần tử #${id}`);
+  }
+  assert.ok(ui.includes('class="alert-row"') && ui.includes('data-filter='), 'cảnh báo phải render thành nút bấm có data-filter');
+  assert.ok(ui.includes('openPending('), 'bấm cảnh báo phải gọi openPending');
+  // Danh sách lấy từ KẾT QUẢ ĐÃ LƯU trong SQLite, không phải UI tự tính lại.
+  assert.ok(ui.includes("'/api/db/reconciliation/pending'"), 'UI phải đọc /api/db/reconciliation/pending');
+  assert.ok(server.includes("'/api/db/reconciliation/pending'"), 'server phải có route /api/db/reconciliation/pending');
+  // Mục 32: nút đọc lại file hóa đơn gốc để bù hình thức thanh toán.
+  assert.ok(ui.includes("'/api/db/invoices/reprocess-payment'"), 'UI phải có nút gọi reprocess-payment');
+  assert.ok(server.includes("'/api/db/invoices/reprocess-payment'"), 'server phải có route reprocess-payment');
+  const css = fs.readFileSync(path.join(root, 'src', 'data-view.css'), 'utf8');
+  assert.ok(/\.overview-alerts \.alert-row/.test(css), 'dòng cảnh báo phải có style của chính nó');
+});
+
+test('MỤC 3 + 5 + 6 + 7 — mọi popup danh sách đều xem được hoá đơn và phân loại được', () => {
+  const ui = fs.readFileSync(path.join(root, 'src', 'data-ui.js'), 'utf8');
+  const server = fs.readFileSync(path.join(root, 'src', 'server.js'), 'utf8');
+  const schema = fs.readFileSync(path.join(root, 'src', 'data', 'schema.js'), 'utf8');
+  // MỤC 3 — cột thao tác ở popup "Cần kiểm tra" + popup danh sách dùng chung đủ chỗ.
+  assert.ok(html.includes('<th>Thao tác</th>'), 'bảng "Cần kiểm tra" phải có cột Thao tác');
+  for (const id of ['list-dialog', 'list-title', 'list-subtitle', 'list-head', 'list-rows', 'list-empty', 'list-close']) {
+    assert.ok(ids.has(id), `index.html phải có sẵn #${id}`);
+  }
+  assert.ok(ui.includes('reviewActionsHtml') && ui.includes('data-act="view"'), 'mỗi dòng phải có nút Xem hoá đơn A4');
+  assert.ok(ui.includes('data-act="cash_manual"') && ui.includes('data-act="transfer_manual"'),
+    'phải có nút TM (chưa khớp sao kê) và CK (khớp sao kê)');
+  assert.ok(ui.includes("post('/api/db/invoices/review'"), 'bấm phân loại phải POST tới /api/db/invoices/review');
+  for (const label of ['Đã kiểm tra', 'Đã xử lý', 'Thiếu tài liệu', 'Đủ tài liệu', 'Lỗi']) {
+    assert.ok(ui.includes(`'${label}'`), `ô phân loại phải có: ${label}`);
+  }
+  // MÁY KHÔNG BAO GIỜ tự phân loại: schema v8 + route chỉ ghi đúng giá trị người dùng bấm.
+  assert.ok(schema.includes('review_status') && schema.includes('reviewed_at'), 'schema v8 phải có 2 cột phân loại');
+  assert.ok(server.includes("'/api/db/invoices/review'"), 'server phải có route phân loại');
+  assert.ok(server.includes('setReview(db, { id: input.id, action: input.action })'), 'route phải gọi đúng setReview');
+  // MỤC 5 — công nợ: mỗi đối tượng là nút bấm, có popup chi tiết + route riêng.
+  assert.ok(ui.includes('class="debt-party" data-direction='), 'dòng công nợ phải là nút bấm kèm chiều bán/mua');
+  assert.ok(ui.includes('openParty') && server.includes("'/api/db/debts/detail'"), 'phải có đường tới chi tiết công nợ');
+  assert.ok(ui.includes('data-key='), 'mỗi dòng danh sách phải gắn khoá hoá đơn để mở A4');
+  // MỤC 6 — top hàng hoá hiện 3 dòng + nút mở rộng + popup hoá đơn theo mặt hàng.
+  assert.ok(ui.includes('slice(0, 3)') && ui.includes('data-goods-more'), 'top hàng hoá phải hiện 3 + nút "Xem thêm"');
+  assert.ok(ui.includes('openProduct') && server.includes("'/api/db/products/invoices'"),
+    'bấm mặt hàng phải mở được danh sách hoá đơn của mặt hàng đó');
+  // MỤC 27 — 4 cảnh báo hàng hoá là nút bấm → danh sách mặt hàng bị dính.
+  assert.ok(ui.includes('data-warn') && ui.includes('openGoodsWarn') && server.includes("'/api/db/goods/detail'"),
+    '4 cảnh báo hàng hoá phải bấm được sang danh sách chi tiết');
+  // MỤC 7 — nút ở chân thẻ ĐỐI CHIẾU / NGÂN HÀNG.
+  assert.ok(ui.includes('cardLinks(') && ui.includes("['needs_review',"), 'thẻ đối chiếu phải có nút mở danh sách');
+  assert.ok(ui.includes("['bank',"), 'thẻ ngân hàng phải có đường sang tab Sao kê');
+  // MỤC 7 — các thẻ còn lại cũng bấm được: dải KPI, 2 thẻ chiều bán/mua, biểu đồ theo tháng.
+  assert.ok(ui.includes('kpi-link') && ui.includes("['Cần kiểm tra', num.format(reviewCount), 'warn', 'Đối chiếu và dữ liệu', 'needs_review']"),
+    'dòng "Cần kiểm tra" ở dải KPI phải là nút bấm sang popup chi tiết');
+  assert.ok(ui.includes('data-invoices=') && ui.includes('openInvoiceList'),
+    '2 thẻ chiều bán/mua phải có nút mở danh sách hoá đơn của chiều đó');
+  assert.ok(ui.includes('data-month=') && ui.includes('openMonthList'),
+    'bấm một tháng trên biểu đồ phải mở hoá đơn của chính tháng đó');
+});
+
+test('Tổng quan: có thẻ Công nợ (mục 25) và Thuế/ngưỡng (mục 26), không hard-code số thuế', () => {
+  const ui = fs.readFileSync(path.join(root, 'src', 'data-ui.js'), 'utf8');
+  const server = fs.readFileSync(path.join(root, 'src', 'server.js'), 'utf8');
+  const css = fs.readFileSync(path.join(root, 'src', 'data-view.css'), 'utf8');
+  for (const id of ['overview-debt', 'overview-tax', 'tax-rule']) {
+    assert.ok(ids.has(id), `index.html phải có sẵn phần tử #${id}`);
+  }
+  assert.ok(ui.includes('api(`/api/db/debts${period}`)'), 'UI phải đọc công nợ từ API, kèm kỳ đang chọn ở header');
+  assert.ok(ui.includes('api(`/api/db/tax?businessType='), 'UI phải gửi loại hình kinh doanh đi lấy ngưỡng');
+  assert.ok(server.includes("'/api/db/debts'") && server.includes("'/api/db/tax'"), 'server phải có 2 route trên');
+  assert.ok(/overview-debt-card/.test(css) && /overview-tax-card/.test(css), 'hai thẻ phải có bố cục trong lưới 12 cột');
+  // Mục 26: KHÔNG được gọi là "THUẾ PHẢI NỘP" và KHÔNG hard-code ngưỡng vào giao diện.
+  assert.ok(!html.includes('THUẾ PHẢI NỘP') && !ui.includes('THUẾ PHẢI NỘP'), 'chỉ được gọi là thuế dự kiến/ước tính');
+  assert.ok(!ui.includes('500000000') && !html.includes('500000000') && !ui.includes('300000000'),
+    'ngưỡng phải lấy từ src/data/tax-rules.js theo năm, không ghi chết trong giao diện');
+  const taxRules = require(path.join(root, 'src', 'data', 'tax-rules'));
+  assert.ok(taxRules.rulesFor(2026).every(rule => rule.year === 2026 && rule.legalRef), 'quy tắc phải versioned theo năm + dẫn chiếu');
+  assert.ok(taxRules.findRule({ year: '2026', businessType: 'doanh_nghiep' }).threshold === null, 'doanh nghiệp không có ngưỡng hộ kinh doanh');
+});
+
+test('MỤC 29 — JSON thống kê đủ 7 trường, dựng từ SQLite, CHƯA gọi API AI (chờ mở rộng)', () => {
+  const ui = fs.readFileSync(path.join(root, 'src', 'data-ui.js'), 'utf8');
+  const server = fs.readFileSync(path.join(root, 'src', 'server.js'), 'utf8');
+  const css = fs.readFileSync(path.join(root, 'src', 'data-view.css'), 'utf8');
+  for (const id of ['ai-summary-json', 'ai-summary-copy']) {
+    assert.ok(ids.has(id), `index.html phải có sẵn phần tử #${id}`);
+  }
+  // Đúng 7 trường của ví dụ trong mục 29 (giữ nguyên tên trường để mai sau AI nhận đúng object này).
+  const block = (ui.match(/aiSummaryJson = JSON\.stringify\(\{[\s\S]{0,700}?\}, null, 2\)/) || [])[0];
+  assert.ok(block, 'phải dựng JSON bằng JSON.stringify với đúng cấu trúc của spec');
+  for (const key of ['revenue', 'purchase', 'cash_invoice', 'transfer_invoice', 'transfer_unmatched', 'bank_unmatched', 'supplier_debt']) {
+    assert.ok(block.includes(`${key}:`), `JSON phải có trường ${key}`);
+  }
+  // Chưa build AI ⇒ KHÔNG thêm route nào gửi JSON đi: giao diện chỉ hiển thị + sao chép.
+  assert.ok(!server.includes('/api/db/summary-text') && !ui.includes('/api/db/summary-text'),
+    'chưa tích hợp AI: không được thêm route gửi JSON cho AI (để mở rộng sau)');
+  assert.ok(ui.includes('navigator.clipboard.writeText(aiSummaryJson)'), 'nút sao chép phải dùng clipboard');
+  // Số lấy từ payload đã đọc (SQLite), không tự tính lại; chưa chạy đối chiếu thì KHÔNG dựng JSON
+  // để tránh hiện số 0 giả (mục 35).
+  assert.ok(ui.includes('reconciliation.ran') && ui.includes('debt.payable') && ui.includes('reconciliation.cashAmount'),
+    '7 trường phải lấy thẳng từ summary + reconciliation + debts');
+  assert.ok(/overview-ai-card/.test(css), 'thẻ JSON phải nằm trong lưới Tổng quan');
+});
+
+test('Thanh phiên gọn + bộ lọc kỳ nằm riêng trong tab Tổng quan', () => {
+  const ui = fs.readFileSync(path.join(root, 'src', 'data-ui.js'), 'utf8');
+  const server = fs.readFileSync(path.join(root, 'src', 'server.js'), 'utf8');
+  const style = fs.readFileSync(path.join(root, 'src', 'style.css'), 'utf8');
+  // Thanh phiên chỉ giữ MST · tên · thời gian cập nhật; không chứa bộ lọc thống kê.
+  assert.ok(html.includes('class="account-id"') && html.includes('class="account-updated"'),
+    'thanh phiên phải có MST/tên và thời gian cập nhật');
+  const accountMarkup = html.match(/<section class="account">[\s\S]*?<\/section>/)?.[0] || '';
+  assert.ok(!accountMarkup.includes('overview-period-mode'), 'bộ lọc thống kê không được nằm trên thanh phiên');
+  assert.ok(!html.includes('overview-head'), 'trang Tổng quan không còn khối tiêu đề riêng (bỏ chỗ trùng)');
+  for (const id of ['overview-period', 'overview-loading', 'overview-refresh']) {
+    assert.ok((html.match(new RegExp(`id="${id}"`, 'g')) || []).length === 1, `#${id} phải chỉ xuất hiện đúng 1 lần`);
+  }
+  // Bộ chọn trong tab Tổng quan: tháng hiện tại / tháng / quý / năm / khoảng ngày.
+  for (const key of ['current_month', 'month', 'quarter', 'year', 'custom']) {
+    assert.ok(html.includes(`<option value="${key}"`), `thiếu kiểu kỳ: ${key}`);
+  }
+  assert.ok(ui.includes("$('overview-period-mode').onchange"), 'JS phải gắn sự kiện bộ lọc kỳ');
+  assert.ok(!ui.includes('paintPeriod();'), 'không được gọi hàm paintPeriod của bộ lọc cũ đã loại bỏ');
+  assert.ok(ui.includes('function periodQuery()') && ui.includes('overviewPeriod'),
+    'phải có trạng thái kỳ + chuỗi query gửi kèm');
+  const periodCalls = (ui.match(/api\(`\/api\/db\/[^`]*\$\{period\}`\)/g) || []).join(' ');
+  for (const route of ['/api/db/summary', '/api/db/bank/summary', '/api/db/reconciliation/summary', '/api/db/overview', '/api/db/debts']) {
+    assert.ok(periodCalls.includes(route), `${route} phải tải theo kỳ đang chọn`);
+  }
+  assert.ok(!periodCalls.includes('/api/db/tax'), 'thuế vẫn theo NĂM + loại hình (mục 26), không lọc theo kỳ');
+  // Server nhận from/to và truyền xuống từng query (không có thì chạy như cũ).
+  assert.ok(/queries\.summary\(db, range\)/.test(server) && /queries\.overview\(db, range\)/.test(server)
+    && /queries\.debts\(db, range\)/.test(server) && /reconciliation\.summary\(db, range\)/.test(server)
+    && /bankStatement\.summary\(db, range\)/.test(server), 'cả 5 route phải nhận khoảng ngày của kỳ');
+  const viewStyle = fs.readFileSync(path.join(root, 'src', 'data-view.css'), 'utf8');
+  assert.ok(/account-updated/.test(style) && /overview-filterbar/.test(viewStyle), 'thanh phiên và bộ lọc phải có CSS riêng');
+});
+
+test('header hiển thị tiêu đề + ghi chú của tab hiện tại ở phía phải', () => {
+  const ui = fs.readFileSync(path.join(root, 'src', 'data-ui.js'), 'utf8');
+  const style = fs.readFileSync(path.join(root, 'src', 'style.css'), 'utf8');
+  for (const id of ['view-eyebrow', 'view-title', 'view-note', 'main-license-badge']) assert.ok(ids.has(id), `thiếu #${id}`);
+  for (const key of ['overview:', 'download:', 'data:', 'bank:']) assert.ok(ui.includes(key), `thiếu nội dung header cho ${key}`);
+  assert.ok(/\.header-context[\s\S]*text-align:right/.test(style), 'thông tin tab phải căn sát phải');
+});
+
+test('Tổng quan: header (mục 18) + KPI (mục 19) + các thẻ (mục 20–23) đủ theo bảng đề bài', () => {
+  const ui = fs.readFileSync(path.join(root, 'src', 'data-ui.js'), 'utf8');
+  const css = fs.readFileSync(path.join(root, 'src', 'data-view.css'), 'utf8');
+  // Thanh phiên: renderer dựng MST + tên, data-ui cập nhật mốc dữ liệu gần nhất.
+  assert.ok(ids.has('account') && ids.has('overview-period'), 'index.html phải có ô tài khoản và thời gian cập nhật');
+  assert.ok(ui.includes('`Cập nhật ${shortWhen(summary.lastImport)}`'), 'phải hiện lần cập nhật gần nhất');
+  assert.ok(ui.includes('shortWhen(summary.lastImport)'), 'phải hiện lần cập nhật gần nhất');
+  // Số trên KPI "Cần kiểm tra" phải lấy từ CÙNG một mảng với thẻ cảnh báo (không đếm hai kiểu).
+  assert.ok(ui.includes('const alertCounts = [') && ui.includes('alertCounts.reduce('),
+    'số "Cần kiểm tra" phải là tổng của chính danh sách cảnh báo');
+  assert.ok(ui.includes('alertCounts.filter(([count]) => Number(count) > 0)'), 'thẻ cảnh báo lọc từ cùng mảng');
+  // MỤC 19 – KPI CHÍNH: 5 con số bắt buộc + 2 dòng thêm (Lũy kế năm · So với kỳ trước).
+  for (const label of ['Doanh thu bán ra', 'Mua vào', 'Chênh lệch bán - mua', 'Số hóa đơn bán', 'Số hóa đơn mua', 'Lũy kế năm', 'So với kỳ trước']) {
+    assert.ok(ui.includes(`['${label}'`), `KPI phải có: ${label}`);
+  }
+  // "Tiền vào ngân hàng" đã dời sang thẻ NGÂN HÀNG (mục 23) — không lặp lại làm dày hàng KPI.
+  assert.ok(!ui.includes("['Tiền vào ngân hàng'"), 'KPI không được trùng số với thẻ ngân hàng');
+  // 8 thẻ KPI (5 cũ + "Cần kiểm tra" + 2 dòng mới) → lưới 4 cột × 2 hàng.
+  assert.ok(/grid-template-columns:repeat\(4,minmax\(0,1fr\)\)/.test(css), '8 thẻ KPI phải chia đủ 4 cột');
+  // Số của 2 dòng mới phải do server tính (SQLite) — giao diện không tự chia/trừ số.
+  assert.ok(ui.includes('summary.yearToDate') && ui.includes('summary.previousPeriod'),
+    'KPI mới phải đọc từ summary().yearToDate / previousPeriod (tính ở server)');
+  assert.ok(!ui.includes("['Lợi nhuận'") && !ui.includes('["Lợi nhuận"'),
+    'không được đặt tên một dòng KPI là LỢI NHUẬN (mục 19)');
+  // MỤC 4 – HAI THẺ TÁCH CHIỀU: bán ra (khách hàng · tiền vào) và mua vào (nhà cung cấp · tiền ra).
+  for (const id of ['overview-sell', 'overview-buy']) {
+    assert.ok(ids.has(id), `index.html phải có sẵn thẻ #${id}`);
+  }
+  assert.ok(!ids.has('overview-payment'), 'đã thay thẻ thanh toán gộp chung bằng 2 thẻ theo chiều');
+  assert.ok(ui.includes('summary.paymentSides'), 'UI phải đọc số HĐ + tiền theo từng hình thức của TỪNG chiều');
+  assert.ok(ui.includes('reconciliation.byDirection'), 'mỗi thẻ phải có kết quả đối chiếu của CHÍNH chiều đó');
+  assert.ok(html.includes('Bán ra — Khách hàng') && html.includes('Mua vào — Nhà cung cấp'),
+    'tiêu đề 2 thẻ nêu rõ khách hàng / nhà cung cấp');
+  assert.ok(/\.overview-sell-card,\.overview-buy-card/.test(css), '2 thẻ mới phải có cột trong lưới 12 cột');
+  // MỤC 21 – ĐỐI CHIẾU CHUYỂN KHOẢN: đủ 5 dòng của bảng đề bài.
+  for (const label of ['Tổng hóa đơn CK', 'Đã tìm thấy giao dịch', 'Chưa tìm thấy giao dịch', 'Sai số tiền', 'Cần kiểm tra']) {
+    assert.ok(ui.includes(`['${label}'`), `thẻ đối chiếu phải có dòng: ${label}`);
+  }
+  // MỤC 22 – TIỀN MẶT: số + giá trị + ghi rõ không yêu cầu đối chiếu sao kê.
+  assert.ok(ui.includes('reconciliation.cashAmount'), 'phải hiện giá trị tiền mặt');
+  assert.ok(ui.includes('không cần đối chiếu sao kê'), 'phải ghi rõ không yêu cầu đối chiếu');
+  // MỤC 23 – NGÂN HÀNG: đủ 6 dòng.
+  for (const label of ['Tổng tiền vào', 'Tổng tiền ra', 'Số giao dịch', 'Đã đối chiếu', 'Chưa đối chiếu', 'Cần kiểm tra']) {
+    assert.ok(ui.includes(`['${label}'`), `thẻ ngân hàng phải có dòng: ${label}`);
+  }
+  // Ghi chú dưới dòng (tiền / điều kiện) phải được CSS nhận diện trong đúng 2 thẻ dùng nó.
+  assert.ok(/\.overview-donut-card \.overview-metrics span em/.test(css), 'thẻ đối chiếu/thanh toán cần style cho dòng ghi chú');
+});
+
+test('Tổng quan: thẻ Hàng hóa đủ theo mục 24 (tổng hợp 2 chiều, top bán + top mua, 4 cảnh báo)', () => {
+  const ui = fs.readFileSync(path.join(root, 'src', 'data-ui.js'), 'utf8');
+  const server = fs.readFileSync(path.join(root, 'src', 'server.js'), 'utf8');
+  const css = fs.readFileSync(path.join(root, 'src', 'data-view.css'), 'utf8');
+  // MỤC 24 – tổng hợp: tổng số mặt hàng, số lượng mua/bán, giá trị mua/bán.
+  for (const label of ['Tổng số mặt hàng', 'Số lượng bán', 'Giá trị bán', 'Số lượng mua', 'Giá trị mua']) {
+    assert.ok(ui.includes(`['${label}'`), `thẻ hàng hóa phải có dòng: ${label}`);
+  }
+  // Top hàng bán + Top hàng mua (đều từ SQLite, hai chiều riêng).
+  assert.ok(ui.includes("goodsTop('Top hàng bán'") && ui.includes("goodsTop('Top hàng mua'"), 'phải có cả top bán và top mua');
+  assert.ok(ui.includes('overview.topProductsBuy'), 'top mua phải đọc từ API overview');
+  assert.ok(server.includes("'/api/db/overview'"), 'server phải có route /api/db/overview');
+  // 4 cảnh báo của mục 24.
+  for (const key of ['sellOverBuy', 'missingBuy', 'notNormalized', 'codeMismatch']) {
+    assert.ok(ui.includes(`goods.${key}`), `phải render cảnh báo: ${key}`);
+  }
+  assert.ok(css.includes('.goods-warn'), 'cảnh báo hàng hóa phải có style của riêng nó');
+  // Không có dữ liệu hàng hóa thì hiện "Chưa có dữ liệu", không hiện số 0 (mục 35).
+  assert.ok(ui.includes('Chưa có dữ liệu hàng hóa.'), 'thẻ phải có trạng thái chưa có dữ liệu');
 });

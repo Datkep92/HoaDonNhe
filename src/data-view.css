@@ -8,10 +8,218 @@
    CSP: mọi thứ khai báo ở đây, KHÔNG dùng style="..." trong HTML.
    ========================================================================== */
 
-/* ---- Nút chuyển tab Tra cứu & tải | Kho dữ liệu (giữ nguyên vị trí ở header) ---- */
-.view-switch { display: flex; gap: 8px; margin-top: 0; }
-.view-switch button { font-size: 12px; padding: 9px 14px; }
-.view-switch button.active { background: #087f70; border-color: #087f70; color: #fff; }
+/* ---- Nút chuyển tab Tổng quan | Tra cứu | Kho dữ liệu | Sao kê NH ----
+   MƯỢT MÀ — đánh lừa thị giác bằng 4 hiệu ứng chồng lên nhau:
+   1. Active tab: nổi khỏi mặt phẳng (shadow + translateY(-1px)) như "đã chọn"
+   2. Chuyển tab: gạch dưới trượt ngang theo active button (JS cập nhật left/width)
+   3. Hover: inactive tab sáng dần (background tint + border glow nhẹ)
+   4. Click: scale(.97) thoáng chút — cảm giác "đã bấm"
+   ========================================================================== */
+.view-switch {
+  display: flex; gap: 4px; margin-top: 0;
+  position: relative;
+  isolation: isolate;
+  padding: 3px; /* đệm cho gạch dưới không bị sát mép */
+  background: #e9f5f2;
+  border: 1px solid #d4ebe6;
+  border-radius: 11px;
+}
+/* Gạch dưới trượt — renderer.js showView() tạo và cập nhật left+width */
+.view-switch .tab-indicator {
+  position: absolute;
+  bottom: 0; left: 0; height: 3px;
+  background: linear-gradient(90deg, #2bd4ae, #087f70);
+  border-radius: 3px 3px 0 0;
+  transition: left .30s cubic-bezier(.2,.9,.3,1), width .30s cubic-bezier(.2,.9,.3,1);
+  pointer-events: none; z-index: 1;
+  will-change: left, width;
+}
+.view-switch .tab-indicator[hidden] { display: none; }
+.view-switch button {
+  position: relative; z-index: 2;
+  font-size: 12px; padding: 9px 16px;
+  border-radius: 8px;
+  background: rgba(255,255,255,.45);
+  border: 1px solid transparent;
+  color: #326b64;
+  font-weight: 600;
+  cursor: pointer;
+  transition:
+    color .18s ease,
+    background-color .18s ease,
+    border-color .18s ease,
+    box-shadow .25s cubic-bezier(.2,.9,.3,1),
+    transform .22s cubic-bezier(.2,.9,.3,1);
+  white-space: nowrap;
+  user-select: none;
+}
+.view-switch button:hover:not(:disabled) {
+  color: #087f70;
+  background: rgba(8,127,112,.06);
+  border-color: rgba(8,127,112,.12);
+}
+.view-switch button:active:not(:disabled) {
+  transform: scale(.95);
+}
+.view-switch button.active {
+  background: linear-gradient(135deg,#0a8f7d,#087f70);
+  border-color: #087f70;
+  color: #fff;
+  font-weight: 700;
+  box-shadow:
+    0 3px 10px rgba(8,127,112,.24),
+    0 0 0 1px rgba(255,255,255,.18) inset;
+  transform: translateY(-1px);
+}
+.view-switch button.active:hover {
+  box-shadow:
+    0 3px 12px rgba(8,127,112,.18),
+    0 0 0 1px #bfddd6;
+}
+
+/* Bộ lọc chỉ thuộc tab Tổng quan, không chiếm chỗ trên thanh phiên MST. */
+.overview-filterbar {
+  display:flex; align-items:end; gap:10px; flex-wrap:wrap;
+  padding:11px 13px; margin-bottom:10px;
+  background:#f6faf9; border:1px solid #dcebe7; border-radius:9px;
+}
+.overview-filterbar>div { margin-right:auto; min-width:150px; }
+.overview-filterbar>div strong { display:block; margin-top:3px; color:#087f70; font-size:13px; }
+.overview-filterbar label { display:grid; gap:3px; color:#718296; font-size:9.5px; font-weight:700; text-transform:uppercase; }
+.overview-filterbar select,.overview-filterbar input { height:34px; min-width:112px; margin:0; padding:5px 8px; font-size:11px; background:#fff; }
+.overview-filterbar input[type=date] { min-width:132px; }
+.overview-filterbar button { height:34px; }
+.view-switch button:focus-visible {
+  outline: 2px solid #0aa08c;
+  outline-offset: 2px;
+}
+
+/* ---- Pane chuyển cảnh: fade + slide nhẹ khi show/hide ---- */
+.workspace {
+  animation: paneFadeIn .28s cubic-bezier(.2,.9,.3,1) both;
+}
+@keyframes paneFadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+/* Khi ẩn bằng [hidden], triệt tiêu animation để lần sau show lại chạy từ đầu */
+.workspace[hidden] {
+  animation: none;
+  opacity: 0;
+}
+/* Tổng quan mở sẵn lúc load — không animation lần đầu */
+.overview-pane {
+  animation: none;
+  opacity: 1;
+}
+
+.overview-pane { display:grid; grid-template-columns:minmax(0,1fr); gap:12px; min-width:0; }
+.overview-head { display:flex; justify-content:space-between; align-items:flex-end; gap:16px; padding:2px 0; }
+.overview-head h2 { margin:2px 0; font-size:21px; color:#20324a; }
+.overview-head p { margin:0; color:#76869a; font-size:11.5px; }
+.overview-kpis { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:9px; }
+.overview-kpi { background:#fff; border:1px solid #e0e7ef; border-radius:8px; padding:13px 14px; min-width:0; box-shadow:0 2px 8px rgba(31,50,74,.035); }
+.overview-kpi span { display:block; color:#76869a; font-size:10px; font-weight:700; text-transform:uppercase; }
+.overview-kpi strong { display:block; margin-top:7px; color:#20324a; font-size:19px; overflow-wrap:anywhere; }
+.overview-kpi small { display:block; margin-top:5px; color:#97a3b3; font-size:10px; }
+.overview-kpi strong.sell,.overview-metrics strong.ok { color:#087f70; }
+.overview-kpi strong.buy { color:#2f5680; }
+.overview-kpi strong.warn,.overview-metrics strong.warn { color:#b05f23; }
+.overview-dashboard { display:grid; grid-template-columns:repeat(12,minmax(0,1fr)); gap:10px; align-items:stretch; }
+.overview-dashboard>.card { padding:14px; min-width:0; border-radius:8px; }
+.overview-chart-wide { grid-column:span 8; min-height:292px; }
+.overview-alerts { grid-column:span 4; }
+.overview-donut-card { grid-column:span 4; min-height:248px; }
+/* MỤC 4 — hai thẻ tách chiều: bán ra (khách hàng) và mua vào (nhà cung cấp). */
+.overview-sell-card,.overview-buy-card { grid-column:span 4; min-height:248px; }
+.overview-bank-card,.overview-products-card { grid-column:span 4; min-height:248px; }
+.overview-products-card,.overview-debt-card { grid-column:span 8; }
+.overview-card-head { display:flex; align-items:flex-start; justify-content:space-between; gap:12px; margin-bottom:12px; }
+.overview-card-head h3 { margin:2px 0 0; font-size:14px; color:#20324a; }
+.overview-caption { color:#8a98a9; font-size:9.5px; font-weight:800; }
+.overview-legend { display:flex; gap:12px; color:#66788c; font-size:10.5px; }
+.overview-legend span { display:flex; align-items:center; gap:5px; }
+.overview-legend i { width:9px; height:9px; border-radius:2px; background:#087f70; }
+.overview-legend i.buy { background:#7892ad; }
+.overview-bars { height:220px; min-width:0; background:repeating-linear-gradient(to top,transparent 0,transparent 54px,#edf1f5 55px); }
+.overview-bars svg { display:block; width:100%; height:100%; overflow:visible; }
+.overview-bars rect.sell { fill:#087f70; }
+.overview-bars rect.buy { fill:#7892ad; }
+.overview-bars line { stroke:#dfe7ef; stroke-width:1; }
+.overview-bars text { fill:#8492a3; font-size:10px; }
+.overview-donut-layout { display:grid; grid-template-columns:112px minmax(0,1fr); gap:16px; align-items:center; }
+.overview-donut { width:112px; aspect-ratio:1; display:grid; place-items:center; position:relative; }
+.overview-donut>* { grid-area:1/1; }
+.overview-donut svg { display:block; width:100%; height:100%; }
+.overview-donut-center { position:relative; z-index:1; text-align:center; }
+.overview-donut-center strong { display:block; color:#20324a; font-size:17px; }
+.overview-donut-center span { color:#8a98a9; font-size:9px; }
+.overview-metrics>div { display:flex; justify-content:space-between; gap:12px; padding:6px 0; border-bottom:1px solid #edf1f5; }
+.overview-metrics>div:last-child { border-bottom:0; }
+.overview-metrics span { color:#66788c; font-size:11px; min-width:0; }
+/* Ghi chú dưới nhãn (mục 20/21/22/23 — tiền theo chiều, điều kiện đối chiếu): in thành dòng
+   riêng nhỏ và xám. Không đặt trong thẻ khác vì thẻ thuế (thẻ thứ ba) tự có định dạng riêng. */
+.overview-donut-card .overview-metrics span em,.overview-bank-card .overview-metrics span em { display:block; font-style:normal; color:#97a3b3; font-size:9.5px; font-weight:400; line-height:1.35; margin-top:2px; }
+.overview-metrics strong { color:#20324a; font-size:11.5px; text-align:right; white-space:nowrap; }
+.overview-alerts p { margin:0 0 7px; padding:9px 10px; border-left:3px solid #d79052; background:#fff8f1; color:#52677e; font-size:11px; border-radius:4px; }
+.overview-alerts p strong { color:#a95520; font-size:14px; margin-right:3px; }
+/* Từng dòng cảnh báo là NÚT BẤM → mở danh sách chi tiết (mục 27). */
+.overview-alerts .alert-row { display:flex; align-items:center; gap:6px; width:100%; margin:0 0 7px; padding:9px 10px; border:0; border-left:3px solid #d79052; background:#fff8f1; color:#52677e; font:inherit; font-size:11px; text-align:left; border-radius:4px; cursor:pointer; }
+.overview-alerts .alert-row strong { color:#a95520; font-size:14px; }
+.overview-alerts .alert-row .alert-go { margin-left:auto; color:#b98a5e; font-size:15px; line-height:1; }
+.overview-alerts .alert-row:hover { background:#fff1e4; border-left-color:#b05f23; }
+.overview-alerts .alert-row:focus-visible { outline:2px solid #4c78a8; outline-offset:1px; }
+.pending-actions { display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin:0 0 10px; }
+.pending-actions .hint { margin:0; }
+
+/* ---- Công nợ (mục 25) + Thuế/ngưỡng (mục 26) ---- */
+.overview-debt-card,.overview-tax-card { grid-column:span 4; min-height:248px; }
+.overview-dashboard>.overview-products-card,.overview-dashboard>.overview-debt-card { grid-column:span 8; }
+.debt-parties { margin-top:10px; }
+.debt-parties-title { display:block; color:#8a98a9; font-size:9.5px; font-weight:800; text-transform:uppercase; margin-bottom:3px; }
+.debt-party { display:grid; grid-template-columns:minmax(0,1fr) auto auto; gap:10px; align-items:baseline; padding:5px 0; border-bottom:1px solid #edf1f5; }
+.debt-party:last-child { border-bottom:0; }
+.debt-party span { color:#52677e; font-size:11px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.debt-party strong { color:#20324a; font-size:11px; }
+.debt-party small { color:#97a3b3; font-size:10px; min-width:56px; text-align:right; }
+.overview-tax-card select { max-width:200px; font-size:11px; padding:5px 7px; }
+.overview-tax-bar { width:100%; height:6px; border:0; margin:8px 0 2px; accent-color:#087f70; }
+.overview-tax-card .overview-metrics span em { font-style:normal; color:#97a3b3; font-size:9.5px; font-weight:400; }
+.overview-tax-card .hint { margin:6px 0 0; color:#97a3b3; font-size:10px; line-height:1.45; }
+/* MỤC 29 — khối JSON thống kê (chưa tích hợp AI): chiếm trọn một dòng vì JSON dài; giữ monospace
+   + pre-wrap để người dùng sao chép được đúng nguyên văn, không bị cắt mất số. */
+/* Nằm cùng hàng với thẻ THUẾ (4 cột) để lưới 12 cột khít không còn chỗ trống. */
+.overview-ai-card { grid-column:span 8; min-height:0; }
+.overview-ai code { display:block; white-space:pre-wrap; word-break:break-all; font-size:11px; line-height:1.5; color:#20324a; background:#f7f9fc; border:1px solid #e6ecf3; border-radius:6px; padding:8px 10px; max-height:170px; overflow:auto; }
+.overview-ai button { margin-top:8px; }
+.overview-ai button:disabled { opacity:.55; cursor:not-allowed; }
+.overview-ai-note { margin:8px 0 0; color:#97a3b3; font-size:10px; line-height:1.45; }
+.overview-alerts .overview-clear { color:#087f70; background:#eef9f6; border-color:#28a58f; }
+.overview-product { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:6px 12px; padding:6px 0; }
+.overview-product span { color:#52677e; font-size:11px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.overview-product strong { color:#20324a; font-size:11px; }
+.overview-product progress { grid-column:1/-1; width:100%; height:5px; border:0; accent-color:#087f70; }
+/* Số lượng nằm dưới tên hàng trong dòng top (mục 24). */
+.overview-product span em { display:block; font-style:normal; color:#97a3b3; font-size:9.5px; font-weight:400; }
+/* Tiêu đề mục nhỏ bên trong thẻ Hàng hóa (Top bán / Top mua / Cần xem lại). */
+.overview-group { display:block; margin-top:10px; }
+.overview-split-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; }
+.overview-split-panel { min-width:0; padding:10px; border:1px solid #e1e9ee; border-radius:7px; background:#fbfcfd; }
+.overview-split-panel.sell { border-top:3px solid #087f70; }
+.overview-split-panel.buy { border-top:3px solid #7892ad; }
+.overview-split-panel .overview-group { margin-top:8px; }
+/* Cảnh báo hàng hóa (mục 24): cùng tông với dòng cảnh báo ở thẻ "Cần kiểm tra". */
+.goods-warn { margin:0 0 6px; padding:6px 8px; border-left:3px solid #d79052; background:#fff8f1; color:#52677e; font-size:10.5px; line-height:1.4; border-radius:4px; }
+.goods-warn strong { color:#a95520; font-size:13px; margin-right:3px; }
+@media(max-width:1180px){.overview-kpis{grid-template-columns:repeat(4,minmax(0,1fr))}.overview-chart-wide{grid-column:span 12}.overview-alerts{grid-column:span 12}.overview-sell-card,.overview-buy-card,.overview-donut-card,.overview-bank-card,.overview-products-card,.overview-debt-card,.overview-tax-card{grid-column:span 6}.overview-ai-card{grid-column:span 6}}
+@media(max-width:860px){.overview-sell-card,.overview-buy-card,.overview-donut-card,.overview-bank-card,.overview-products-card,.overview-debt-card,.overview-tax-card,.overview-ai-card{grid-column:span 12}.overview-split-grid{grid-template-columns:1fr}}
+@media(max-width:760px){.overview-kpis{grid-template-columns:1fr}.overview-sell-card,.overview-buy-card,.overview-donut-card,.overview-bank-card,.overview-products-card{grid-column:span 12}.overview-bars{gap:3px}.overview-donut-layout{grid-template-columns:96px 1fr}.overview-donut{width:96px}}
 
 /* ---- Khung chung của tab: giữ nguyên thứ tự vị trí như trước ---- */
 #pane-data { display: grid; grid-template-columns: minmax(0, 1fr); grid-auto-rows: min-content; gap: 14px; min-width: 0; }
@@ -136,6 +344,50 @@
 .bank-results .table-scroll { max-height: calc(100vh - 300px); min-height: 260px; }
 .bank-results .data-pager { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-top: 1px solid #edf1f5; }
 
+/* ---- Hộp thoại "Kiểm tra trước khi lưu": so sánh ĐỌC TỰ ĐỘNG vs AI đọc lại ---- */
+#bank-check-dialog {
+  width: min(94vw, 720px); max-width: 720px; padding: 18px;
+  background: #fff; border: 1px solid #dfe7ef; border-radius: 13px;
+}
+.bank-compare { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin: 4px 0 14px; }
+.bank-compare[hidden] { display: none; }
+.bank-compare-col { border: 1px solid #e0e7ef; border-radius: 10px; padding: 13px 14px; background: #fbfcfe; }
+.bank-compare-col h3 { display: flex; align-items: center; gap: 8px; margin: 0 0 11px; font-size: 12.5px; color: #52677e; text-transform: uppercase; letter-spacing: .3px; }
+.bank-compare-tag {
+  width: 20px; height: 20px; border-radius: 999px; display: inline-flex; align-items: center; justify-content: center;
+  background: #e6ecf3; color: #66788c; font-size: 11px; font-weight: 800; text-transform: none;
+}
+.bank-compare-col.ai { background: #f4fbf9; border-color: #bfe3db; }
+.bank-compare-col.ai h3 { color: #087f70; }
+.bank-compare-col.ai .bank-compare-tag { background: #087f70; color: #fff; }
+.bank-compare-rows > div { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; padding: 6px 0; border-bottom: 1px solid #edf1f5; }
+.bank-compare-rows > div:last-child { border-bottom: 0; }
+.bank-compare-rows span { color: #76869a; font-size: 11.5px; }
+.bank-compare-rows strong { color: #20324a; font-size: 15px; font-variant-numeric: tabular-nums; }
+.bank-compare-col.local .bank-compare-rows strong { color: #97a3b3; }
+.bank-compare-note { margin: 10px 0 0; color: #76869a; font-size: 11px; }
+.bank-compare-col.local .bank-compare-note { color: #b05f23; }
+.bank-compare-badge {
+  margin-left: auto; padding: 3px 8px; border-radius: 999px; text-transform: none; letter-spacing: 0;
+  font-size: 10.5px; font-weight: 700; background: #e6ecf3; color: #66788c;
+}
+.bank-compare-col.local .bank-compare-badge { background: #fdeade; color: #a9551a; }
+.bank-compare-col.ai .bank-compare-badge.ok { background: #d8f2ec; color: #06705f; }
+.bank-compare-col.ai .bank-compare-badge.warn { background: #fbe6cf; color: #96541b; }
+.bank-check-why {
+  margin: 0 0 12px; padding: 10px 13px; border-radius: 8px; border-left: 3px solid #d79052;
+  background: #fff8f1; color: #7a5a34; font-size: 12px; line-height: 1.55;
+}
+.bank-check-verdict { margin: 0 0 12px; padding: 12px 14px; border-radius: 8px; border-left: 3px solid #28a58f; background: #eef9f6; color: #20324a; font-size: 13px; font-weight: 600; line-height: 1.55; }
+.bank-check-verdict.warn { border-left-color: #d79052; background: #fff8f1; }
+.bank-check-tip { margin: 0 0 14px; color: #76869a; font-size: 11.5px; line-height: 1.55; }
+.bank-check-tip b { color: #52677e; }
+.bank-check-issues { margin: 0 0 14px; padding: 10px 13px; border-radius: 8px; border: 1px solid #f0dcc6; background: #fffaf4; }
+.bank-check-issues p { margin: 0 0 6px; color: #7a5a34; font-size: 11.5px; line-height: 1.5; }
+.bank-check-issues p:last-child { margin-bottom: 0; }
+#bank-check-dialog .login-actions { margin-top: 4px; }
+@media (max-width: 640px) { .bank-compare { grid-template-columns: minmax(0, 1fr); } }
+
 /* ---- Hộp thoại Auto Sync / Tải lịch sử ---- */
 #autosync-dialog, #backfill-dialog {
   width: min(94vw, 660px); max-width: 660px; padding: 18px;
@@ -156,6 +408,16 @@
 }
 
 /* ---- Chọn nhanh Năm / Quý / Tháng trong bộ lọc Kho dữ liệu ---- */
+/* View-switch responsive: thu nhỏ chữ + padding khi cửa sổ hẹp */
+@media(max-width:860px) {
+  .view-switch { gap: 3px; padding: 3px 2px; }
+  .view-switch button { font-size: 11px; padding: 7px 10px; }
+}
+@media(max-width:560px) {
+  .view-switch { gap: 2px; padding: 2px; }
+  .view-switch button { font-size: 10px; padding: 5px 7px; }
+}
+
 .data-period { display: flex; align-items: center; gap: 6px; flex: 0 0 auto; }
 .data-period select { height: 38px; margin-top: 0; width: auto; }
 .data-period-label {
@@ -253,3 +515,59 @@ table.loading tbody { transition: opacity .12s ease; }
 .preview-frame-wrap { height: calc(96vh - 152px); min-height: 320px; border: 1px solid #e0e7ef; border-radius: 10px; overflow: hidden; background: #eef1f4; }
 .preview-frame-wrap iframe { display: block; width: 100%; height: 100%; border: 0; background: #eef1f4; }
 .preview-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 11px; }
+
+/* ============================================================================
+   POPUP DANH SÁCH + THAO TÁC TRÊN TỪNG DÒNG (2026-09 — mục 3, 5, 6, 27)
+   Popup "Cần kiểm tra", popup chi tiết Công nợ/mặt hàng dùng chung một bộ nút:
+   Xem (hoá đơn A4) · TM · CK · ô phân loại. Bảng rộng hơn 600px của dialog gốc.
+   ========================================================================== */
+#pending-dialog, #list-dialog { width: min(940px, 95vw); }
+#list-dialog .table-scroll { max-height: min(58vh, 520px); overflow: auto; }
+#list-subtitle { margin-bottom: 14px; }
+.row-actions { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; }
+.row-actions button { font-size: 11px; padding: 5px 9px; white-space: nowrap; }
+.row-actions-none { color: #97a3b3; font-size: 10.5px; white-space: nowrap; }
+.row-review { font-size: 11px; font-weight: 600; padding: 4px 6px; height: 28px; max-width: 158px; }
+
+/* Nút ở CHÂN thẻ (mục 7) — mở đúng danh sách chi tiết của con số trong thẻ. */
+.card-links { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 8px; }
+.card-link { font-size: 11px; padding: 4px 0; }
+
+/* MỤC 5 — dòng đối tượng trong thẻ CÔNG NỢ là nút bấm → popup chi tiết. */
+.debt-party { width: 100%; text-align: left; border: 0; background: transparent; font: inherit; cursor: pointer; }
+.debt-party:hover span { color: #087f70; }
+.debt-party:focus-visible { outline: 2px solid #087f70; outline-offset: 1px; }
+
+/* MỤC 6 — dòng top hàng hóa là nút bấm → hoá đơn chứa mặt hàng; hiện 3 + "Xem thêm". */
+.overview-product { width: 100%; text-align: left; border: 0; background: transparent; font: inherit; color: inherit; cursor: pointer; }
+.overview-product:hover span { color: #087f70; }
+.overview-product:focus-visible { outline: 2px solid #087f70; outline-offset: 1px; }
+.goods-extra { display: block; }
+.goods-extra[hidden] { display: none; }
+.goods-more { font-size: 11px; padding: 3px 0; margin-bottom: 6px; }
+
+/* MỤC 27 —4 cảnh báo hàng hóa là nút bấm → danh sách mặt hàng bị dính. */
+.goods-warn {
+  display: flex; align-items: center; gap: 4px; width: 100%; text-align: left;
+  margin: 0 0 6px; padding: 6px 8px;
+  border: 0; border-left: 3px solid #d79052; border-radius: 4px;
+  background: #fff8f1; color: #52677e; font: inherit; font-size: 10.5px; line-height: 1.4; cursor: pointer;
+}
+.goods-warn strong { color: #a95520; font-size: 13px; margin-right: 3px; }
+.goods-warn .alert-go { margin-left: auto; color: #b98a5e; font-size: 14px; line-height: 1; }
+.goods-warn:hover { background: #fff1e4; }
+.goods-warn:focus-visible { outline: 2px solid #4c78a8; outline-offset: 1px; }
+
+/* MỤC 19 + 7 — dòng "Cần kiểm tra" ở dải KPI là nút bấm → popup danh sách chi tiết.
+   Vẫn giữ nguyên lớp card (viền + nền), chỉ thêm con trỏ + hiệu ứng khi rê chuột. */
+.overview-kpi.kpi-link {
+  font: inherit; color: inherit; text-align: left; cursor: pointer;
+}
+.overview-kpi.kpi-link:hover { border-color: #9db7d3; box-shadow: 0 4px 14px rgba(31, 50, 74, .09); }
+.overview-kpi.kpi-link:focus-visible { outline: 2px solid #4c78a8; outline-offset: 1px; }
+.overview-kpi.kpi-link strong.warn { text-decoration: underline; text-underline-offset: 3px; }
+
+/* MỤC 28 + 7 — bấm một tháng trên biểu đồ 12 tháng → hoá đơn của tháng đó. */
+#overview-monthly g[data-month] { cursor: pointer; }
+#overview-monthly g[data-month]:hover text { fill: #087f70; font-weight: 700; }
+#overview-monthly g[data-month]:focus-visible { outline: 2px solid #4c78a8; }

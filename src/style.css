@@ -105,10 +105,19 @@ tbody tr.clickable td:last-child::after{content:' ↗';color:#8a97a7}
 .settings-message.ok{color:#087f70}
 .qr-sample{width:120px;height:120px;border:8px solid #fff;background:#fff;box-shadow:0 0 0 1px #dfe7ef;border-radius:8px;background-image:linear-gradient(90deg,#14283f 9px,transparent 9px),linear-gradient(#14283f 9px,transparent 9px),linear-gradient(90deg,transparent 21px,#14283f 21px,#14283f 30px,transparent 30px),linear-gradient(transparent 39px,#14283f 39px,#14283f 48px,transparent 48px);background-size:24px 24px,24px 24px,57px 57px,69px 69px;background-position:0 0,0 0,17px 11px,33px 27px}
 .lock-floating{position:fixed;right:26px;bottom:78px;z-index:19;width:42px;height:42px;padding:0;border-radius:50%;background:#14283f;color:#fff;border-color:#14283f;box-shadow:0 8px 24px #102b3540}
-.lock-screen{position:fixed;inset:0;z-index:50;background:#102033d9;display:grid;place-items:center;padding:20px}
+/* Màn khoá (dùng chung cho khoá PIN, license bị khoá, license hết hạn): giữ nguyên dáng cũ,
+   chỉ thêm hiệu ứng hiện vào / mờ ra cho êm mắt. */
+.lock-screen{position:fixed;inset:0;z-index:50;background:#102033d9;display:grid;place-items:center;padding:20px;animation:lockBackdropIn .2s ease-out both}
 .lock-screen[hidden]{display:none}
-.unlock-card{width:min(340px,100%);background:#fff;border-radius:13px;padding:24px;border:1px solid #dfe7ef;box-shadow:0 20px 60px #0004;text-align:center}
+.lock-screen.is-leaving{animation:lockBackdropOut .16s ease-in both}
+.lock-screen.is-leaving .unlock-card{animation:lockCardOut .16s ease-in both}
+.unlock-card{width:min(340px,100%);background:#fff;border-radius:13px;padding:24px;border:1px solid #dfe7ef;box-shadow:0 20px 60px #0004;text-align:center;animation:lockCardIn .24s cubic-bezier(.2,.9,.3,1.15) both}
 .unlock-card h2{margin:0 0 8px}.unlock-card p{font-size:12px;color:#728398}.unlock-card input{text-align:center;font-size:22px;letter-spacing:10px}.unlock-card button{width:100%;margin-top:10px}.unlock-card small{display:block;min-height:16px;color:#a44e35;margin-top:10px}
+@keyframes lockBackdropIn{from{opacity:0}to{opacity:1}}
+@keyframes lockBackdropOut{from{opacity:1}to{opacity:0}}
+@keyframes lockCardIn{from{opacity:0;transform:translateY(12px) scale(.98)}to{opacity:1;transform:none}}
+@keyframes lockCardOut{from{opacity:1;transform:none}to{opacity:0;transform:translateY(-6px) scale(.99)}}
+@media(prefers-reduced-motion:reduce){.lock-screen,.lock-screen.is-leaving,.lock-screen.is-leaving .unlock-card,.unlock-card{animation:none!important}}
 @media(max-width:900px){.license-summary,.payment-plans,.payment-body,.payment-form{grid-template-columns:1fr}.settings-form{grid-template-columns:1fr}.lock-status{display:block}.lock-status span{display:block;margin-top:6px}}
 /* ---- Tin nhắn hỗ trợ: badge số tin chưa đọc trên nút 💬 Hỗ trợ ---- */
 .support-toggle{position:relative}
@@ -242,6 +251,67 @@ dialog::backdrop{background:#12283fb0}
 @keyframes toastIn { from { opacity: 0; transform: translateX(24px); } to { opacity: 1; transform: none; } }
 @keyframes toastOut { to { opacity: 0; transform: translateX(24px) scale(.96); } }
 
+/* Thanh tiến trình trong toast: dùng khi ĐANG NHẬP FILE — chạy mượt rồi tự chuyển thành
+   kết quả (toast xanh/đỏ). Cùng tông mint/teal với hệ thống toast ở trên. */
+.toast.toast-progress { align-items: flex-start; }
+.toast-progress-body { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 8px; }
+.toast-bar {
+  width: 100%; height: 6px; border: 0; border-radius: 999px;
+  background: #cfe9e1; appearance: none; overflow: hidden;
+}
+.toast-bar::-webkit-progress-bar { background: #cfe9e1; border-radius: 999px; }
+.toast-bar::-webkit-progress-value { background: linear-gradient(90deg, #2bd4ae, #087f70); border-radius: 999px; transition: width .25s ease; }
+.toast-bar::-moz-progress-bar { background: linear-gradient(90deg, #2bd4ae, #087f70); border-radius: 999px; }
+.toast.toast-progress .notice-close { color: #0b6b5c; }
+
+/* ============================================================================
+   HỘP XÁC NHẬN DÙNG CHUNG (2026-09) — thay confirm() gốc của trình duyệt.
+   Cùng tông mint/teal, bo góc 12px, bóng đổ, mờ dần khi hiện/ẩn cho đồng bộ với toast.
+   ========================================================================== */
+.app-confirm {
+  position: fixed; inset: 0; z-index: 80;
+  display: flex; align-items: center; justify-content: center; padding: 20px;
+  background: rgba(18, 40, 64, .38);
+  opacity: 0; transition: opacity .14s ease;
+}
+.app-confirm.show { opacity: 1; }
+.app-confirm-card {
+  width: min(480px, 100%); max-height: 86vh; overflow: auto;
+  background: #fff; border: 1px solid #dce4ee; border-top: 3px solid #2bd4ae;
+  border-radius: 12px; padding: 18px 20px 16px;
+  box-shadow: 0 24px 80px rgba(16, 43, 53, .25);
+  transform: translateY(10px) scale(.98); transition: transform .16s cubic-bezier(.2, .8, .3, 1);
+}
+.app-confirm.show .app-confirm-card { transform: none; }
+.app-confirm-card.tone-warn { border-top-color: #e2a03f; }
+.app-confirm-card.tone-error { border-top-color: #d9534f; }
+.app-confirm-card h2 { margin: 0 0 10px; font-size: 16px; color: #14313a; }
+.app-confirm-text {
+  margin: 0 0 16px; font-size: 13px; line-height: 1.65; color: #2c4550;
+  white-space: pre-wrap; overflow-wrap: anywhere; /* giữ nguyên xuống dòng của nội dung */
+}
+.app-confirm-card .login-actions { justify-content: flex-end; }
+/* Ô NHẬP trong hộp xác nhận (thay prompt() gốc): ô gõ + dãy gợi ý bấm chọn cho khỏi gõ sai. */
+.app-confirm-input { display: flex; flex-direction: column; gap: 10px; margin: 0 0 16px; }
+.app-confirm-input[hidden] { display: none; }
+.app-confirm-input input {
+  width: 100%; box-sizing: border-box; padding: 9px 12px;
+  border: 1px solid #cfdae8; border-radius: 8px;
+  font-size: 13px; color: #14313a; background: #fff;
+}
+.app-confirm-input input:focus { outline: none; border-color: #2bd4ae; box-shadow: 0 0 0 3px rgba(43, 212, 174, .18); }
+.app-confirm-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.app-confirm-chip {
+  flex: 0 0 auto; min-width: 0; padding: 6px 11px; cursor: pointer;
+  border: 1px solid #cfe9e1; border-radius: 999px;
+  background: #f2fbf8; color: #087f70; font-size: 12px;
+}
+.app-confirm-chip:hover { background: #e2f5ee; border-color: #2bd4ae; }
+.app-confirm-chip.on { background: #087f70; border-color: #087f70; color: #fff; }
+.app-confirm-card .login-actions button { flex: 0 0 auto; min-width: 108px; }
+.app-confirm-card.tone-warn .primary { background: #d98614; border-color: #d98614; }
+.app-confirm-card.tone-error .primary { background: #c9403c; border-color: #c9403c; }
+
 /* ============================================================================
    DÒNG MST GỌN GÀNG — NÚT ▶/⏹ VÀ ⋯ LUÔN SÁT PHẢI, KHÔNG TRÀN (2026-09)
    Trước đây banner trạng thái (flex trong .mst-info) đẩy nút ⋯ tràn khỏi dòng khi
@@ -279,7 +349,7 @@ aside { z-index: 20; }
    Trước đây header tràn sang trái đè sidebar khi cửa sổ hẹp. Giờ: header co đúng,
    badge gói licence rời xuống dòng riêng khi hẹp, side-bottom thành hàng ngang.
    ========================================================================== */
-main > header { min-width: 0; gap: 14px; flex-wrap: nowrap; }
+main > header { min-width: 0; gap: 22px; flex-wrap: nowrap; align-items:center; }
 main > header .view-switch { flex: 0 0 auto; }
 main > header > div { min-width: 0; flex: 1 1 auto; }
 main > header h1 {
@@ -289,6 +359,17 @@ main > header h1 {
 .license-badge { flex: 0 0 auto; }
 /* Badge gói licence: hẹp quá thì tự rời xuống dòng dưới tiêu đề, không đè sidebar */
 main > header h1 { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.header-context {
+  margin-left:auto; text-align:right; display:flex; flex-direction:column; align-items:flex-end;
+  justify-content:center; min-width:0; max-width:min(560px,52vw);
+}
+.header-context .eyebrow { margin:0 0 2px; color:#718296; letter-spacing:1.8px; }
+.header-context h1 { justify-content:flex-end; margin:0; line-height:1.2; }
+.header-context #view-title { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.header-context #view-note {
+  margin:4px 0 0; max-width:100%; color:#7c8b9d; font-size:11px; line-height:1.35;
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+}
 /* side-bottom: hàng ngang — Cài đặt | phiên bản | nút cập nhật, cách đều, không xuống dòng lộn xộn */
 .side-bottom {
   position: static; margin-top: auto; padding-top: 14px;
@@ -311,18 +392,52 @@ aside { padding-bottom: 18px; }   /* side-bottom giờ là phần tử thường
   main { margin-left: 200px; width: calc(100% - 200px); padding: 16px 14px 10px; }
   .workspace { grid-template-columns: minmax(0, 1fr); }  /* một cột: filter trên, bảng dưới */
   main > header { flex-wrap: wrap; }                      /* view-switch xuống dòng riêng khi hẹp */
+  .header-context { max-width:100%; width:100%; align-items:flex-start; text-align:left; margin-left:0; }
+  .header-context h1 { justify-content:flex-start; }
 }
 
 /* ============================================================================
    PHẢN HỒI TỨC THÌ KHI CHỌN MST (2026-09) — chỉ hiệu ứng, KHÔNG đổi logic chọn.
    Dòng vừa bấm (đang chờ máy chủ xác nhận /api/account/select) tô sáng nhẹ + nút
-   ▶/⏹ xoay. Xác nhận xong render() vẽ lại theo state.selected như cũ — dòng bấm
-   không còn "đứng im" trong lúc request đi về.
+   ▶/⏹ xoay + chấm trạng thái nhấp nháy. Xác nhận xong render() vẽ lại theo
+   state.selected như cũ — dòng bấm không còn "đứng im" trong lúc request đi về.
    ========================================================================== */
 .mst-row.selecting { background: #1b3149; border-color: #2bd4ae40; }
 .mst-row.selecting .mst-info { opacity: .75; }
 .mst-row.selecting .mst-stop { color: #7fd4ff; animation: mstStopSpin .8s linear infinite; }
+.mst-row.selecting .mst-dot { animation: mstDotPulse 1.2s ease-in-out infinite; }
 @keyframes mstStopSpin { to { transform: rotate(360deg); } }
+@keyframes mstDotPulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+
+/* ============================================================================
+   LOADING SPINNER CHO KHỞI TẠO (2026-09) — dùng chung sidebar & nội dung chính
+   ========================================================================== */
+.loading-spinner {
+  display: inline-block;
+  width: 14px; height: 14px;
+  border: 2px solid #2bd4ae40;
+  border-top-color: #2bd4ae;
+  border-radius: 50%;
+  animation: spin .8s linear infinite;
+  margin-right: 6px;
+  vertical-align: middle;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ============================================================================
+   TRẠNG THÁI ĐANG TẢI TAB TỔNG QUAN (2026-09)
+   Thay vì dựng khối skeleton giả (dễ trông như giao diện lỗi), giữ nguyên bố cục
+   thật rồi gắn một chip nhỏ "Đang tải tổng quan…" cạnh nút cập nhật — gọn và rõ ràng.
+   ========================================================================== */
+.overview-head-actions { display: flex; align-items: center; gap: 12px; flex: 0 0 auto; }
+.overview-loading {
+  display: inline-flex; align-items: center;
+  color: #517c78; background: #eef5f5; border: 1px solid #d4e6e2;
+  border-radius: 999px; padding: 5px 12px 5px 9px;
+  font-size: 11px; font-weight: 600; white-space: nowrap;
+}
+.overview-loading .loading-spinner { margin-right: 6px; }
+#overview-loading[hidden] { display: none !important; }
 
 /* ============================================================================
    CỤM THƯƠNG HIỆU ĐẦU SIDEBAR — LOGO + WORDMARK 2 DÒNG (2026-09)
@@ -389,7 +504,118 @@ aside { padding-bottom: 18px; }   /* side-bottom giờ là phần tử thường
 .login-choice-actions button { width: 100%; }
 #login-choice-status { min-height: 16px; margin: 12px 0 0; }
 
+/* ============================================================================
+   MÀN HÌNH CHỜ KHỞI ĐỘNG (boot splash)
+   Phủ toàn màn hình ngay khi mở app trong lúc kiểm tra phiên đăng nhập và nạp dữ
+   liệu Tổng quan; khi sẵn sàng thì mờ dần rồi biến mất để lộ giao diện Tổng quan
+   của MST phiên làm việc gần nhất. Không dựng khối xám giả — chỉ hiệu ứng nền,
+   thanh tiến trình và danh sách bước đang chạy.
+   ========================================================================== */
+.boot-splash {
+  position: fixed; inset: 0; z-index: 200;
+  display: grid; place-items: center; overflow: hidden;
+  background:
+    radial-gradient(1200px 620px at 20% -12%, #1d3b5c 0%, transparent 58%),
+    radial-gradient(900px 520px at 90% 110%, #0d3d38 0%, transparent 60%),
+    linear-gradient(160deg, #0d1b2b 0%, #14283f 55%, #0f2330 100%);
+  color: #eaf3f7;
+  opacity: 1; visibility: visible;
+  transition: opacity .45s ease, visibility .45s ease;
+}
+.boot-splash[hidden],
+.boot-splash.is-hidden { opacity: 0; visibility: hidden; pointer-events: none; }
+.boot-aurora {
+  position: absolute; width: min(760px, 120vw); aspect-ratio: 1; border-radius: 50%;
+  background: conic-gradient(from 0deg, #2bd4ae36, #4c78a836, #2bd4ae36);
+  filter: blur(70px); animation: boot-spin 14s linear infinite;
+}
+@keyframes boot-spin { to { transform: rotate(1turn); } }
+.boot-panel {
+  position: relative; width: min(430px, 88vw); padding: 34px 34px 28px; text-align: center;
+  background: #ffffff0d; border: 1px solid #ffffff1f; border-radius: 20px;
+  box-shadow: 0 30px 80px #00000059; backdrop-filter: blur(10px);
+  animation: boot-rise .5s cubic-bezier(.2, .7, .3, 1) both;
+}
+@keyframes boot-rise { from { opacity: 0; transform: translateY(14px) scale(.98); } }
+.boot-logo { height: 78px; width: auto; filter: drop-shadow(0 10px 22px #0006); }
+.boot-brand { margin-top: 12px; font-size: 20px; font-weight: 700; letter-spacing: .4px; color: #fff; }
+.boot-brand span { color: #2bd4ae; }
+.boot-sub { margin: 6px 0 0; font-size: 11.5px; color: #9db6c9; }
+.boot-status { margin: 20px 0 0; min-height: 18px; font-size: 12.5px; font-weight: 600; color: #d7e7f0; }
+.boot-bar { position: relative; height: 5px; margin: 14px 0 0; border-radius: 99px; background: #ffffff1f; overflow: hidden; }
+.boot-bar i {
+  position: absolute; top: 0; bottom: 0; width: 38%; border-radius: 99px;
+  background: linear-gradient(90deg, #1fae8f, #7df3d5);
+  animation: boot-slide 1.25s ease-in-out infinite;
+}
+@keyframes boot-slide { 0% { left: -40%; } 100% { left: 100%; } }
+.boot-splash.is-ready .boot-bar i {
+  left: 0; width: 100%; animation: none;
+  background: linear-gradient(90deg, #2bd4ae, #7df3d5);
+}
+.boot-steps { list-style: none; margin: 20px 0 0; padding: 0; display: grid; gap: 8px; text-align: left; }
+.boot-steps li { display: flex; align-items: center; gap: 9px; font-size: 11.5px; color: #8fa8bb; }
+.boot-steps li::before {
+  content: ''; flex: 0 0 auto; width: 14px; height: 14px; border-radius: 50%;
+  border: 2px solid #ffffff2e; display: grid; place-items: center;
+  font-size: 9px; font-weight: 800; line-height: 1; color: #0d1b2b;
+}
+.boot-steps li.active { color: #eaf3f7; }
+.boot-steps li.active::before { border-color: #2bd4ae; border-top-color: transparent; animation: boot-spin .7s linear infinite; }
+.boot-steps li.done { color: #9fd8c8; }
+.boot-steps li.done::before { content: '✓'; border-color: #2bd4ae; background: #2bd4ae; }
+/* Câu mẹo/giới thiệu LUÂN PHIÊN trong lúc chờ: màn hình chờ không "đứng yên" nên người dùng
+   không thấy sốt ruột; đổi câu bằng hiệu ứng mờ dần (không giật). */
+.boot-tip {
+  margin: 18px 0 0; padding: 12px 14px; font-size: 11.5px; line-height: 1.65; text-align: left;
+  color: #b9d3e2; background: #ffffff0f; border: 1px solid #ffffff1a; border-radius: 12px;
+  opacity: 0; transform: translateY(4px); transition: opacity .5s ease, transform .5s ease;
+}
+.boot-tip.show { opacity: 1; transform: none; }
+/* Khi sẵn sàng: giao diện BÊN DƯỚI được hé lộ dần (mờ + nhích lên nhẹ) song song với
+   màn hình chờ mờ đi — chuyển cảnh mượt, không "bụp" một cái. */
+body.app-ready > aside, body.app-ready > main { animation: app-enter .55s cubic-bezier(.2, .7, .3, 1) both; }
+@keyframes app-enter { from { opacity: 0; transform: translateY(8px); } }
+@media (prefers-reduced-motion: reduce) {
+  .boot-aurora, .boot-bar i, .boot-steps li.active::before, .boot-panel, .boot-tip { animation: none; }
+  body.app-ready > aside, body.app-ready > main { animation: none; }
+}
+
 .stats { grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); }
 .stats .card.downloaded strong { color: #078a76; }
 .stats .card.existed strong { color: #517c78; }
 .stats .card.errors strong { color: #be853a; }
+
+/* ============================================================================
+   HEADER DÙNG CHUNG CHO MỌI TAB (2026-09 — mục 1 + mục 2)
+   Một thanh duy nhất gom: MST · tên · "TÌNH HÌNH KINH DOANH" · kỳ hiện tại ·
+   bộ chọn kỳ · chip đang tải · nút cập nhật đối chiếu. Trang Tổng quan không còn
+   khối tiêu đề riêng nên KHÔNG thấy tên/MST hiện hai lần ở hai chỗ.
+   ========================================================================== */
+.account { align-items: center; gap: 14px; flex-wrap: wrap; padding-top:9px; padding-bottom:9px; }
+.account-id { display: flex; align-items: center; min-width: 0; flex: 1 1 auto; gap:8px; }
+.account-updated { margin-left:auto; color:#76869a; font-size:11px; white-space:nowrap; }
+.account-title { min-width: 0; flex: 1 1 320px; }
+.account-title h2 {
+  margin: 3px 0 0; font-size: 13px; color: #20324a;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.account-title p {
+  margin: 3px 0 0; color: #76869a; font-size: 11.5px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.account-title h2[hidden] { display: none; }
+.account-eyebrow { display: block; font-size: 10px; font-weight: 700; letter-spacing: 2px; color: #7a8b9e; }
+.account-tools { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; flex: 0 0 auto; margin-left: auto; }
+.period-chips { display: flex; gap: 5px; flex-wrap: wrap; }
+.period-chips button {
+  font-size: 11px; padding: 7px 11px; border-radius: 999px;
+  background: #fff; white-space: nowrap;
+}
+.period-chips button:hover { border-color: #087f70; color: #087f70; }
+.period-chips button.active { background: #087f70; border-color: #087f70; color: #fff; }
+.period-chips button:focus-visible { outline: 2px solid #087f70; outline-offset: 2px; }
+@media (max-width: 900px) {
+  .account-tools { margin-left: 0; }
+  .account-title { flex: 1 1 100%; }
+}

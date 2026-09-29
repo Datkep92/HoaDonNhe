@@ -9,13 +9,59 @@ const MstFormat = window.MstFormat || (() => {
   return { MST_HINT: HINT, isValidMst: () => true, normalizeMst: v => String(v ?? '').trim(), baseMst: v => String(v ?? '').trim().split('-')[0], mstAliases: v => [String(v ?? '').trim()] };
 })();
 const errorLabels = { auth: 'Cần đăng nhập lại', rate_limited: 'Cổng đang giới hạn nhịp', timeout: 'Cổng phản hồi chậm', network: 'Lỗi kết nối', invalid_xml: 'XML/ZIP không hợp lệ', portal: 'Lỗi từ cổng thuế' };
-let current = { busy: false, accounts: [] }, pending = false, initialized = false;
+let current = { busy: false, accounts: [] }, pending = false, initialized = false, initialLoading = true;
 // Bảng 1.000 dòng được server TÁCH khỏi /api/state (payload rảnh giảm từ hàng trăm KB còn vài KB):
 // /api/state chỉ chứa tổng hợp + revision; bảng fetch riêng và chỉ khi revision đổi.
 // Danh sách CUỘN như bản cũ (một payload, KHÔNG nút sang trang) nhưng MỚI NHẤT Ở TRÊN — server trả
 // thứ tự đảo nên hoá đơn vừa tải xong nằm ngay đầu bảng, người dùng không phải cuộn xuống tìm.
 let itemsRevisionSeen = 0;
 let itemsLoading = false;
+
+// ---------------------------------------------------------------------------
+// CACHE NHẸ DANH SÁCH MST (localStorage) — dòng MST phiên gần nhất được tô sáng NGAY từ khung
+// hình đầu tiên, không phải chờ 1–3 giây `/api/state` (lúc đó sidebar trống trơn, trông "vô tri").
+// Chỉ vài chục phần tử, vài trăm byte; KHÔNG chứa mật khẩu, cookie hay gì nhạy cảm (chỉ mã, tên,
+// trạng thái phiên và số mã định danh để vẽ dòng cho giống). Khi dữ liệu thật về thì ghi đè và
+// cache được cập nhật lại — nên cache chỉ là "ảnh chụp" cho nhịp đầu, không phải nguồn sự thật.
+const MST_CACHE_KEY = 'hd.mst-cache.v1';
+const MST_CACHE_MAX = 60; // danh sách dài hơn thì cắt — cache chỉ để vẽ nhanh, không cần đủ
+function readMstCache() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(MST_CACHE_KEY) || 'null');
+    if (!parsed || !Array.isArray(parsed.accounts) || !parsed.accounts.length) return null;
+    return parsed;
+  } catch { return null; } // cache hỏng (bản cũ, JSON lỗi…) coi như không có
+}
+// Nguồn CHÍNH cho khung hình đầu là `window.HD_BOOT_CACHE` do máy chủ phát (xem bootCacheScript
+// trong server.js). Máy chủ mở cổng NGẪU NHIÊN mỗi lần chạy nên origin đổi ⇒ localStorage KHÔNG
+// đọc lại được giữa hai lần mở app; cache dưới đây chỉ là đường DỰ PHÒNG cho môi trường chạy ở
+// cổng cố định (mock dev server) và cho bản giao diện cũ còn cache sẵn. Hàm này chuẩn hoá cả hai
+// về cùng một hình dạng để chỗ gọi không phải phân biệt.
+function firstPaintMstList() {
+  const boot = typeof window !== 'undefined' && window.HD_BOOT_CACHE;
+  if (boot && Array.isArray(boot.accounts) && boot.accounts.length) {
+    return { selected: boot.selected || '', accounts: boot.accounts.slice(0, MST_CACHE_MAX) };
+  }
+  return readMstCache();
+}
+let mstCacheSignature = '';
+function writeMstCache(state) {
+  try {
+    const accounts = (state.accounts || []).slice(0, MST_CACHE_MAX).map(account => ({
+      mst: account.mst,
+      name: account.name || '',
+      session: account.session || '',
+      identifiers: (account.identifiers || []).slice(0, 8),
+      remembered: !!account.remembered,
+    }));
+    const selected = state.selected || '';
+    // Bỏ qua khi y hệt lần trước: vòng poll 1,5 giây không nên ghi localStorage liên tục.
+    const signature = [selected, ...accounts.map(a => `${a.mst}\u0001${a.name}\u0001${a.session}\u0001${a.remembered}\u0001${a.identifiers.join(',')}`)].join('\u0002');
+    if (signature === mstCacheSignature) return;
+    mstCacheSignature = signature;
+    localStorage.setItem(MST_CACHE_KEY, JSON.stringify({ selected, accounts }));
+  } catch { /* hết quota / chặn localStorage — cache là tuỳ chọn, bỏ qua */ }
+}
 
 // Ngày lập của cổng thuế (`tdlap`) là MỐC UTC: "2026-08-30T17:00:00Z" chính là 00:00 ngày 31/08
 // giờ Việt Nam. Cắt 10 ký tự đầu sẽ lệch MỘT NGÀY (lỗi thật đã gặp ở file Excel) — phải quy đổi
@@ -93,6 +139,135 @@ function notice(text, actions, kind) {
 window.notice = notice;
 // Báo lỗi: dùng đúng màu đỏ. Mọi thông báo khác đi qua notice() sẽ là màu xanh.
 window.noticeFail = (text, actions) => notice(text, actions, 'error');
+// Tiến trình nhập file: cùng chỗ, cùng khung với toast — có thanh chạy, rồi TỰ BIẾN thành
+// kết quả (xanh = xong, đỏ = hỏng) và tự tắt. Trả về handle để nơi gọi cập nhật từng bước.
+//   const job = noticeProgress('Đang đọc …');
+//   job.set(45, 'Đang chuẩn hoá …');  // % + chữ
+//   job.finish('ok', 'Đã nhập …');    // hoặc job.finish('error', 'Lỗi …')
+function noticeProgress(text) {
+  const stack = $('notice-stack');
+  const noop = { set() {}, finish() {}, close() {} };
+  if (!stack) return noop;
+  while (stack.children.length >= NOTICE_MAX) stack.firstElementChild.remove();
+  const box = document.createElement('div');
+  box.className = 'toast toast-progress';
+  box.setAttribute('role', 'status');
+  const span = document.createElement('span'); span.className = 'toast-text'; span.textContent = text;
+  const bar = document.createElement('progress'); bar.className = 'toast-bar'; bar.max = 100; bar.value = 0;
+  const body = document.createElement('div'); body.className = 'toast-progress-body'; body.append(span, bar);
+  box.append(body);
+  let timer = null;
+  function dismiss() {
+    if (box.dataset.leaving) return;
+    box.dataset.leaving = '1';
+    clearTimeout(timer);
+    box.classList.add('toast-leave'); // cùng hiệu ứng thu nhỏ/mờ của toast
+    setTimeout(() => box.remove(), 200);
+  }
+  const close = document.createElement('button');
+  close.type = 'button'; close.className = 'notice-close'; close.textContent = '✕'; close.setAttribute('aria-label', 'Đóng thông báo');
+  close.onclick = () => dismiss();
+  box.append(close);
+  box.onmouseenter = () => clearTimeout(timer); // đang đọc thì dừng đồng hồ
+  stack.append(box);
+  return {
+    set(value, message) {
+      if (message) span.textContent = message;
+      if (typeof value === 'number') { bar.hidden = false; bar.value = Math.max(0, Math.min(100, value)); }
+    },
+    finish(kind, message) {
+      if (message) span.textContent = message;
+      bar.remove();
+      box.classList.remove('toast-progress');
+      box.classList.add(kind === 'error' ? 'notice-error' : 'notice-ok');
+      box.setAttribute('role', kind === 'error' ? 'alert' : 'status');
+      clearTimeout(timer);
+      timer = setTimeout(dismiss, kind === 'error' ? 10000 : 6000);
+    },
+    close: dismiss,
+  };
+}
+window.noticeProgress = noticeProgress;
+// Hộp XÁC NHẬN dùng chung — thay cho confirm() gốc của trình duyệt (hộp xám "127.0.0.1 says"
+// nhìn lệch hẳn tông app). Dựng bằng div + nền mờ, đúng tông mint/teal của toast/dialog.
+//   const ok = await askConfirm({ title, text, ok: 'Lưu', cancel: 'Huỷ', tone: 'warn' });
+// tone: 'ok' (mặc định, xanh) · 'warn' (cam, có cảnh báo) · 'error' (đỏ).
+// Thêm input: { placeholder, value, options: ['MST1', ...] } khi cần hỏi một giá trị (thay prompt()):
+//   const mst = await askConfirm({ title, text, input: { placeholder: 'MST đích', options: [...] } });
+//   → OK trả về chuỗi đã gõ, Huỷ trả về null.
+// Không có HTML (bản cũ) thì rơi về confirm()/prompt() để không vỡ luồng.
+function askConfirm(info) {
+  const options = typeof info === 'string' ? { text: info } : (info || {});
+  const box = $('app-confirm');
+  if (!box) return Promise.resolve(options.input ? prompt(options.text || '') : confirm(options.text || ''));
+  const text = options.text || '';
+  $('app-confirm-title').textContent = options.title || 'Xác nhận';
+  const paragraph = $('app-confirm-text');
+  paragraph.textContent = text;
+  paragraph.hidden = !text;
+  const ok = $('app-confirm-ok'), cancel = $('app-confirm-cancel');
+  ok.textContent = options.ok || 'OK';
+  cancel.textContent = options.cancel || 'Huỷ';
+  box.querySelector('.app-confirm-card').className = `app-confirm-card tone-${options.tone || 'ok'}`;
+  // Ô NHẬP (tuỳ chọn) — dùng thay prompt() gốc. Danh sách gợi ý bấm chọn nằm ngay dưới ô.
+  const slot = $('app-confirm-input');
+  const wantsInput = !!options.input && !!slot;
+  let field = null;
+  if (slot) { slot.textContent = ''; slot.hidden = !wantsInput; }
+  if (wantsInput) {
+    const spec = typeof options.input === 'object' ? options.input : {};
+    field = document.createElement('input');
+    field.type = 'text';
+    field.value = spec.value || '';
+    field.placeholder = spec.placeholder || '';
+    field.autocomplete = 'off';
+    slot.append(field);
+    const choices = (Array.isArray(spec.options) ? spec.options : []).filter(Boolean);
+    if (choices.length) {
+      const chips = document.createElement('div');
+      chips.className = 'app-confirm-chips';
+      choices.forEach(choice => {
+        const chip = document.createElement('button');
+        chip.type = 'button'; chip.className = 'app-confirm-chip'; chip.textContent = choice;
+        chip.onclick = () => {
+          field.value = choice;
+          chips.querySelectorAll('.app-confirm-chip').forEach(other => other.classList.toggle('on', other === chip));
+          field.focus();
+        };
+        chips.append(chip);
+      });
+      slot.append(chips);
+    }
+  }
+  return new Promise(resolve => {
+    let settled = false;
+    const done = value => {
+      if (settled) return; settled = true;
+      document.removeEventListener('keydown', onKey, true);
+      ok.onclick = cancel.onclick = box.onclick = null;
+      if (field) field.onkeydown = null;
+      box.classList.remove('show'); // mờ + thu nhỏ rồi mới ẩn, mượt như toast
+      setTimeout(() => { box.hidden = true; }, 140);
+      resolve(value);
+    };
+    // Có ô nhập: OK trả chuỗi đã gõ (rỗng coi như huỷ, giống prompt gốc), Huỷ trả null.
+    const dismiss = () => done(wantsInput ? null : false);
+    const accept = () => done(wantsInput ? (field.value.trim() || null) : true);
+    // Esc = Huỷ (giống hành vi hộp native), Enter trong ô nhập = đồng ý.
+    const onKey = event => {
+      if (event.key === 'Escape') { event.preventDefault(); dismiss(); }
+    };
+    if (field) field.onkeydown = event => { if (event.key === 'Enter') { event.preventDefault(); accept(); } };
+    ok.onclick = accept;
+    cancel.onclick = dismiss;
+    box.onclick = event => { if (event.target === box) dismiss(); }; // bấm ra ngoài = Huỷ
+    document.addEventListener('keydown', onKey, true);
+    box.hidden = false;
+    requestAnimationFrame(() => box.classList.add('show'));
+    (field || ok).focus();
+  });
+}
+window.askConfirm = askConfirm;
 const SESSION_LABEL = { live: 'Đang dùng phiên đăng nhập của phiên làm việc này', saved: 'Còn phiên đã lưu — bấm để vào tra cứu', none: 'Chưa đăng nhập — bấm để đăng nhập' };
 const displayName = account => account.name || account.label || account.mst;
 // Tạo một lần rồi dùng lại: new Intl.NumberFormat cho từng dòng là chi phí thuần tuý (bảng có thể
@@ -247,7 +422,7 @@ async function chooseMst(mst) {
   if (pending) return;
   if (mst === current.selected && current.authenticated) { notice(`Đang dùng phiên đăng nhập sẵn có của MST ${mst}.`); return; }
   initialized = false;
-  const result = await work('/api/account/select', { mst });
+  const result = await selectMst(mst);
   if (!result) return;
   if (result.authenticated) { notice(`MST ${mst}: còn phiên đăng nhập — tra cứu được ngay.`); return; }
   // Hết phiên: tự động đăng nhập NGAY như cũ; chỉ khi không được mới mở modal 3 lựa chọn.
@@ -256,7 +431,10 @@ async function chooseMst(mst) {
   catch (error) { noticeFail(error.message); await prepareManualLogin(mst); openLoginChoice(mst); }
 }
 async function forgetPassword(account) {
-  if (!confirm(`Xoá mật khẩu đã lưu của MST ${account.mst}? Phiên đang đăng nhập vẫn giữ.`)) return;
+  if (!await askConfirm({
+    title: 'Xoá mật khẩu đã lưu', tone: 'error', ok: 'Xoá mật khẩu', cancel: 'Giữ lại',
+    text: `Xoá mật khẩu đã lưu của MST ${account.mst}? Phiên đang đăng nhập vẫn giữ.`,
+  })) return;
   try {
     if (account.mst !== current.selected) await work('/api/account/select', { mst: account.mst });
     await call('/api/account/forget', {});
@@ -264,7 +442,10 @@ async function forgetPassword(account) {
   } catch (error) { noticeFail(error.message); }
 }
 async function removeMst(account) {
-  if (!confirm(`Bỏ MST ${account.mst} khỏi danh sách? Profile Chrome và tiến độ vẫn giữ trong du_lieu, nhưng phiên + mật khẩu đã lưu của MST này sẽ bị xoá.`)) return;
+  if (!await askConfirm({
+    title: 'Bỏ MST khỏi danh sách', tone: 'error', ok: 'Bỏ MST', cancel: 'Giữ lại',
+    text: `Bỏ MST ${account.mst} khỏi danh sách? Profile Chrome và tiến độ vẫn giữ trong du_lieu, nhưng phiên + mật khẩu đã lưu của MST này sẽ bị xoá.`,
+  })) return;
   await work('/api/account/remove', { mst: account.mst });
 }
 function openMstForm(account) {
@@ -340,15 +521,19 @@ function renderAccounts(state) {
   list.replaceChildren();
   if (!shown.length) {
     const empty = document.createElement('p'); empty.className = 'mst-empty';
-    empty.textContent = all.length ? 'Không có MST nào khớp từ khoá.' : 'Chưa có MST nào — bấm “＋ Thêm MST”.';
+    if (initialLoading) {
+      empty.innerHTML = '<span class="loading-spinner"></span> Đang tải danh sách MST…';
+    } else {
+      empty.textContent = all.length ? 'Không có MST nào khớp từ khoá.' : 'Chưa có MST nào — bấm “＋ Thêm MST”.';
+    }
     list.append(empty); return;
   }
   for (const account of shown) {
     const row = document.createElement('div');
     // Phản hồi tức thì khi bấm chọn: dòng vừa bấm (selectingMst) tô sáng + nút ▶/⏹ xoay NGAY trong
-    // lúc chờ máy chủ xác nhận. Chỉ vẽ khi request chọn còn treo (pending) — xác nhận xong thì
-    // state.selected đổi và selectingMst rỗng nên dòng về đúng trạng thái cũ. Chỉ hiệu ứng.
-    const selecting = pending && account.mst === selectingMst;
+    // lúc chờ máy chủ xác nhận. Hết kiểm tra phiên thì state.selected đổi và selectingMst rỗng nên
+    // dòng về đúng trạng thái cũ. Chỉ hiệu ứng — KHÔNG bật `pending`, vì chọn MST không được khoá UI.
+    const selecting = account.mst === selectingMst;
     row.className = 'mst-row' + (account.mst === state.selected ? ' active' : (selecting ? ' selecting' : '')); row.dataset.mst = account.mst; row.tabIndex = 0;
     row.title = SESSION_LABEL[account.session] || '';
     const dot = document.createElement('span'); dot.className = `mst-dot ${account.session || 'none'}`;
@@ -366,7 +551,13 @@ function renderAccounts(state) {
         : sync ? ` · chưa đồng bộ hôm nay${sync.missingToday?.length ? ` (thiếu ${sync.missingToday.join(', ')})` : ''}` : '';
     // Hoá đơn LỖI TẢI của lượt gần nhất — nói rõ để biết còn phải thử lại, thay vì im lặng.
     const failNote = sync && sync.failedToday ? ` · ${sync.failedToday} HĐ lỗi tải` : '';
-    sub.textContent = `${account.mst}${account.identifiers?.length ? ` · +${account.identifiers.length} mã` : ''}${account.remembered ? ' · đã lưu mật khẩu' : ''}${running ? ' · đang xử lý' : ''}${account.job ? ` · ${account.job.total} hóa đơn` : ''}${syncNote}${failNote}`;
+    // Quét bù lịch sử (chỉ chạy khi cửa sổ app đóng): hiện đang quét tới đâu, hoặc đã quét bù tới ngày nào.
+    // Không thêm dòng banner thứ hai vì mỗi dòng MST chỉ có MỘT khe banner (xem .mst-banner grid-row).
+    const catchup = account.catchup;
+    const catchupNote = catchup && catchup.running
+      ? ` · đang quét bù ${dayOf(catchup.from)} → ${dayOf(catchup.to)}`
+      : (catchup && catchup.scannedTo ? ` · quét bù tới ${dayOf(catchup.scannedTo)} (${catchup.scannedDays} ngày)` : '');
+    sub.textContent = `${account.mst}${account.identifiers?.length ? ` · +${account.identifiers.length} mã` : ''}${account.remembered ? ' · đã lưu mật khẩu' : ''}${running ? ' · đang xử lý' : ''}${account.job ? ` · ${account.job.total} hóa đơn` : ''}${syncNote}${failNote}${catchupNote}${selecting ? ' · Đang kiểm tra phiên…' : ''}`;
     info.append(title, sub);
     const stop = document.createElement('button');
     stop.type = 'button';
@@ -429,7 +620,7 @@ let lastRenderedState = '';
 // `itemsRevision` là revision do SERVER đếm (Engine.jobRevision tăng khi nội dung job đổi).
 // accounts/pool/stats được JSON.stringify (nhỏ, vài chục phần tử) để bắt cả thay đổi bên trong.
 function stateSignature(state) {
-  return [pending, $('login-dialog').open ? 1 : 0, state.state, state.busy ? 1 : 0, state.authBusy ? 1 : 0, state.authenticated ? 1 : 0, state.selected, state.output, state.companyName, state.browserVisible ? 1 : 0, state.browserReady ? 1 : 0, state.mode, state.message, state.total, state.done, state.failed, state.percentage, state.itemsRevision, JSON.stringify(state.accounts), JSON.stringify(state.pool), JSON.stringify(state.stats)].join('\u0001');
+  return [pending, selectingMst, $('login-dialog').open ? 1 : 0, state.state, state.busy ? 1 : 0, state.authBusy ? 1 : 0, state.authenticated ? 1 : 0, state.selected, state.output, state.companyName, state.browserVisible ? 1 : 0, state.browserReady ? 1 : 0, state.mode, state.message, state.total, state.done, state.failed, state.percentage, state.itemsRevision, JSON.stringify(state.accounts), JSON.stringify(state.pool), JSON.stringify(state.stats)].join('\u0001');
 }
 // 4 thẻ số chi tiết (TỔNG HÓA ĐƠN / ĐÃ TẢI / ĐÃ CÓ SẴN / LỖI) đọc ĐÚNG bộ đếm state.stats mà dòng
 // chữ #stats đang dùng (core.js đếm sẵn: total · downloaded · existed · failed) — không thêm logic
@@ -489,10 +680,22 @@ function render(state) {
       box.append(nameSpan);
     }
   }
-  $('account-hint').textContent = selected ? (state.authenticated ? 'Đang online' : (account?.session === 'saved' ? 'Có phiên đã lưu nhưng đã hết hạn.' : 'Chưa đăng nhập.')) : 'Chọn một MST trong danh sách bên trái.';
+  const isSelectingNew = selectingMst && selectingMst !== selected;
+  $('account-hint').textContent = initialLoading
+    ? 'Đang kiểm tra phiên đăng nhập…'
+    : isSelectingNew ? `Đang kiểm tra phiên đăng nhập cho MST ${selectingMst}…`
+      : selected ? (state.authenticated ? 'Đang online' : (account?.session === 'saved' ? 'Có phiên đã lưu nhưng đã hết hạn.' : 'Chưa đăng nhập.')) : 'Chọn một MST trong danh sách bên trái.';
   $('auth-dot').classList.toggle('active', !!state.authenticated);
+  // Trạng thái "đang tải" của tab Tổng quan do data-ui.js quản lý (chip cạnh nút cập nhật).
+  // Renderer KHÔNG đụng vào đây để hai bên không giành nhau ẩn/hiện gây nháy.
   $('state').textContent = labels[state.state] || state.state; $('message').textContent = state.message || '';
-  $('results-title').textContent = state.mode === 'stream' ? 'Hóa đơn tải thành công' : 'Danh sách hóa đơn';
+  // Hiện spinner ở tiêu đề bảng kết quả khi đang chọn MST mới
+  const resultsTitle = $('results-title');
+  if (isSelectingNew) {
+    resultsTitle.innerHTML = '<span class="loading-spinner"></span> Đang kiểm tra phiên đăng nhập…';
+  } else {
+    resultsTitle.textContent = state.mode === 'stream' ? 'Hóa đơn tải thành công' : 'Danh sách hóa đơn';
+  }
   const percent = state.total ? Math.round(100 * ((state.done || 0) + (state.failed || 0)) / state.total) : 0;
   $('percentage').textContent = `${percent}%`; $('progress').value = percent;
   // KHÔNG tự điền lại cấu hình của lượt tra cứu CŨ vào form khi mở app: người dùng mở app là thấy
@@ -503,6 +706,13 @@ function render(state) {
   const field = $('output');
   if (document.activeElement !== field && field.value !== (state.output || '')) field.value = state.output || '';
   $('empty').hidden = !!state.total;
+  // Hiện spinner loading ở khu vực kết quả khi đang tải lần đầu (chưa có state từ server)
+  if (initialLoading && !state.selected) {
+    const emptyEl = $('empty');
+    if (emptyEl && !emptyEl.hidden) {
+      emptyEl.innerHTML = '<div class="empty-icon"><span class="loading-spinner"></span></div><h3>Đang kiểm tra phiên đăng nhập…</h3><p>Vui lòng chờ trong giây lát.</p>';
+    }
+  }
   const busy = state.busy || state.authBusy || pending;
   ['choose', 'add-mst', 'mst-login', 'account-login'].forEach(id => { const el = optional(id); if (el) el.disabled = busy; });
   // Nút "Đồng bộ tất cả": một nút vừa khởi động vừa ngưng. Hiện số luồng đang chạy để thấy
@@ -638,7 +848,11 @@ function schedulePoll() { clearTimeout(pollTimer); pollTimer = setTimeout(refres
 async function refresh() {
   if (polling) return;
   polling = true;
-  try { render(await call('/api/state')); }
+  try {
+    const state = await call('/api/state');
+    writeMstCache(state); // giữ cache khớp dữ liệu thật cho lần mở app sau
+    render(state);
+  }
   catch (error) {
     // Một nhịp poll hụt (tắt/mở máy chủ, chờ response…) KHÔNG được phép làm treo vòng poll —
     // treo vòng poll là nguyên nhân UI kẹt "Đang tải" dù tác vụ đã xong. Báo lỗi đúng 1 lần,
@@ -652,6 +866,8 @@ async function refresh() {
   }
   finally { polling = false; }
   if (pollFailures) pollFailures = 0; // nhịp này gọi thành công — xoá bộ đếm lỗi
+  initialLoading = false;
+  if (window.hdBootReady) window.hdBootReady('session');
   await paintSyncPreview();
   // Bảng kết quả nằm ở endpoint riêng: chỉ fetch lại khi revision của engine đổi.
   if (typeof current.itemsRevision === 'number') await loadItemsIfChanged(current.itemsRevision);
@@ -766,6 +982,16 @@ async function work(url, data, options = {}) {
   try { return await call(url, data); }
   catch (error) { noticeFail(error.message); return null; }
   finally { if (isLong) longMst = ''; else { pending = false; selectingMst = ''; } await refresh(); }
+}
+// Chọn MST KHÔNG khoá UI: đây chỉ là thao tác NHẸ (đổi MST đang xem + kiểm tra còn phiên hay không,
+// để biết lúc nào phải đăng nhập lại). Khác `work()`, hàm này KHÔNG bật `pending` — thanh công cụ
+// vẫn dùng được trong lúc máy chủ kiểm tra. Chỉ tô sáng dòng vừa bấm cho có phản hồi tức thì.
+async function selectMst(mst) {
+  selectingMst = mst;
+  render(current);
+  try { return await call('/api/account/select', { mst }); }
+  catch (error) { noticeFail(error.message); return null; }
+  finally { selectingMst = ''; await refresh(); }
 }
 function loginError(text) { $('login-error').textContent = text || ''; $('login-error').hidden = !text; }
 function invalidateChallenge() {
@@ -957,7 +1183,10 @@ $('login-form').onsubmit = async event => {
   finally { credentials.password = ''; loginBusy(false); await refresh(); }
 };
 $('login-forget').onclick = async () => {
-  if (!current.selected || !confirm(`Xoá mật khẩu đã lưu của MST ${current.selected}? Phiên đăng nhập hiện tại vẫn giữ.`)) return;
+  if (!current.selected || !await askConfirm({
+    title: 'Xoá mật khẩu đã lưu', tone: 'error', ok: 'Xoá mật khẩu', cancel: 'Giữ lại',
+    text: `Xoá mật khẩu đã lưu của MST ${current.selected}? Phiên đăng nhập hiện tại vẫn giữ.`,
+  })) return;
   try {
     await call('/api/account/forget', {});
     $('login-forget').hidden = true; $('login-remember').checked = true;
@@ -1087,6 +1316,116 @@ function applyPeriod() {
 syncPeriodOptions();
 // Vòng poll TỰ LÊN LỊCH (schedulePoll cuối refresh) thay cho setInterval cứng 1,5 giây: bận 0,8s,
 // rảnh 4s. refresh() có cờ polling nên không bao giờ chồng nhau.
+// ---- Màn hình chờ khởi động (boot splash) ----
+// Che màn hình trong lúc kiểm tra phiên đăng nhập + nạp dữ liệu Tổng quan rồi mờ dần để lộ
+// giao diện Tổng quan của MST phiên làm việc gần nhất. Hai "cửa" phải cùng xong mới mở:
+//   • 'session' — do refresh() đầu tiên phát (renderer.js)
+//   • 'overview' — do lần refreshOverview() đầu phát (data-ui.js)
+// Một cửa treo KHÔNG được giữ người dùng ở màn hình chờ: có trần thời gian an toàn ở dưới.
+const bootFlags = { session: false, overview: false };
+const BOOT_MAX_MS = 9000;
+let bootDismissed = false;
+// Màn hình chờ KHÔNG đứng yên: luân phiên câu mẹo/giới thiệu để người dùng có thứ để đọc
+// trong lúc chờ kiểm tra phiên + nạp Tổng quan, thay vì nhìn một khoảng trống “vô tri”.
+const BOOT_TIPS = [
+  'Mẹo: bấm trực tiếp một dòng MST ở cột trái để chuyển sang phiên làm việc của khách hàng đó.',
+  'Mẹo: dùng “Chọn nhanh” theo Tháng / Quý / Cả năm để điền khoảng ngày cần tải hóa đơn.',
+  'Mẹo: tab Kho dữ liệu tra cứu hóa đơn đã nhập, đối chiếu sao kê ngân hàng và phương thức thanh toán.',
+  'Mẹo: hóa đơn vừa tải xong luôn nằm ở đầu bảng kết quả — không cần cuộn xuống tìm.',
+  'Mẹo: bật Auto Sync cho một MST để tự động tra cứu và nhập kho theo lịch.',
+];
+let bootTipTimer = null, bootTipIndex = -1;
+function rotateBootTip() {
+  const tip = $('boot-tip');
+  if (!tip || bootDismissed) return;
+  bootTipIndex = (bootTipIndex + 1) % BOOT_TIPS.length;
+  tip.classList.remove('show');
+  setTimeout(() => {
+    if (bootDismissed || !tip.isConnected) return;
+    tip.textContent = BOOT_TIPS[bootTipIndex];
+    tip.classList.add('show');
+  }, 260);
+}
+
+function paintBoot() {
+  const step = !bootFlags.session ? 'session' : (!bootFlags.overview ? 'overview' : '');
+  const status = $('boot-status');
+  // Khi đã biết MST của phiên gần nhất (state về), gọi đích danh nó để chuyển cảnh có "đích đến"
+  // rõ ràng: người dùng biết app đang mở Tổng quan của ai, không phải mở chung chung.
+  const mstName = current && (current.companyName || current.selected);
+  if (status) status.textContent = step === 'session' ? 'Đang kiểm tra phiên đăng nhập…'
+    : step === 'overview' ? (mstName ? `Đang mở dữ liệu Tổng quan · ${mstName}…` : 'Đang tải dữ liệu tổng quan…')
+    : (mstName ? `Đã sẵn sàng — đang mở Tổng quan của ${mstName}…` : 'Đã sẵn sàng — đang mở giao diện Tổng quan…');
+  for (const [id, key] of [['boot-step-session', 'session'], ['boot-step-overview', 'overview']]) {
+    const item = $(id);
+    if (!item) continue;
+    item.classList.toggle('done', bootFlags[key]);
+    item.classList.toggle('active', step === key);
+  }
+  const ready = $('boot-step-ready');
+  if (ready) ready.classList.toggle('done', !step);
+}
+
+// Hai script KHÔNG cần cho lúc mở app — chat hỗ trợ và kiểm tra bản cập nhật — trước đây nằm ngay
+// trong luồng parse cuối body. Vì mọi script đều chạy tuần tự, trình duyệt không chạy nổi một
+// callback nào cho tới khi CẢ 10 thẻ đã tải + chạy xong, mà hai script đó lại bắn request riêng
+// NGAY khi nạp (`/api/support/device`, kiểm tra cập nhật) ⇒ tranh 6 khe kết nối HTTP/1.1 mỗi
+// origin với `/api/state` và `/api/db/summary`, đúng hai thứ quyết định lúc app "sẵn sàng".
+// Nay nạp SAU khi màn hình chờ đóng lại. `async = false` để hai script vẫn chạy ĐÚNG THỨ TỰ cũ
+// (script chèn qua DOM mặc định là async, không đảm bảo thứ tự).
+const DEFERRED_SCRIPTS = ['chat-widget.js', 'update-ui.js'];
+function loadDeferredScripts() {
+  for (const name of DEFERRED_SCRIPTS) {
+    const tag = document.createElement('script');
+    tag.src = name;
+    tag.async = false;
+    document.body.appendChild(tag);
+  }
+}
+
+function dismissBootSplash() {
+  if (bootDismissed) return;
+  bootDismissed = true;
+  if (bootTipTimer) { clearInterval(bootTipTimer); bootTipTimer = null; }
+  const tip = $('boot-tip');
+  if (tip) tip.classList.remove('show');
+  const splash = $('boot-splash');
+  // Giao diện bên dưới đã dựng sẵn Tổng quan của MST phiên gần nhất: cho nó hé lộ dần
+  // (mờ + nhích lên) cùng lúc màn hình chờ mờ đi ⇒ chuyển cảnh mượt, không "bụp".
+  document.body.classList.add('app-ready');
+  // Cửa cho phần còn lại của giao diện: ai cần "sau khi mở app xong" thì nghe sự kiện này thay vì
+  // chạy ngay lúc parse (xem app-settings.js — thông báo hỗ trợ). Cũng từ đây mới nạp 2 script trên.
+  loadDeferredScripts();
+  // Cờ cho ai gắn listener MUỘN (script nạp sau khi màn hình chờ đã đóng) — sự kiện chỉ bắn một lần.
+  window.hdBootDismissed = true;
+  window.dispatchEvent(new Event('hd:boot-done'));
+  if (!splash) return;
+  splash.classList.add('is-ready');
+  setTimeout(() => {
+    splash.classList.add('is-hidden');
+    splash.setAttribute('aria-hidden', 'true');
+    setTimeout(() => { splash.hidden = true; }, 500);
+  }, 320); // giữ khoảnh khắc "đã sẵn sàng" cho chuyển cảnh mượt, không giật cục
+}
+
+window.hdBootReady = name => {
+  if (!name || bootFlags[name]) return;
+  bootFlags[name] = true;
+  paintBoot();
+  if (bootFlags.session && bootFlags.overview) dismissBootSplash();
+};
+paintBoot();
+rotateBootTip();
+bootTipTimer = setInterval(rotateBootTip, 3800);
+setTimeout(dismissBootSplash, BOOT_MAX_MS);
+
+// Hiển thị trạng thái loading NGAY LẬP TỨC khi mở app — không đợi /api/state về.
+// Có cache MST thì dựng luôn danh sách + tô sáng MST phiên gần nhất ngay khung hình đầu;
+// nhịp /api/state kế tiếp ghi đè bằng dữ liệu thật (MST đã bị xoá thì server đã tự rơi về
+// MST gần nhất còn hoạt động — xem rememberSelectedMst trong server.js).
+const cachedMstList = firstPaintMstList();
+if (cachedMstList) current = { ...current, accounts: cachedMstList.accounts, selected: cachedMstList.selected || '' };
+render(current);
 refresh();
 
 // ---- Version đang chạy + thông báo bản mới ----

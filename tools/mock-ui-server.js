@@ -13,9 +13,27 @@ const state = {
     mode: 'search', output: 'C:\\xuathoadon', browserVisible: false, browserReady: false, itemsRevision: 0, items: []
   }
 };
+// Cùng hình dạng với ảnh chụp của máy chủ thật (bootCacheScript trong src/server.js) để bản giả lập
+// chạy ĐÚNG đường khung hình đầu: sidebar có dòng + tô sáng MST ngay, rồi `/api/state` ghi đè.
+// Thiếu route này thì index.html nhận 404 và renderer rơi về đường dự phòng — khác bản thật.
+function bootCacheScript() {
+  const value = state.value;
+  const accounts = value.accounts.map(account => ({
+    mst: account.mst, name: account.name || '', label: account.label || '',
+    session: account.session || '', identifiers: account.identifiers || [], remembered: !!account.remembered,
+  }));
+  return `window.HD_BOOT_CACHE=${JSON.stringify({ selected: value.selected || '', accounts })};`;
+}
+// MOCK_STATE_DELAY_MS=<ms>: làm CHẬM /api/state (mặc định 0) để xem tận mắt màn hình chờ và việc
+// sidebar đã dựng sẵn dòng từ ảnh chụp TRƯỚC khi có dữ liệu thật — đúng cảnh lúc mở app thật.
+const stateDelay = Number(process.env.MOCK_STATE_DELAY_MS || 0);
 http.createServer((req, res) => {
   const u = new URL(req.url, 'http://x');
-  if (u.pathname === '/api/state') { res.writeHead(200, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify(state)); }
+  if (u.pathname === '/boot-cache.js') { res.writeHead(200, { 'Content-Type': 'text/javascript; charset=utf-8', 'Cache-Control': 'no-store' }); return res.end(bootCacheScript()); }
+  if (u.pathname === '/api/state') {
+    if (stateDelay > 0) return void setTimeout(() => { res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(state)); }, stateDelay);
+    res.writeHead(200, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify(state));
+  }
   if (u.pathname === '/api/state/items') { res.writeHead(200, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ ok: true, value: [] })); }
   if (req.method === 'POST') { res.writeHead(200, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ ok: true, value: {} })); }
   const file = path.join(root, u.pathname === '/' ? 'index.html' : u.pathname);

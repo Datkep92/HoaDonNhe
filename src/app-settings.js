@@ -89,11 +89,27 @@
     }
   }
 
+  // Màn khoá được 3 tình huống dùng chung (khoá PIN, license bị khoá, license hết hạn).
+  // Hiệu ứng "mờ dần rồi mới ẩn" khi mở khoá làm ở đây để màn hình không biến mất đột ngột.
+  let lockLeaveTimer = 0;
+
   function renderLock(state) {
     lockState = state || lockState;
     q('lock-enabled-label').textContent = lockState.enabled ? 'Đã bật khóa PIN' : 'Chưa thiết lập mã PIN';
-    q('lock-screen').hidden = !lockState.locked;
-    if (lockState.locked) setTimeout(() => q('unlock-pin').focus(), 30);
+    clearTimeout(lockLeaveTimer);
+    if (lockState.locked) {
+      q('unlock-pin').value = '';
+      q('lock-screen').classList.remove('is-leaving');
+      q('lock-screen').hidden = false;
+      setTimeout(() => q('unlock-pin').focus(), 30);
+    } else if (!q('lock-screen').hidden) {
+      // Đang mở khoá: mờ dần (~160ms) rồi mới ẩn hẳn, sau đó dọn trạng thái cho lượt sau.
+      q('lock-screen').classList.add('is-leaving');
+      lockLeaveTimer = setTimeout(() => {
+        q('lock-screen').hidden = true;
+        q('lock-screen').classList.remove('is-leaving');
+      }, 160);
+    }
   }
 
   // License và khoá PIN CHỈ được kiểm tra khi có yêu cầu (mở Cài đặt, mở app, mạng trở lại,
@@ -217,16 +233,26 @@
     try { renderLock(await api('/api/app-lock/lock', {})); } catch (error) { openSettings('lock'); setMessage('pin-message', error.message); }
   }
 
-  async function unlock(event) {
-    event.preventDefault();
-    const restore = busyButton(q('unlock-form').querySelector('button'), 'Đang mở khóa…');
+  // Core verify logic dùng cho cả auto-check (khi nhập đủ 4 số) và submit form (Enter)
+  async function verifyPin(pin) {
     try {
-      renderLock(await api('/api/app-lock/unlock', { pin: q('unlock-pin').value.trim() }));
+      renderLock(await api('/api/app-lock/unlock', { pin }));
       q('unlock-pin').value = '';
       q('unlock-error').textContent = '';
       resetIdleTimer();
-    } catch (error) { q('unlock-error').textContent = error.message; q('unlock-pin').select(); }
-    finally { restore(); }
+      return true;
+    } catch (error) {
+      q('unlock-error').textContent = error.message;
+      q('unlock-pin').select();
+      return false;
+    }
+  }
+
+  async function unlock(event) {
+    event.preventDefault();
+    const pin = q('unlock-pin').value.trim();
+    if (pin.length !== 4) return; // chỉ xử lý khi đủ 4 số
+    await verifyPin(pin);
   }
 
   // Quên PIN ở màn hình khoá: mã khôi phục chính là License Key đã kích hoạt trên máy này,
@@ -281,6 +307,11 @@
   q('license-expired-buy').onclick = () => openPayment();
   q('license-expired-key').onclick = () => openSettings('license');
   q('unlock-form').onsubmit = unlock;
+  // Auto-check khi nhập đủ 4 số (không cần ấn nút)
+  q('unlock-pin').addEventListener('input', () => {
+    const pin = q('unlock-pin').value;
+    if (pin.length === 4) verifyPin(pin);
+  });
   q('unlock-recovery-form').onsubmit = recoverPin;
   // Mạng trở lại: đồng bộ trạng thái ngay, không phải chờ vòng poll 10 giây.
   window.addEventListener('online', () => { void refreshSettings(); });
@@ -288,5 +319,9 @@
   ['mousemove', 'mousedown', 'keydown', 'scroll', 'touchstart'].forEach(name => document.addEventListener(name, resetIdleTimer, { passive: true }));
 
   refreshSettings().then(resetIdleTimer);
-  loadBroadcastNotice();
+  // Thông báo hỗ trợ KHÔNG cần cho lúc mở app: chờ màn hình chờ đóng rồi mới hỏi `/api/support/notice`,
+  // để request này không tranh kết nối với `/api/state` và `/api/db/summary` — hai thứ quyết định
+  // thời điểm app dùng được. Giữ `refreshSettings()` chạy ngay: khoá bản quyền phải có sớm.
+  if (window.hdBootDismissed) loadBroadcastNotice();
+  else window.addEventListener('hd:boot-done', () => loadBroadcastNotice(), { once: true });
 })();

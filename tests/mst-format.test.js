@@ -79,7 +79,11 @@ test('browser: kiểm phiên cũng so theo MST gốc', () => {
 test('giao diện: nạp mst-format.js, có route tĩnh và khai báo trong pkg.assets', () => {
   const html = fs.readFileSync(path.join(root, 'src', 'index.html'), 'utf8');
   assert.ok(/<script src="mst-format\.js"><\/script>/.test(html), 'index.html phải nạp mst-format.js');
-  assert.ok(html.indexOf('mst-format.js') < html.indexOf('renderer.js'), 'phải nạp TRƯỚC renderer.js');
+  // So sánh VỊ TRÍ THẺ SCRIPT, không so indexOf('renderer.js') chung chung: ở <head> có
+  // <link rel="preload" href="renderer.js"> nằm TRƯỚC mọi script ⇒indexOf chung sẽ báo sai thứ tự
+  // dù mst-format.js thực sự được nạp trước và chạy trước renderer.js.
+  assert.ok(html.indexOf('<script src="mst-format.js">') > -1, 'phải nạp bằng thẻ script');
+  assert.ok(html.indexOf('<script src="mst-format.js">') < html.indexOf('<script src="renderer.js">'), 'phải nạp TRƯỚC renderer.js');
   const server = fs.readFileSync(path.join(root, 'src', 'server.js'), 'utf8');
   assert.ok(server.includes("url.pathname === '/mst-format.js'"), 'server phải phục vụ /mst-format.js (nếu không sẽ 404)');
   const assets = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')).pkg.assets;

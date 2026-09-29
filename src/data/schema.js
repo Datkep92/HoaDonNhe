@@ -10,9 +10,23 @@
 //   bank_files       — metadata file sao kê đã nhập (tên, hash, ngân hàng, số TK, thống kê)
 //   bank_transactions— giao dịch đã CHUẨN HÓA (ngày ISO, số tiền tách Tiền vào/Tiền ra, hash chống trùng)
 // Cả hai nằm trong data.db của từng MST ⇒ dữ liệu sao kê cũng tách theo MST như hoá đơn (§46).
+// v7 thêm 4 cột KẾT QUẢ ĐỐI CHIẾU (mục 13 của MASTER TASK) — mỗi hoá đơn và mỗi giao dịch
+//   đều CÓ DÒNG TRẠNG THÁI RIÊNG, kể cả khi CHƯA khớp (TRANSFER_BANK_NOT_FOUND, BANK_NO_INVOICE…):
+//   invoices.reconciliation_status    — kết quả chính của hoá đơn (xem reconciliation.STATUS)
+//   invoices.reconciliation_issues    — MẢNG vấn đề kèm theo (JSON): 1 dòng có thể nhiều vấn đề
+//   bank_transactions.reconciliation_status / .reconciliation_issues — chiều ngược lại (sao kê)
+//   Trước v7 các giá trị này chỉ là SỐ ĐẾM suy ra khi query ⇒ không truy ngược được hoá đơn nào.
+// v8 thêm 2 cột PHÂN LOẠI THỦ CÔNG (mục 3 của yêu cầu 2026-09) — người dùng TỰ đánh dấu hoá đơn:
+//   invoices.review_status  — mã trạng thái người dùng bấm (REVIEW_ACTIONS trong repository.js):
+//                             checked / processed / missing_docs / complete_docs / error /
+//                             cash_manual / transfer_manual
+//   invoices.reviewed_at    — thời điểm bấm (ISO), để thấy hoá đơn nào đã được ai đó soát rồi
+//   MÁY KHÔNG BAO GIỜ tự gán: cash_manual/transfer_manual chỉ ghi khi người dùng xác nhận
+//   "chưa khớp sao kê ⇒ tạm ghi tiền mặt" hoặc "khớp sao kê ⇒ chuyển khoản" (XML HTTToan ghi
+//   TM/CK nên không tự phân loại được — mục 3 của yêu cầu).
 // ---------------------------------------------------------------------------
 
-const SCHEMA_VERSION = 5;
+const SCHEMA_VERSION = 8;
 
 const TABLES = [
   `CREATE TABLE IF NOT EXISTS invoices (
@@ -29,6 +43,12 @@ const TABLES = [
     so_hd TEXT,
     loai_hoa_don TEXT,
     tthai TEXT,
+    payment_method_raw TEXT,
+    payment_method TEXT NOT NULL DEFAULT 'UNKNOWN',
+    reconciliation_status TEXT,
+    reconciliation_issues TEXT,
+    review_status TEXT,
+    reviewed_at TEXT,
     tien_truoc_thue REAL DEFAULT 0,
     tien_thue REAL DEFAULT 0,
     tong_tien REAL DEFAULT 0,
@@ -107,9 +127,25 @@ const TABLES = [
     currency TEXT DEFAULT 'VND',
     row_hash TEXT NOT NULL UNIQUE,
     file_name TEXT,
+    reconciliation_status TEXT,
+    reconciliation_issues TEXT,
     created_at TEXT,
     updated_at TEXT,
     FOREIGN KEY(file_id) REFERENCES bank_files(id) ON DELETE CASCADE
+  )`,
+  `CREATE TABLE IF NOT EXISTS reconciliation_matches (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    invoice_id INTEGER NOT NULL,
+    bank_transaction_id INTEGER NOT NULL,
+    matched_amount REAL,
+    score REAL,
+    status TEXT NOT NULL,
+    issues TEXT,
+    created_at TEXT,
+    updated_at TEXT,
+    UNIQUE(invoice_id, bank_transaction_id),
+    FOREIGN KEY(invoice_id) REFERENCES invoices(id) ON DELETE CASCADE,
+    FOREIGN KEY(bank_transaction_id) REFERENCES bank_transactions(id) ON DELETE CASCADE
   )`,
 ];
 
@@ -124,6 +160,9 @@ const INDEXES = [
   'CREATE INDEX IF NOT EXISTS idx_invoice_symbol_number ON invoices(khh_hd, so_hd)',
   'CREATE INDEX IF NOT EXISTS idx_invoice_updated ON invoices(updated_at DESC)',
   'CREATE INDEX IF NOT EXISTS idx_invoice_state ON invoices(tthai)',
+  'CREATE INDEX IF NOT EXISTS idx_invoice_payment_method ON invoices(payment_method)',
+  'CREATE INDEX IF NOT EXISTS idx_invoice_recon_status ON invoices(reconciliation_status)',
+  'CREATE INDEX IF NOT EXISTS idx_bank_recon_status ON bank_transactions(reconciliation_status)',
   'CREATE INDEX IF NOT EXISTS idx_item_code ON invoice_items(ma_hang)',
   'CREATE INDEX IF NOT EXISTS idx_item_invoice ON invoice_items(invoice_id)',
   'CREATE INDEX IF NOT EXISTS idx_imported_file_path ON imported_files(file_path)',
@@ -132,6 +171,8 @@ const INDEXES = [
   'CREATE INDEX IF NOT EXISTS idx_bank_tran_file ON bank_transactions(file_id)',
   'CREATE INDEX IF NOT EXISTS idx_bank_tran_amount ON bank_transactions(amount)',
   'CREATE INDEX IF NOT EXISTS idx_bank_file_hash ON bank_files(file_hash)',
+  'CREATE INDEX IF NOT EXISTS idx_reconciliation_invoice ON reconciliation_matches(invoice_id)',
+  'CREATE INDEX IF NOT EXISTS idx_reconciliation_bank ON reconciliation_matches(bank_transaction_id)',
 ];
 
 // FTS5 (external content) cho tìm kiếm nhanh ở tab "Kho dữ liệu" (mục §34).

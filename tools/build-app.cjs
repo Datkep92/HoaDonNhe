@@ -65,6 +65,18 @@ try {
     console.log('Model OCR: đủ (common.onnx + common.json) — sẽ được nhúng vào EXE.');
   }
 
+  // RÚT GỌN BYTE TÀI SẢN GIAO DIỆN — phải chạy TRƯỚC pkg để bản .min có mặt lúc nhúng vào EXE.
+  // Vì sao đặt ở bước ĐÓNG GÓI chứ không sửa thẳng src/*.js: file nguồn phải còn đọc được. Server
+  // tự chọn bản .min khi phục vụ (xem minifiedSibling trong server.js); bản gốc vẫn nằm trong EXE
+  // làm đường lùi nên thiếu .min (máy build không có esbuild) app vẫn chạy đúng, chỉ nặng hơn.
+  const shrink = [];
+  try {
+    console.log('\nRút gọn tài sản giao diện (tools/minify-ui.cjs):');
+    for (const item of require('./minify-ui.cjs').minify()) shrink.push(`src/${item.out}`);
+  } catch (error) {
+    console.log(`⚠ ${error.message} — EXE sẽ phục vụ bản gốc (nặng hơn ~27%).`);
+  }
+
   run(process.execPath, [
     pkgBin, '.',
     '--compress', 'GZip',
@@ -91,14 +103,16 @@ try {
   // cuối: kể cả khi ai đó cố tình bỏ qua chốt model phía trên (HOADON_ALLOW_NO_OCR=1), bước này
   // vẫn bắt được và không cho EXE khuyết ra đời.
   const { verify, REQUIRED } = require('./verify-exe.cjs');
-  const check = verify(exe);
+  // Đòi luôn bản rút gọn vừa sinh: bản gốc vẫn có trong EXE làm đường lùi nên thiếu .min là lỗi
+  // IM LẶNG (app vẫn chạy, chỉ nặng như cũ). Khai vào đây thì build đỏ ngay nếu pkg.assets sót.
+  const check = verify(exe, shrink);
   if (check.missing.length) {
     // XOÁ luôn file khuyết: bảo đảm bất biến "EXE nào còn nằm trên đĩa là EXE đã qua kiểm".
     // (pkg ghi file xong mới tới bước này, nên nếu không xoá thì build lỗi vẫn để lại một EXE khuyết.)
     try { fs.unlinkSync(exe); } catch { /* không xoá được thì vẫn phải báo lỗi */ }
     throw new Error(`EXE thiếu ${check.missing.length}/${REQUIRED.length} file nhúng bắt buộc: ${check.missing.join(', ')} — đã xoá file khuyết, KHÔNG phát hành.`);
   }
-  console.log(`Đã kiểm EXE: đủ ${check.total}/${check.total} file nhúng bắt buộc.`);
+  console.log(`Đã kiểm EXE: đủ ${check.total}/${check.total} file nhúng bắt buộc${shrink.length ? ` (gồm ${shrink.length} bản rút gọn)` : ''}.`);
 
   // CHỐT MẠNH NHẤT: chạy chính EXE vừa đóng gói với --ocr-check (giải 1 ảnh CAPTCHA mẫu tại chỗ,
   // không gọi mạng, không dùng tài khoản nào). Kiểm theo TÊN file là chưa đủ — đã xảy ra thật:

@@ -17,8 +17,6 @@
 
   /* Navy (sidebar EXE) */
   --navy: #14283f;
-  --navy-2: #1c334a;
-  --navy-3: #27425b;
 
   /* Ink — --muted/--muted-2 đã tối lại để đạt tỉ lệ tương phản ≥ 4.5:1 trên nền trắng */
   --ink: #20324a;
@@ -34,15 +32,10 @@
   --line-2: #d6e0eb;
 
   /* Semantic */
-  --blue: #2f5680;
-  --blue-2: #4c78a8;
   --warn: #b05f23;
-  --warn-2: #b67932;
-  --amber: #e2b15e;
   --danger: #a4342a;
 
   /* Radius */
-  --r-xs: 6px;
   --r-sm: 8px;
   --r-md: 12px;
   --r-lg: 16px;
@@ -111,8 +104,6 @@ table { border-collapse: collapse; width: 100%; }
 .btn-p:hover { background: var(--brand-2); transform: translateY(-1px); box-shadow: 0 10px 22px -8px rgba(8, 127, 112, .5); }
 .btn-s { background: var(--paper); color: var(--ink); border-color: var(--line-2); }
 .btn-s:hover { border-color: var(--brand); color: var(--brand); transform: translateY(-1px); }
-.btn-d { background: var(--navy); color: #fff; }
-.btn-d:hover { background: var(--navy-2); transform: translateY(-1px); }
 .btn-lg { padding: 15px 26px; font-size: 16px; border-radius: 10px; }
 .btn-w { width: 100%; }
 
@@ -144,7 +135,7 @@ table { border-collapse: collapse; width: 100%; }
 .nav a:hover { color: var(--ink); background: var(--paper-2); }
 .nav .btn { margin-left: 8px; }
 /* .nav a (0,1,1) đè lên .btn-p (0,1,0) nên phải chỉ lại màu chữ cho nút trong nav. */
-.nav .btn-p, .nav .btn-d { color: #fff; }
+.nav .btn-p { color: #fff; }
 .nav .btn-s { color: var(--ink); }
 
 .burger {
@@ -226,25 +217,27 @@ h1 em { font-style: normal; color: var(--brand); }
 .shot-tag small { display: block; font-weight: 500; color: var(--muted); font-size: 11px; }
 .t-a { top: -16px; left: 26px; }
 .t-b { bottom: -18px; right: 22px; }
-.t-c { top: 42%; right: -18px; }
 
 /* ---------- Section shell ---------- */
 .sec { padding: 92px 0; }
 .sec.tint { background: var(--paper); }
-.sec.dark { background: var(--navy); color: #dbe6f0; }
-.sec.dark h2, .sec.dark h3 { color: #fff; }
 
 .eyebrow {
   display: inline-flex; align-items: center; gap: 7px; margin-bottom: 14px;
   font-size: 12px; font-weight: 800; letter-spacing: 1.6px; text-transform: uppercase;
   color: var(--brand);
 }
-.sec.dark .eyebrow { color: var(--mint); }
 .eyebrow::before { content: ""; width: 22px; height: 2px; background: currentColor; border-radius: 2px; }
 
 h2 { font-size: clamp(26px, 3.2vw, 38px); line-height: 1.18; letter-spacing: -.8px; font-weight: 800; color: var(--ink); }
 .sub { margin-top: 14px; font-size: 17px; color: var(--muted); max-width: 62ch; }
-.sec.dark .sub { color: #a8bccc; }
+/* Liên kết nằm trong đoạn văn phải nhìn ra là bấm được — mặc định `a` kế thừa
+   màu chữ và không gạch chân nên trông y hệt chữ thường, người đọc không thấy. */
+.sub a, .fq .body a, .gal-note a, .tax-foot a, .role .gain a {
+  color: var(--brand); text-decoration: underline;
+  text-underline-offset: 3px; text-decoration-thickness: 1.5px;
+}
+.sub a:hover, .fq .body a:hover, .gal-note a:hover, .tax-foot a:hover, .role .gain a:hover { color: var(--brand-2); }
 .hd-center { text-align: center; margin-bottom: 52px; }
 .hd-center .sub { margin-inline: auto; }
 .hd-center .eyebrow { justify-content: center; }
@@ -291,7 +284,6 @@ h2 { font-size: clamp(26px, 3.2vw, 38px); line-height: 1.18; letter-spacing: -.8
 /* ==========================================================================
    GALLERY — xem trước toàn bộ chức năng (slide-show giao diện thật)
    ========================================================================== */
-.gal { --gal-h: 0; }
 .gal-bar {
   display: flex; flex-wrap: wrap; gap: 8px; justify-content: center;
   margin-bottom: 22px;
@@ -346,12 +338,22 @@ h2 { font-size: clamp(26px, 3.2vw, 38px); line-height: 1.18; letter-spacing: -.8
 .gal-note p { font-size: 15px; color: var(--brand-ink); }
 .gal-note b { font-weight: 700; }
 
-.gal-dots { display: flex; justify-content: center; gap: 7px; margin-top: 16px; }
+.gal-dots { display: flex; justify-content: center; gap: 5px; margin-top: 10px; }
+/* Vùng bấm cao 24px (WCAG 2.5.8) — vạch 5px được vẽ bằng ::before nên nhìn
+   vẫn mảnh nhưng bấm trên điện thoại dễ trúng. Nút rộng thay vì vạch tràn ra,
+   để không dính vào vạch kế bên. */
 .gal-dots button {
-  width: 26px; height: 5px; border-radius: 3px; border: 0; padding: 0;
-  background: var(--line-2); cursor: pointer; transition: background .2s, width .2s;
+  width: 26px; height: 24px; padding: 0; border: 0;
+  background: none; cursor: pointer; display: grid; place-items: center;
+  transition: width .2s;
 }
-.gal-dots button[aria-current="true"] { background: var(--brand); width: 40px; }
+.gal-dots button::before {
+  content: ""; display: block; width: 100%; height: 5px; border-radius: 3px;
+  background: var(--line-2); transition: background .2s;
+}
+.gal-dots button:hover::before { background: var(--mint-line); }
+.gal-dots button[aria-current="true"] { width: 40px; }
+.gal-dots button[aria-current="true"]::before { background: var(--brand); }
 
 /* ---------- Highlight (4 điểm nhấn) ---------- */
 .hi-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 20px; }
@@ -443,8 +445,6 @@ h2 { font-size: clamp(26px, 3.2vw, 38px); line-height: 1.18; letter-spacing: -.8
 .cmp tbody th { font-weight: 600; color: var(--ink); }
 .cmp td.us { color: var(--brand); font-weight: 700; }
 .cmp td.them { color: var(--muted); }
-.cmp .tick { color: var(--brand); font-weight: 700; }
-.cmp .cross { color: #c3ccd6; }
 
 /* ---------- Numbers band ---------- */
 .band-wrap { position: relative; z-index: 2; margin-top: -40px; }
@@ -467,7 +467,6 @@ h2 { font-size: clamp(26px, 3.2vw, 38px); line-height: 1.18; letter-spacing: -.8
 .tax-row.na b { color: var(--muted-2); }
 .tax-foot { padding: 14px 20px; background: var(--paper-2); font-size: 12.5px; color: var(--muted); border-top: 1px solid var(--line); }
 .tax-foot b { color: var(--ink-2); font-weight: 600; }
-.src { margin-top: 10px; font-size: 12px; color: var(--muted-2); }
 
 /* ---------- Steps ---------- */
 .steps { display: grid; grid-template-columns: repeat(4, 1fr); gap: 18px; }
@@ -500,7 +499,6 @@ h2 { font-size: clamp(26px, 3.2vw, 38px); line-height: 1.18; letter-spacing: -.8
 .pcard ul li { display: flex; gap: 9px; align-items: flex-start; }
 .pcard ul svg { width: 17px; height: 17px; color: var(--brand); flex: none; margin-top: 3px; }
 .pcard .btn { margin-top: auto; }
-.pcard .per { font-size: 12px; color: var(--muted-2); text-align: center; }
 .pay-note {
   margin-top: 26px; display: flex; flex-wrap: wrap; gap: 10px 26px; justify-content: center;
   font-size: 13.5px; color: var(--muted);
@@ -562,11 +560,12 @@ h2 { font-size: clamp(26px, 3.2vw, 38px); line-height: 1.18; letter-spacing: -.8
 /* ==========================================================================
    SVG MOCKUP — dùng chung class để giữ file gọn
    ========================================================================== */
-.mk { font-family: "Segoe UI Variable Text", "Segoe UI", Inter, system-ui, sans-serif; }
-.mk text { fill: var(--ink); }
-.mk .nav-bg { fill: var(--navy); }
-.mk .nav-2 { fill: var(--navy-2); }
-.mk .nav-3 { fill: var(--navy-3); }
+/* Màu chữ mặc định đặt trên thẻ <svg class="mk">, KHÔNG đặt bằng selector ".mk text".
+   "fill" là thuộc tính KẾ THỪA: khai báo ở phần tử cha thì mọi <text> thiếu fill sẽ
+   nhận giá trị đó, còn <text fill="#fff"> vẫn giữ màu riêng vì thuộc tính trình bày
+   (presentation attribute) của chính nó thắng giá trị kế thừa. Nếu đặt bằng ".mk text"
+   thì CSS (0,1,1) sẽ đè lên fill="#fff" và mọi chữ trong ảnh chụp rơi về màu chữ. */
+.mk { font-family: "Segoe UI Variable Text", "Segoe UI", Inter, system-ui, sans-serif; fill: var(--ink); }
 .mk .nav-t { fill: #e6eef6; font-size: 10.5px; font-weight: 600; }
 .mk .nav-s { fill: #93aec7; font-size: 8.5px; }
 .mk .side-t { fill: #76869a; font-size: 8px; font-weight: 800; letter-spacing: .8px; }
@@ -580,25 +579,11 @@ h2 { font-size: clamp(26px, 3.2vw, 38px); line-height: 1.18; letter-spacing: -.8
 .mk .val-g { fill: var(--brand); font-size: 9.4px; font-weight: 700; }
 .mk .val-w { fill: var(--warn); font-size: 9.4px; font-weight: 700; }
 .mk .mut { fill: #8a98a9; font-size: 7.8px; }
-.mk .brd { stroke: var(--line); fill: none; }
-.mk .row-a { fill: #fbfcfe; }
-.mk .tb-h { fill: #f8fafc; }
 .mk .tab-t { fill: #76869a; font-size: 9px; font-weight: 700; }
-.mk .tab-on { fill: var(--brand); }
-.mk .tab-on-t { fill: #fff; font-size: 9px; font-weight: 700; }
-.mk .btn-p { fill: var(--brand); }
-.mk .btn-p-t { fill: #fff; font-size: 8.4px; font-weight: 700; }
 .mk .btn-s { fill: #fff; stroke: var(--line-2); }
 .mk .btn-s-t { fill: #29415d; font-size: 8.4px; font-weight: 700; }
 .mk .inp { fill: #fff; stroke: var(--line-2); }
 .mk .inp-t { fill: #6c7d91; font-size: 8.2px; }
-.mk .mint { fill: var(--mint-soft); }
-.mk .mint-b { fill: #b7e3d6; }
-.mk .bar-s { fill: var(--brand); }
-.mk .bar-b { fill: var(--blue-2); }
-.mk .warn-b { fill: #f3e0cd; }
-.mk .ok-t { fill: var(--brand); font-size: 8.4px; font-weight: 700; }
-.mk .wn-t { fill: var(--warn); font-size: 8.4px; font-weight: 700; }
 
 /* ==========================================================================
    Responsive
@@ -662,5 +647,7 @@ h2 { font-size: clamp(26px, 3.2vw, 38px); line-height: 1.18; letter-spacing: -.8
 }
 
 /* ---------- Reveal on scroll ---------- */
-.rv { opacity: 0; transform: translateY(18px); transition: opacity .6s cubic-bezier(.2, .7, .3, 1), transform .6s cubic-bezier(.2, .7, .3, 1); }
-.rv.in { opacity: 1; transform: none; }
+/* Chỉ ẩn khi JS chắc chắn chạy (cờ "js" đặt ngay trong <head>). Nếu JS bị
+   chặn/lỗi mà vẫn để opacity:0 thì ảnh chụp và dải số liệu sẽ vĩnh viễn biến mất. */
+.js .rv { opacity: 0; transform: translateY(18px); transition: opacity .6s cubic-bezier(.2, .7, .3, 1), transform .6s cubic-bezier(.2, .7, .3, 1); }
+.js .rv.in { opacity: 1; transform: none; }

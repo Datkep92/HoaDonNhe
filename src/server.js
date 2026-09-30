@@ -139,6 +139,14 @@ function dataLayer() {
   try { return require('./data'); }
   catch (error) { throw new Error(`Không nạp được tầng dữ liệu SQLite (cần Node 22 trở lên): ${error.message}`); }
 }
+// Đối chiếu hỏng thì PHẢI có dấu vết. `reconcile()`/`forceReconcile()` nuốt lỗi để một lỗi ở
+// lớp phụ không làm hỏng cả lượt nhập — nhưng nuốt im lặng thì kho cứ để trạng thái NULL và
+// giao diện hiện số 0 như thể đã chạy. Nối reporter để lỗi được ghi ra nhật ký.
+try {
+  dataLayer().reconciliation.setErrorReporter((where, error) => {
+    log(`Đối chiếu ngân hàng lỗi (${where}): ${(error && error.message) || error}`);
+  });
+} catch { /* môi trường không có node:sqlite thì chưa cần đối chiếu */ }
 // ---- PHASE 4: AUTO SYNC (§23–§28, §66) ----------------------------------------------------
 // Bộ điều phối ở src/data/auto-sync.js; phần “việc thật” (tra cứu, tải, nhập) ở dưới.
 // MỖI MST MỘT BỘ ĐIỀU PHỐI RIÊNG (`autoSyncByMst`). Nhờ vậy Auto Sync của MST này KHÔNG chặn
@@ -1243,7 +1251,38 @@ async function chooseFolder() {
   const detail = (first.err || backup.err || 'không rõ lỗi').split(/\r?\n/).filter(Boolean)[0] || 'không rõ lỗi';
   throw new Error(`Không mở được hộp thoại chọn thư mục (${detail}). Gõ hoặc dán đường dẫn đầy đủ vào ô “Thư mục lưu” rồi bấm ra ngoài ô.`);
 }
-function readBody(req) { return new Promise((resolve, reject) => { let text = ''; req.on('data', chunk => { text += chunk; if (text.length > 1024 * 1024) req.destroy(); }); req.on('end', () => { try { resolve(text ? JSON.parse(text) : {}); } catch { reject(new Error('JSON không hợp lệ.')); } }); req.on('error', reject); }); }
+// Hạn mức body. JSON thường 1 MB; SAO KÊ dùng hạn mức riêng (20 MB) vì UI gửi TOÀN BỘ dòng
+// đã xem lại lên /import-rows và /preview-rows. 4.000 dòng sao kê (mô tả tiếng Việt đầy đủ)
+// vào khoảng 1,2 MB — vượt hạn mức cũ. Bản cũ gọi req.destroy() khi vượt, tức GIẾT socket
+// không gửi response nào: UI chỉ hiện lỗi mạng chung chung, người dùng không biết vì sao.
+// Nay trả 413 kèm lý do rõ ràng.
+const JSON_BODY_LIMIT = 1024 * 1024;
+const BANK_JSON_BODY_LIMIT = 20 * 1024 * 1024;
+// Nhãn route để câu lỗi 413 nói đúng chỗ người dùng đang làm.
+function readJsonBody(req, limit = JSON_BODY_LIMIT, label = 'dữ liệu yêu cầu') {
+  return new Promise((resolve, reject) => {
+    let text = '';
+    let tooLarge = false;
+    req.on('data', chunk => {
+      if (tooLarge) return;
+      text += chunk;
+      if (text.length > limit) { tooLarge = true; text = ''; }
+    });
+    req.on('end', () => {
+      if (tooLarge) {
+        reject(new Error(`${label} vượt quá ${Math.round(limit / 1048576)} MB — hãy chia nhỏ sao kê theo từng tháng rồi nhập lại từng phần.`));
+        return;
+      }
+      try { resolve(text ? JSON.parse(text) : {}); } catch { reject(new Error('JSON không hợp lệ.')); }
+    });
+    // Vượt hạn mức thì NGỪNG đọc nhưng KHÔNG destroy socket — phải còn đường gửi câu lỗi 413.
+    req.on('error', reject);
+  });
+}
+function readBody(req) { return readJsonBody(req); }
+function readBankJson(req) {
+  return readJsonBody(req, BANK_JSON_BODY_LIMIT, 'Bảng giao dịch sao kê');
+}
 // Body upload SAO KÊ (JSON { fileName, dataBase64 }): cho phép file lớn hơn JSON thường (20 MB),
 // dữ liệu vẫn nằm toàn bộ trong RAM — file sao kê Excel/CSV thực tế nhỏ hơn nhiều con số này.
 function readBankUpload(req) {
@@ -1969,6 +2008,19 @@ async function endpoint(req, res, url) {
         }),
       }));
     }
+    if (req.method === 'GET' && url.pathname === '/api/db/partners/invoices') {
+      // Toàn bộ hoá đơn của một đối tác — mở khi bấm một dòng trong tab Đối tác. from/to là
+      // tuỳ chọn: tab Đối tác cố ý KHÔNG lọc theo kỳ (giống sheet "Nhà cung cấp" khi xuất
+      // Excel) nên UI thường không gửi, và chi tiết cũng vậy ⇒ số dòng khớp đúng số đã hiện.
+      const p = url.searchParams;
+      return withDatabase(db => reply(res, 200, {
+        ok: true,
+        value: data.queries.partnerInvoices(db, {
+          direction: p.get('direction') || '', mst: p.get('mst') || '', ten: p.get('ten') || '',
+          from: p.get('from') || '', to: p.get('to') || '', limit: p.get('limit'), offset: p.get('offset'),
+        }),
+      }));
+    }
     if (req.method === 'GET' && url.pathname === '/api/db/partners') {
       const p = url.searchParams;
       const requested = String(p.get('kind') || 'all');
@@ -2007,7 +2059,7 @@ async function endpoint(req, res, url) {
     // POST /api/db/bank/import-rows : CHỈ LƯU sau khi user đã xem preview (xác nhận rồi mới gọi).
     if (req.method === 'POST' && url.pathname === '/api/db/bank/import-rows') {
       await ensureLicenseAllowed();
-      const input = await readBody(req);
+      const input = await readBankJson(req);
       const rows = Array.isArray(input.rows) ? input.rows : [];
       if (!rows.length) throw new Error('Không có dòng nào để lưu.');
       return withDatabase(db => {
@@ -2026,7 +2078,7 @@ async function endpoint(req, res, url) {
     // bằng pdfjs) — server chỉ chuẩn hoá + kiểm tra, KHÔNG đọc file, KHÔNG ghi DB.
     if (req.method === 'POST' && url.pathname === '/api/db/bank/preview-rows') {
       await ensureLicenseAllowed();
-      const input = await readBody(req);
+      const input = await readBankJson(req);
       if (!Array.isArray(input.rows) || !input.rows.length) throw new Error('Không nhận được bảng chữ từ PDF.');
       return reply(res, 200, {
         ok: true,
@@ -2059,7 +2111,11 @@ async function endpoint(req, res, url) {
     }
     if (req.method === 'GET' && url.pathname === '/api/db/bank/summary') {
       const p = url.searchParams;
-      const range = { from: p.get('from') || '', to: p.get('to') || '' };
+      const range = {
+        q: p.get('q') || '', from: p.get('from') || '', to: p.get('to') || '', flow: p.get('flow') || '',
+        min: p.get('min') || '', max: p.get('max') || '', category: p.get('category') || '',
+        status: p.get('status') || '', account: p.get('account') || '',
+      };
       return withDatabase(db => reply(res, 200, { ok: true, value: data.bankStatement.summary(db, range) }));
     }
     if (req.method === 'GET' && url.pathname === '/api/db/bank/files') {
@@ -2072,15 +2128,39 @@ async function endpoint(req, res, url) {
         value: data.bankStatement.listTransactions(db, {
           q: p.get('q') || '', from: p.get('from') || '', to: p.get('to') || '',
           flow: p.get('flow') || '', min: p.get('min') || '', max: p.get('max') || '',
+          category: p.get('category') || '', status: p.get('status') || '', account: p.get('account') || '',
           limit: p.get('limit'), offset: p.get('offset'),
         }),
       }));
     }
     if (req.method === 'GET' && url.pathname === '/api/db/bank/daily') {
       const p = url.searchParams;
-      return withDatabase(db => reply(res, 200, { ok: true, value: { rows: data.bankStatement.dailyTotals(db, { from: p.get('from') || '', to: p.get('to') || '' }) } }));
+      // dailyTotals() trả { rows, truncated, totalDays, firstDay, limit } — phần cắt 400 ngày
+      // phải nói ra để giao diện báo người dùng thay vì vẽ thiếu trong im lặng.
+      return withDatabase(db => reply(res, 200, { ok: true, value: data.bankStatement.dailyTotals(db, {
+        q: p.get('q') || '', from: p.get('from') || '', to: p.get('to') || '', flow: p.get('flow') || '',
+        min: p.get('min') || '', max: p.get('max') || '', category: p.get('category') || '',
+        status: p.get('status') || '', account: p.get('account') || '',
+      }) }));
+    }
+    if (req.method === 'GET' && url.pathname === '/api/db/bank/categories') {
+      return withDatabase(db => reply(res, 200, { ok: true, value: data.bankStatement.categories(db) }));
+    }
+    // Mọi route GHI vào kho đều phải qua ensureLicenseAllowed() — nếu không, bản quyền hết
+    // hạn vẫn tạo/xoá/phân loại được dữ liệu. Bỏ sót: delete · categories · category (nhóm
+    // nhẹ) và /reconciliation/run (nặng nhất — chạy trọn rebuild() toàn database).
+    if (req.method === 'POST' && url.pathname === '/api/db/bank/categories') {
+      await ensureLicenseAllowed();
+      const input = await readBody(req);
+      return withDatabase(db => reply(res, 200, { ok: true, value: data.bankStatement.createCategory(db, input) }));
+    }
+    if (req.method === 'POST' && url.pathname === '/api/db/bank/category') {
+      await ensureLicenseAllowed();
+      const input = await readBody(req);
+      return withDatabase(db => reply(res, 200, { ok: true, value: data.bankStatement.setCategory(db, input) }));
     }
     if (req.method === 'POST' && url.pathname === '/api/db/reconciliation/run') {
+      await ensureLicenseAllowed();
       return withDatabase(db => reply(res, 200, { ok: true, value: data.reconciliation.rebuild(db) }));
     }
     if (req.method === 'GET' && url.pathname === '/api/db/reconciliation/summary') {
@@ -2113,6 +2193,7 @@ async function endpoint(req, res, url) {
       });
     }
     if (req.method === 'POST' && url.pathname === '/api/db/bank/delete') {
+      await ensureLicenseAllowed();
       const input = await readBody(req);
       return withDatabase(db => reply(res, 200, { ok: true, value: data.bankStatement.deleteFile(db, input.fileId) }));
     }

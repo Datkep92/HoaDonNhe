@@ -130,13 +130,17 @@ function productRows(db, direction, filters) {
 const PARTNER_KIND = { supplier: { direction: 'BUY', mst: 'mst_ban', ten: 'ten_ban' }, buyer: { direction: 'SELL', mst: 'mst_mua', ten: 'ten_mua' } };
 function partnerRows(db, kind, filters = {}) {
   const spec = PARTNER_KIND[kind];
-  // KHÔNG lọc theo kỳ (danh bạ đối tác phải đủ), NHƯNG vẫn theo TRẠNG THÁI đang chọn — nếu không
-  // thì chọn "chưa kiểm tra" mà sheet đối tác vẫn gộp cả hoá đơn đã kiểm tra ⇒ lệch với màn hình.
+  // Trước đây bỏ qua khoảng ngày với lý do "danh bạ đối tác phải đủ". Nay bộ lọc đã THỐNG
+  // NHẤT cho toàn app: nếu màn hình lọc theo kỳ mà sheet xuất ra không lọc thì file ra sai
+  // so với màn hình — đúng cái lệch mà comment cũ muốn tránh. Muốn xem toàn bộ thì chọn kỳ
+  // "Tất cả thời gian" (from/to rỗng) — khi đó hành vi y hệt bản cũ.
+  const range = rangeConditions(filters);
+  const where = ['direction = ?', ...range.where, stateClause(filters)];
   const rows = db.prepare(`SELECT ${spec.mst} AS mst, ${spec.ten} AS ten,
       COUNT(*) AS so_hoa_don, SUM(tong_tien) AS tong_tien, SUM(tien_thue) AS tong_thue
-    FROM invoices WHERE direction = ? AND ${stateClause(filters)}
+    FROM invoices WHERE ${where.join(' AND ')}
     GROUP BY ${spec.mst}, ${spec.ten}
-    ORDER BY tong_tien DESC`).all(spec.direction);
+    ORDER BY tong_tien DESC`).all(spec.direction, ...range.params);
   return rows.map(row => [
     row.mst || '',
     row.ten || '',

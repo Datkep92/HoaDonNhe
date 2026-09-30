@@ -575,8 +575,13 @@ test('dailyTotals: gộp tiền vào/ra theo ngày', () => {
       ['28/09/2026', 'C', 'FT28', '2,000', '', '2,700'],
     ]);
     bank.importWorkbook(db, { buffer, fileName: 's.xlsx' });
-    const rows = bank.dailyTotals(db);
+    // dailyTotals trả { rows, truncated, totalDays, firstDay, limit }: kèm cờ báo đã cắt bớt
+    // để giao diện nói rõ thay vì vẽ thiếu trong im lặng.
+    const daily = bank.dailyTotals(db);
+    const rows = daily.rows;
     assert.equal(rows.length, 2);
+    assert.equal(daily.truncated, false);
+    assert.equal(daily.totalDays, 2);
     const day27 = rows.find(r => r.day === '2026-09-27');
     assert.equal(day27.transactions, 2);
     assert.equal(day27.money_in, 1000);
@@ -621,5 +626,36 @@ test('schema hiện hành: DB cũ tự nâng cấp, giữ nguyên dữ liệu', 
     assert.ok(tables.includes('bank_files'));
     assert.ok(tables.includes('bank_transactions'));
     assert.ok(db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='reconciliation_matches'").get());
+  });
+});
+
+test('Phase 1: transaction categories, filters and opening/closing balances', () => {
+  withDb(db => {
+    const buffer = statementWorkbook([
+      ['27/09/2026', 'KHACH HANG THANH TOAN', 'FT27', '1,000', '', '11,000'],
+      ['28/09/2026', 'TRA NHA CUNG CAP', 'FT28', '', '300', '10,700'],
+    ]);
+    bank.importWorkbook(db, { buffer, fileName: 'phase-1.xlsx' });
+
+    const before = bank.summary(db);
+    assert.equal(before.openingBalance, 10000);
+    assert.equal(before.closingBalance, 10700);
+    assert.equal(before.uncategorized, 2);
+
+    const transaction = bank.listTransactions(db, { flow: 'in' }).rows[0];
+    bank.setCategory(db, { id: transaction.id, category: 'Khách hàng thanh toán' });
+    assert.equal(bank.listTransactions(db, { category: 'Khách hàng thanh toán' }).total, 1);
+    assert.equal(bank.listTransactions(db, { category: '__uncategorized__' }).total, 1);
+    assert.equal(bank.summary(db).uncategorized, 1);
+
+    bank.createCategory(db, { name: '  Chi phí quảng cáo  ', color: '#123abc' });
+    const catalog = bank.categories(db);
+    assert.ok(catalog.defaults.some(item => item.name === 'Thuế, phí'));
+    assert.equal(catalog.custom.length, 1);
+    assert.equal(catalog.custom[0].name, 'Chi phí quảng cáo');
+    assert.equal(catalog.custom[0].color, '#123abc');
+
+    bank.setCategory(db, { id: transaction.id, category: '' });
+    assert.equal(bank.summary(db).uncategorized, 2);
   });
 });

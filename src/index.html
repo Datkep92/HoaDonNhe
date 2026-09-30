@@ -22,8 +22,23 @@
   <div class="side-actions"><button id="add-mst" class="primary">＋ Thêm MST</button><button id="sync-all" class="secondary" title="Chạy Auto Sync cho tất cả MST cùng lúc — 3 luồng song song, xong cái nào rút cái kế tiếp">Đồng bộ tất cả</button></div>
   <div class="side-license"><strong id="side-license-state">Activate</strong></div>
   <div class="side-bottom"><button id="settings-open" class="link" type="button">Cài đặt</button><br><small id="app-version"><b>CN</b> Tax Tools</small> <button id="update-available" class="link" type="button" hidden></button></div></aside>
-<main id="main-content"><header><div class="view-switch" role="tablist" aria-label="Khu vực làm việc"><button id="view-overview" class="active" type="button" role="tab" aria-selected="true">Tổng quan</button><button id="view-download" type="button" role="tab" aria-selected="false">Tra cứu &amp; tải</button><button id="view-data" type="button" role="tab" aria-selected="false">Kho dữ liệu</button><button id="view-bank" type="button" role="tab" aria-selected="false">Sao kê ngân hàng</button><button id="view-accounting" type="button" role="tab" aria-selected="false">Hỗ trợ kế toán</button></div><div class="header-context" aria-live="polite"><div class="eyebrow" id="view-eyebrow">TỔNG QUAN</div><h1><span id="view-title">Tình hình kinh doanh</span><span id="main-license-badge" class="license-badge">Activate</span></h1><p id="view-note">Doanh thu, mua vào, đối soát và công nợ theo kỳ.</p></div></header>
-<section class="account"><div class="account-id"><span class="dot" id="auth-dot"></span><strong id="account">Chưa chọn MST</strong><span id="account-hint" hidden>Chọn một MST trong danh sách bên trái.</span><span id="overview-period" class="account-updated">Chưa cập nhật</span></div></section>
+<main id="main-content"><div class="app-top"><header><div class="view-switch" id="view-switch" role="tablist" aria-label="Khu vực làm việc"><button id="view-overview" class="active" type="button" role="tab" aria-selected="true">Tổng quan</button><button id="view-download" type="button" role="tab" aria-selected="false">Tra cứu &amp; tải</button><button id="view-data" type="button" role="tab" aria-selected="false">Kho dữ liệu</button><button id="view-bank" type="button" role="tab" aria-selected="false">Sao kê ngân hàng</button><button id="view-accounting" type="button" role="tab" aria-selected="false">Hỗ trợ kế toán</button></div><!-- Tiêu đề tab gộp CHUNG hàng với dãy nút: trước có hàng riêng (nhãn TỔNG QUAN +
+     tên tab + mô tả) chiếm 108px ở trên màn hình. Nay chỉ còn tên tab căn phải. Mô tả (ghi chú)
+     không xoá hẳn mà chuyển sang tooltip của nút tab đang bật — vẫn tra được, không tốn chiều cao.
+     #view-eyebrow cũng bỏ: nó chỉ lặp lại chính tên nút tab đang được tô đậm. -->
+<div class="header-context" aria-live="polite"><h1><span id="view-title">Tình hình kinh doanh</span><span id="main-license-badge" class="license-badge">Activate</span></h1></div></header>
+<!-- BỘ LỌC KỲ CHUNG — MỘT khoảng ngày cho TOÀN APP, nằm chung hàng với MST để gọn một dòng.
+     Trước đây mỗi tab một bộ riêng, bộ của Tổng quan nằm trong pane-overview nên sang tab khác là
+     biến mất; có lúc lại tách ra thêm một hàng + một nút chip kỳ ở header ⇒ 4 hàng trước nội dung
+     và "Năm 2026" hiện hai lần. Nay gộp còn MỘT hàng, MỘT nhãn. Đổi ở đây thì Tổng quan ·
+     Kho dữ liệu · Sao kê · Đối tác · MISA · xuất Excel cùng đổi. from/to rỗng = "Tất cả". -->
+<section class="account"><div class="account-id"><span class="dot" id="auth-dot"></span><strong id="account">Chưa chọn MST</strong><span id="account-hint" hidden>Chọn một MST trong danh sách bên trái.</span><span id="overview-period" class="account-updated">Chưa cập nhật</span></div>
+<!-- Bộ lọc kỳ gộp thành MỘT nút: nhãn kỳ đang lọc vừa là chỉ báo vừa là nút bấm để mở bộ
+     chọn (dùng <details> nên không cần dựng popup, không phụ thuộc z-index). Trước đây phải có
+     select "Kỳ" + select "Năm" + nhãn = 3 phần tử, ~283px; nay chỉ còn một nút ~100px, phần
+     chọn chi tiết chỉ hiện khi thật sự cần. Đổi ở đây thì Tổng quan · Kho dữ liệu · Sao kê ·
+     Đối tác · MISA · xuất Excel cùng đổi. from/to rỗng = "Tất cả thời gian". -->
+<details class="app-range" id="app-range-details"><summary class="app-range-label" id="app-range-label" title="Bấm để đổi kỳ lọc">Tất cả thời gian</summary><div class="app-range-panel" id="app-range-bar" role="group" aria-label="Kỳ lọc chung cho toàn bộ báo cáo"><label>Kỳ<select id="app-range-mode" title="Kỳ áp dụng cho MỌI tab và cho bản xuất Excel"><option value="all">Tất cả thời gian</option><option value="current_month">Tháng này</option><option value="7d">7 ngày gần nhất</option><option value="today">Hôm nay</option><option value="month">Theo tháng</option><option value="quarter">Theo quý</option><option value="year">Theo năm</option><option value="custom">Khoảng thời gian</option></select></label><label id="app-range-year-wrap" hidden>Năm<select id="app-range-year"></select></label><label id="app-range-month-wrap" hidden>Tháng<select id="app-range-month"></select></label><label id="app-range-quarter-wrap" hidden>Quý<select id="app-range-quarter"></select></label><label id="app-range-from-wrap" hidden>Từ ngày<input id="app-range-from" type="date"></label><label id="app-range-to-wrap" hidden>Đến ngày<input id="app-range-to" type="date"></label><p class="app-range-hint">Áp dụng cho mọi tab và cho bản xuất Excel.</p></div></details></section></div>
 <dialog id="login-dialog" aria-labelledby="login-title">
   <div class="login-heading"><div><h2 id="login-title">Đăng nhập cổng thuế</h2><p>Lấy CAPTCHA và đăng nhập trực tiếp như VNIT; không cần mở Chrome.</p></div><button id="login-close" type="button" aria-label="Đóng form đăng nhập">×</button></div>
   <form id="login-form" autocomplete="off">
@@ -107,14 +122,7 @@
   </form>
 </dialog>
 <div class="workspace overview-pane" id="pane-overview">
-  <section class="overview-filterbar" aria-label="Bộ lọc thống kê">
-    <div><span class="overview-caption">KỲ THỐNG KÊ</span><strong id="overview-period-label">Tháng hiện tại</strong></div>
-    <label>Kiểu kỳ<select id="overview-period-mode"><option value="current_month">Tháng hiện tại</option><option value="month">Theo tháng</option><option value="quarter">Theo quý</option><option value="year">Theo năm</option><option value="custom">Khoảng thời gian</option></select></label>
-    <label id="overview-year-wrap">Năm<select id="overview-period-year"></select></label>
-    <label id="overview-month-wrap">Tháng<select id="overview-period-month"></select></label>
-    <label id="overview-quarter-wrap" hidden>Quý<select id="overview-period-quarter"></select></label>
-    <label id="overview-from-wrap" hidden>Từ ngày<input id="overview-period-from" type="date"></label>
-    <label id="overview-to-wrap" hidden>Đến ngày<input id="overview-period-to" type="date"></label>
+  <section class="overview-filterbar overview-filterbar-slim" aria-label="Thanh công cụ tổng quan">
     <span id="overview-loading" class="overview-loading" hidden><span class="loading-spinner"></span> Đang tải tổng quan.</span>
     <button id="overview-refresh" class="secondary" type="button">Cập nhật đối chiếu</button>
   </section>
@@ -134,7 +142,9 @@
 <button id="data-clear" class="icon-button" type="button" title="Xoá toàn bộ bộ lọc" aria-label="Xoá toàn bộ bộ lọc"><svg viewBox="0 0 18 18" width="17" height="17" aria-hidden="true" focusable="false"><path fill="currentColor" d="M2 3.2h10.8l-4.1 4.8v5.4l-2.7 1.4V8L2 3.2z"></path><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" d="M12.5 11.4l4.3 4.3M16.8 11.4l-4.3 4.3"></path></svg></button>
 <div class="data-chips" role="group" aria-label="Chọn nhanh khoảng ngày"><button type="button" data-range="all">Tất cả</button><button type="button" data-range="today">Hôm nay</button><button type="button" data-range="7d">7 ngày</button><button type="button" data-range="month">Tháng này</button><button type="button" data-range="quarter">Quý này</button><button type="button" data-range="year">Năm nay</button></div>
 <span class="data-new" id="data-new-badge" hidden></span>
-<div class="data-period" role="group" aria-label="Chọn nhanh theo năm, quý hoặc tháng"><select id="data-period-mode" title="Chọn nhanh theo năm, quý hoặc tháng"><option value="year">Năm</option><option value="quarter">Quý</option><option value="month">Tháng</option></select><select id="data-period-year" aria-label="Năm"></select><select id="data-period-quarter" aria-label="Quý" hidden></select><select id="data-period-month" aria-label="Tháng" hidden></select><span class="data-period-label" id="data-period-label"></span></div>
+<!-- Ô Năm/Quý/Tháng ở đây đã bỏ: bộ chọn kỳ nay ở header (#app-range-bar) và dùng chung cho
+     mọi tab. Chỉ còn nhãn cho biết đang ở kỳ nào. -->
+<div class="data-period"><span class="data-period-label" id="data-range-label">Tất cả thời gian</span></div>
 </div>
 </div>
 </section>
@@ -159,9 +169,17 @@
 </section>
 </div>
 <div class="workspace" id="pane-bank" hidden>
-<div class="bank-overview"><div class="data-tiles" id="data-bank-tiles"></div></div>
-<section class="card filters bank-filters"><h3>Bộ lọc sao kê</h3><label class="data-field search"><input id="data-bank-q" type="search" placeholder="Tìm nội dung, đối ứng, mã GD, số TK…" autocomplete="off" spellcheck="false" aria-label="Tìm kiếm sao kê"></label><div class="date-grid"><label>Từ ngày<input id="data-bank-from" type="date" aria-label="Từ ngày"></label><label>Đến ngày<input id="data-bank-to" type="date" aria-label="Đến ngày"></label></div><div class="date-grid"><label>Tiền từ<input id="data-bank-min" type="number" min="0" step="any" placeholder="0" aria-label="Tiền từ"></label><label>Đến tiền<input id="data-bank-max" type="number" min="0" step="any" placeholder="∞" aria-label="Đến tiền"></label></div><div class="data-seg bank-seg" id="data-seg-bank" role="group" aria-label="Chiều giao dịch sao kê"><button type="button" data-flow="" class="active">Tất cả</button><button type="button" data-flow="in">Tiền vào</button><button type="button" data-flow="out">Tiền ra</button></div><div class="bank-filter-actions"><button id="data-bank-clear" class="secondary" type="button">Xoá lọc</button><button id="data-bank-import" class="primary" type="button">Nhập file sao kê…</button></div><button id="data-bank-files" class="secondary bank-files-btn" type="button">Quản lý file đã nhập (xoá / chuyển MST)…</button><p class="hint" id="data-bank-note">Nhập file Excel/CSV sao kê từ ngân hàng — dữ liệu chuẩn hoá tự động, trùng tự bỏ. Bấm đúp vào ghi chú để xoá toàn bộ sao kê của MST.</p></section>
-<section class="results bank-results"><section class="card table-card"><div class="table-head"><h3>Giao dịch của MST đang chọn</h3><span class="badge" id="data-bank-count">0 giao dịch</span></div><div class="table-scroll"><table><thead><tr><th class="stt">STT</th><th>Ngày</th><th>Nội dung</th><th>Đối ứng</th><th>Mã giao dịch</th><th class="num">Tiền vào</th><th class="num">Tiền ra</th><th class="num">Số dư</th><th>File</th></tr></thead><tbody id="data-bank-rows"></tbody></table></div><div class="data-pager"><button id="data-bank-prev" class="secondary" type="button">‹ Trước</button><span id="data-bank-page">Trang 1 / 1</span><button id="data-bank-next" class="secondary" type="button">Sau ›</button></div><progress id="data-bank-bar" max="100" value="0" hidden></progress></section></section>
+<section class="bank-kpis" id="data-bank-tiles" aria-label="Tổng quan dòng tiền"></section>
+<section class="bank-visual-grid">
+  <article class="card bank-chart-card"><div class="bank-card-head"><div><span class="overview-caption">DÒNG TIỀN</span><h3>Tiền vào - Tiền ra theo thời gian</h3></div><div class="bank-chart-legend"><span><i class="in"></i>Tiền vào</span><span><i class="out"></i>Tiền ra</span></div></div><div id="data-bank-chart" class="bank-chart" aria-live="polite"></div></article>
+  <article class="card bank-attention-card"><div class="bank-card-head"><div><span class="overview-caption">TRẠNG THÁI</span><h3>Cần xử lý</h3></div></div><div id="data-bank-attention"></div></article>
+</section>
+<section class="card bank-filter-panel" aria-label="Bộ lọc sao kê">
+  <div class="bank-filter-top"><label class="data-field search"><input id="data-bank-q" type="search" placeholder="Tìm nội dung, đối ứng, mã GD, số TK…" autocomplete="off" spellcheck="false" aria-label="Tìm kiếm sao kê"></label><div class="data-chips bank-range-chips" id="data-bank-ranges" role="group" aria-label="Chọn nhanh khoảng ngày"><button type="button" data-range="all" class="active">Tất cả</button><button type="button" data-range="today">Hôm nay</button><button type="button" data-range="7d">7 ngày</button><button type="button" data-range="month">Tháng này</button><button type="button" data-range="quarter">Quý này</button><button type="button" data-range="year">Năm này</button><button type="button" data-range="custom">Khoảng ngày</button></div></div>
+  <div class="bank-filter-grid"><label>Từ ngày<input id="data-bank-from" type="date" aria-label="Từ ngày"></label><label>Đến ngày<input id="data-bank-to" type="date" aria-label="Đến ngày"></label><label>Tài khoản<select id="data-bank-account"><option value="">Tất cả tài khoản</option></select></label><label>Nhóm giao dịch<select id="data-bank-category"><option value="">Tất cả nhóm</option><option value="__uncategorized__">Chưa phân loại</option></select></label><label>Đối chiếu<select id="data-bank-status"><option value="">Tất cả trạng thái</option><option value="matched">Đã đối chiếu</option><option value="unmatched">Cần kiểm tra</option><option value="pending">Chưa đối chiếu</option></select></label><label>Tiền từ<input id="data-bank-min" type="number" min="0" step="any" placeholder="0" aria-label="Tiền từ"></label><label>Đến tiền<input id="data-bank-max" type="number" min="0" step="any" placeholder="∞" aria-label="Đến tiền"></label><div class="data-seg bank-seg" id="data-seg-bank" role="group" aria-label="Chiều giao dịch sao kê"><button type="button" data-flow="" class="active">Tất cả</button><button type="button" data-flow="in">Tiền vào</button><button type="button" data-flow="out">Tiền ra</button></div></div>
+  <div class="bank-filter-actions"><button id="data-bank-clear" class="secondary" type="button">Xoá lọc</button><button id="data-bank-new-category" class="secondary" type="button">+ Nhóm mới</button><button id="data-bank-files" class="secondary" type="button">Quản lý file</button><button id="data-bank-import" class="primary" type="button">Nhập file sao kê…</button><span class="hint" id="data-bank-note">Dữ liệu lưu riêng theo MST · nhập trùng tự bỏ.</span></div>
+</section>
+<section class="card bank-table-card"><div class="table-head"><div><span class="overview-caption">GIAO DỊCH</span><h3>Danh sách sao kê</h3></div><span class="badge" id="data-bank-count">0 giao dịch</span></div><div class="table-scroll"><table><thead><tr><th class="stt">STT</th><th>Ngày</th><th>Nội dung</th><th>Đối ứng</th><th>Trạng thái</th><th>Nhóm giao dịch</th><th class="num">Tiền vào</th><th class="num">Tiền ra</th><th class="num">Số dư</th><th>Tài khoản</th></tr></thead><tbody id="data-bank-rows"></tbody></table></div><div class="data-pager"><button id="data-bank-prev" class="secondary" type="button">‹ Trước</button><span id="data-bank-page">Trang 1 / 1</span><button id="data-bank-next" class="secondary" type="button">Sau ›</button></div><progress id="data-bank-bar" max="100" value="0" hidden></progress></section>
 </div>
 <dialog id="pending-dialog" aria-labelledby="pending-title">
 <div class="login-heading"><div><h2 id="pending-title">Cần kiểm tra</h2><p id="pending-sub">Hóa đơn và giao dịch chưa khớp nhau — xem từng dòng rồi tự kết luận, hệ thống không tự phán.</p></div><button id="pending-close" type="button" aria-label="Đóng">×</button></div>
@@ -179,6 +197,10 @@
 <p class="hint" id="bank-file-status">Đang tải danh sách file…</p>
 <div class="table-scroll bank-file-list"><table><thead><tr><th>File</th><th class="num">Nhập</th><th class="num">Trùng</th><th class="num">Lỗi</th><th>Kỳ</th><th>Hành động</th></tr></thead><tbody id="bank-file-rows"></tbody></table></div>
 <progress id="bank-file-bar" max="100" value="0" hidden></progress>
+</dialog>
+<dialog id="bank-category-dialog" aria-labelledby="bank-category-title">
+<div class="login-heading"><div><h2 id="bank-category-title">Tạo nhóm giao dịch</h2><p>Nhóm chỉ lưu trong kho dữ liệu của MST đang chọn.</p></div><button id="bank-category-close" type="button" aria-label="Đóng">×</button></div>
+<form id="bank-category-form"><label>Tên nhóm<input id="bank-category-name" maxlength="80" placeholder="Ví dụ: Chi phí quảng cáo" autocomplete="off" required></label><label>Màu nhận diện<input id="bank-category-color" type="color" value="#64748b"></label><div class="login-actions"><button type="button" id="bank-category-cancel">Huỷ</button><button type="submit" class="primary">Tạo nhóm</button></div><p id="bank-category-error" role="alert" hidden></p></form>
 </dialog>
 <dialog id="bank-check-dialog" class="bank-check-dialog" aria-labelledby="bank-check-title">
 <div class="login-heading"><div><h2 id="bank-check-title">AI đọc lại — soát trước khi lưu</h2><p id="bank-check-sub">—</p></div><button id="bank-check-close" type="button" aria-label="Đóng">×</button></div>
@@ -217,14 +239,14 @@
 <div class="preview-frame-wrap"><iframe id="preview-frame" title="Hoá đơn khổ A4" src="about:blank"></iframe></div>
 <div class="preview-actions"><button id="preview-print" class="secondary" type="button">In / Lưu PDF</button></div>
 </dialog>
-<div id="app-confirm" class="app-confirm" hidden><div class="app-confirm-card" role="alertdialog" aria-modal="true" aria-labelledby="app-confirm-title" aria-describedby="app-confirm-text"><h2 id="app-confirm-title">Xác nhận</h2><p id="app-confirm-text" class="app-confirm-text"></p><div id="app-confirm-input" class="app-confirm-input" hidden></div><div class="login-actions"><button id="app-confirm-cancel" type="button">Huỷ</button><button id="app-confirm-ok" class="primary" type="button">OK</button></div></div></div>
+<dialog id="app-confirm" class="app-confirm" aria-labelledby="app-confirm-title" aria-describedby="app-confirm-text"><div class="app-confirm-card" role="alertdialog" aria-labelledby="app-confirm-title" aria-describedby="app-confirm-text"><h2 id="app-confirm-title">Xác nhận</h2><p id="app-confirm-text" class="app-confirm-text"></p><div id="app-confirm-input" class="app-confirm-input" hidden></div><div class="login-actions"><button id="app-confirm-cancel" type="button">Huỷ</button><button id="app-confirm-ok" class="primary" type="button">OK</button></div></div></dialog>
 <div class="workspace" id="pane-accounting" hidden>
   <section class="card filters mia-filters">
     <h3>Xuất file “Mẫu bán hàng” để nhập vào MISA AMIS</h3>
     <p class="hint">Lấy <b>hoá đơn BÁN RA</b> đã có trong Kho dữ liệu theo kỳ bên dưới, ghép với <b>danh mục hàng hoá của công ty</b> (<b>Danhsach.xlsx</b>) rồi xuất file <b>đúng cấu trúc file mẫu MISA</b>. Số liệu lấy 100% từ hoá đơn.</p>
     <div class="date-grid"><label>Từ ngày<input id="mia-from" type="date"></label><label>Đến ngày<input id="mia-to" type="date"></label></div>
     <div class="mia-quick" id="mia-quick" role="group" aria-label="Chọn nhanh khoảng ngày">
-      <button type="button" data-mia-range="this-month">Tháng này</button><button type="button" data-mia-range="last-month">Tháng trước</button><button type="button" data-mia-range="this-quarter">Quý này</button><button type="button" data-mia-range="this-year">Năm nay</button>
+      <button type="button" data-mia-range="this-month">Tháng này</button><button type="button" data-mia-range="last-month">Tháng trước</button><button type="button" data-mia-range="this-quarter">Quý này</button><button type="button" data-mia-range="this-year">Năm nay</button><span class="mia-range-label" id="mia-range-label">Tất cả thời gian</span>
     </div>
     <div class="date-grid"><label>Tiền tố số chứng từ<input id="mia-prefix" value="PT" maxlength="8" autocomplete="off" spellcheck="false" placeholder="PT"></label><label>Số bắt đầu<input id="mia-start" type="number" min="1" step="1" placeholder="Tự động" autocomplete="off"></label></div>
     <label>Hoá đơn không ghi Mã hàng thì<select id="mia-missing"><option value="name" selected>Lấy mã theo TÊN từ danh mục, không có thì dùng tên hàng làm mã</option><option value="block">Chặn xuất — bắt buộc phải có mã hàng</option></select></label>
@@ -245,7 +267,14 @@
     <p class="hint" id="mia-empty">Bấm <b>Xem trước &amp; kiểm lỗi</b> để dọc dữ liệu và kiểm trước khi xuất.</p>
   </section>
 </div>
-<div id="notice-stack" class="notice-stack" aria-live="polite"></div><footer>Đây là công cụ hỗ trợ Kế toán được thiết kế dựa trên dữ liệu Tổng Cục Thuế</footer></main>
+<footer>Đây là công cụ hỗ trợ Kế toán được thiết kế dựa trên dữ liệu Tổng Cục Thuế</footer></main>
+<!-- #notice-stack (toast) nằm NGOÀI <main> — BẮT BUỘC. <main> có animation vào app
+     (`app-enter`, translateY). Theo đặc tả CSS, một <main> đang có transform sẽ trở thành
+     containing block cho mọi `position: fixed` bên trong. Nếu animation bị throttling và
+     dừng ở frame đầu (tab nền, cửa sổ bị che), transform kẹt lại ⇒ toast bị định vị theo
+     khung cao của <main> thay vì khung nhìn ⇒ rơi xuống dưới màn hình, không thấy.
+     Đặt ở cấp <body> (không transform) thì position:fixed luôn bám khung nhìn. -->
+<div id="notice-stack" class="notice-stack" aria-live="polite"></div>
 <button id="app-lock-button" class="lock-floating" type="button" title="Khóa giao diện">🔒</button>
 <dialog id="update-dialog" aria-labelledby="update-title">
   <div class="login-heading"><div><h2 id="update-title">Có phiên bản mới</h2><p>Bản cập nhật được tải từ GitHub Releases của CN Tax Tools.</p></div><button id="update-close" type="button" aria-label="Đóng">×</button></div>

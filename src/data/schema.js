@@ -26,7 +26,7 @@
 //   TM/CK nên không tự phân loại được — mục 3 của yêu cầu).
 // ---------------------------------------------------------------------------
 
-const SCHEMA_VERSION = 9;
+const SCHEMA_VERSION = 10;
 
 const TABLES = [
   `CREATE TABLE IF NOT EXISTS invoices (
@@ -47,12 +47,22 @@ const TABLES = [
     payment_method TEXT NOT NULL DEFAULT 'UNKNOWN',
     reconciliation_status TEXT,
     reconciliation_issues TEXT,
+    category TEXT,
+    category_source TEXT,
+    categorized_at TEXT,
     review_status TEXT,
     reviewed_at TEXT,
     tien_truoc_thue REAL DEFAULT 0,
     tien_thue REAL DEFAULT 0,
     tong_tien REAL DEFAULT 0,
     file_xml TEXT NOT NULL,
+    created_at TEXT,
+    updated_at TEXT
+  )`,
+  `CREATE TABLE IF NOT EXISTS bank_categories (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+    color TEXT DEFAULT '#64748b',
     created_at TEXT,
     updated_at TEXT
   )`,
@@ -205,6 +215,7 @@ const INDEXES = [
   'CREATE INDEX IF NOT EXISTS idx_bank_tran_date ON bank_transactions(tran_date)',
   'CREATE INDEX IF NOT EXISTS idx_bank_tran_file ON bank_transactions(file_id)',
   'CREATE INDEX IF NOT EXISTS idx_bank_tran_amount ON bank_transactions(amount)',
+  'CREATE INDEX IF NOT EXISTS idx_bank_tran_category ON bank_transactions(category)',
   'CREATE INDEX IF NOT EXISTS idx_bank_file_hash ON bank_files(file_hash)',
   'CREATE INDEX IF NOT EXISTS idx_reconciliation_invoice ON reconciliation_matches(invoice_id)',
   'CREATE INDEX IF NOT EXISTS idx_reconciliation_bank ON reconciliation_matches(bank_transaction_id)',

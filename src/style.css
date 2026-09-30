@@ -105,6 +105,46 @@ tbody tr.clickable td:last-child::after{content:' ↗';color:#8a97a7}
 .settings-message.ok{color:#087f70}
 .qr-sample{width:120px;height:120px;border:8px solid #fff;background:#fff;box-shadow:0 0 0 1px #dfe7ef;border-radius:8px;background-image:linear-gradient(90deg,#14283f 9px,transparent 9px),linear-gradient(#14283f 9px,transparent 9px),linear-gradient(90deg,transparent 21px,#14283f 21px,#14283f 30px,transparent 30px),linear-gradient(transparent 39px,#14283f 39px,#14283f 48px,transparent 48px);background-size:24px 24px,24px 24px,57px 57px,69px 69px;background-position:0 0,0 0,17px 11px,33px 27px}
 .lock-floating{position:fixed;right:26px;bottom:78px;z-index:19;width:42px;height:42px;padding:0;border-radius:50%;background:#14283f;color:#fff;border-color:#14283f;box-shadow:0 8px 24px #102b3540}
+/* ============================================================================
+   BỘ LỌC KỲ CHUNG — gộp chung hàng với MST, ngay dưới header.
+   Cùng khối `.app-top` dán theo: tab + tiêu đề + MST + kỳ luôn nhìn thấy, cuộn xuống vẫn còn.
+   Một hàng, một nhãn kỳ (trước có tới 4 hàng trước nội dung và "Năm 2026" hiện hai lần).
+   ========================================================================== */
+.app-top{position:sticky;top:0;z-index:11;background:#f3f6fa;padding:22px 26px 0;margin:-22px -26px 5px}
+/* Cửa sổ hẹp (sidebar 250px ⇒ nội dung ~744px): tiêu đề tab đứng ngay bên phải dãy nút,
+   cùng một hàng. Không còn hàng "nhãn + tên + mô tả" riêng (108px) — mô tả đã chuyển sang
+   tooltip của nút tab. Cả khối co lại được và xuống hàng khi thật hẹp. */
+.app-top > header{display:flex;align-items:center;justify-content:space-between;position:static;background:none;padding:0;margin:0;flex-wrap:wrap;row-gap:6px}
+.app-top > header > .view-switch{flex:0 1 auto;min-width:0}
+/* 5 nút + tên tab không vừa bề rộng nội dung 744px (sidebar 250px) nên tên tab rớt hàng.
+   Giảm đệm ngang của nút 6px mỗi bên ⇒ tiết 60px, đủ để tên tab vừa CHUNG một hàng. */
+.app-top > header > .view-switch button{padding:9px 13px}
+.app-top > header > .header-context{flex:1 1 auto;min-width:0;text-align:right;align-self:center}
+.app-top > header > .header-context h1{margin:0;font-size:15px;line-height:1.25}
+.app-top > .account{margin:6px 0 10px;align-items:center;gap:10px;flex-wrap:nowrap}
+/* MST bên trái được co lại (kẹp dấu ba chấm khi tên dài), bộ lọc kỳ bên phải giữ nguyên
+   kích thước. Trước đây `account-id` chiếm gần hết bề rộng ⇒ bộ lọc bị đẩy xuống hàng kế
+   tiếp (hàng cao thêm ~33px rỗng). */
+.app-top > .account > .account-id{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* Bộ lọc kỳ = MỘT nút. Nhãn kỳ đang lọc vừa hiện kết quả vừa là nút mở bộ chọn. Dùng
+   <details>/<summary> nên không phải dựng popup, không lo z-index, mở được bằng bàn phím. */
+.app-range{position:relative;flex:0 0 auto;margin-left:auto}
+.app-range > summary{list-style:none;cursor:pointer;user-select:none;white-space:nowrap;
+  padding:6px 11px;border-radius:8px;background:#e9f5f2;border:1px solid #cfe6df;color:#087f70;
+  font-size:11.5px;font-weight:700}
+.app-range > summary::-webkit-details-marker{display:none}
+.app-range > summary::after{content:" ▾";opacity:.6;font-size:10px}
+.app-range > summary:hover{background:#d9f0e8;border-color:#8ecfbf}
+.app-range[open] > summary{background:#087f70;border-color:#087f70;color:#fff}
+.app-range-panel{position:absolute;top:calc(100% + 6px);right:0;z-index:30;min-width:288px;
+  display:flex;flex-direction:column;gap:9px;padding:12px;background:#fff;
+  border:1px solid #d7e2ea;border-radius:10px;box-shadow:0 12px 34px rgba(16,43,53,.18)}
+.app-range-panel label{display:grid;gap:2px;color:#7a8b9e;font-size:9px;font-weight:700;text-transform:uppercase}
+.app-range-panel select,.app-range-panel input{height:30px;margin:0;padding:3px 7px;font-size:11.5px}
+.app-range-hint{margin:2px 0 0;color:#8a97a7;font-size:10px;line-height:1.5}
+/* Thanh công cụ Tổng quan còn lại: không còn ô chọn kỳ nên không cần rải rộng. */
+.overview-filterbar-slim{display:flex;align-items:center;gap:10px;justify-content:flex-end}
+.overview-filterbar-slim .overview-loading{margin-right:auto}
 /* Màn khoá (dùng chung cho khoá PIN, license bị khoá, license hết hạn): giữ nguyên dáng cũ,
    chỉ thêm hiệu ứng hiện vào / mờ ra cho êm mắt. */
 .lock-screen{position:fixed;inset:0;z-index:50;background:#102033d9;display:grid;place-items:center;padding:20px;animation:lockBackdropIn .2s ease-out both}
@@ -178,6 +218,16 @@ body{-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
 
 /* Nút & ô nhập: phản hồi nhẹ 0.12s — đủ thấy, không lê thê */
 button,input,select{transition:background-color .12s ease,border-color .12s ease,color .12s ease,box-shadow .12s ease}
+
+/* Ngày hiển thị theo chuẩn Việt Nam; ô ISO gốc vẫn phục vụ logic/API. */
+.date-iso-source{
+  position:absolute!important;width:1px!important;height:1px!important;min-width:0!important;
+  margin:0!important;padding:0!important;border:0!important;opacity:0!important;
+  pointer-events:none!important;overflow:hidden!important;
+}
+.date-dmy-input{font-variant-numeric:tabular-nums;letter-spacing:.02em}
+.date-dmy-input::placeholder{color:#9aa7b6;letter-spacing:0}
+.date-dmy-input.date-invalid{border-color:#d7584f!important;box-shadow:0 0 0 3px rgba(215,88,79,.12)!important}
 button:hover:not(:disabled){box-shadow:0 1px 4px rgba(20,40,63,.08)}
 button:active:not(:disabled){transform:translateY(1px)}
 button:focus-visible,input:focus-visible,select:focus-visible,summary:focus-visible,[tabindex]:focus-visible{
@@ -268,21 +318,35 @@ dialog::backdrop{background:#12283fb0}
    HỘP XÁC NHẬN DÙNG CHUNG (2026-09) — thay confirm() gốc của trình duyệt.
    Cùng tông mint/teal, bo góc 12px, bóng đổ, mờ dần khi hiện/ẩn cho đồng bộ với toast.
    ========================================================================== */
-.app-confirm {
-  position: fixed; inset: 0; z-index: 80;
-  display: flex; align-items: center; justify-content: center; padding: 20px;
-  background: rgba(18, 40, 64, .38);
-  opacity: 0; transition: opacity .14s ease;
+/* Hộp xác nhận dùng chung (renderer.js askConfirm) — dựng bằng <dialog> + showModal().
+   Bắt buộc phải là <dialog>: hộp xác nhận hay mở TỪ TRONG một hộp khác đang modal (ví dụ bấm
+   "Xoá" / "Chuyển MST…" trong hộp Quản lý file sao kê). Một <dialog> mở bằng showModal() nằm
+   trong TOP LAYER — lớp cao nhất của trình duyệt, không `z-index` nào của phần tử thường
+   vượt được. Bản cũ dựng bằng `<div>` z-index 80 ⇒ nằm DƯỚI hộp cha + nền mờ của nó ⇒
+   người dùng thấy modal "nằm dưới, không bấm được". showModal() còn lo sẵn canh tâm theo
+   khung nhìn, khoá tiêu điểm và bắt phím Esc.
+
+   Bỏ hẳn mọi khoảng trắng/viền mặc định của <dialog> (login.css đặt `dialog{...}` cho các
+   hộp khác): thẻ này chỉ làm vỏ, phần nhìn do .app-confirm-card bên trong quyết định. */
+dialog#app-confirm {
+  width: auto; max-width: none; max-height: none;
+  margin: auto; padding: 0; border: 0; overflow: visible;
+  background: transparent; color: inherit;
 }
-.app-confirm.show { opacity: 1; }
+dialog#app-confirm::backdrop { background: rgba(18, 40, 64, .38); }
 .app-confirm-card {
-  width: min(480px, 100%); max-height: 86vh; overflow: auto;
+  /* `100vw` thay cho `100%`: trong <dialog> vốn co giãn theo nội dung, `100%` sẽ tuần hoàn
+     với chính chiều rộng nó định nghĩa. */
+  width: min(480px, calc(100vw - 40px)); max-height: 86vh; overflow: auto;
   background: #fff; border: 1px solid #dce4ee; border-top: 3px solid #2bd4ae;
   border-radius: 12px; padding: 18px 20px 16px;
   box-shadow: 0 24px 80px rgba(16, 43, 53, .25);
-  transform: translateY(10px) scale(.98); transition: transform .16s cubic-bezier(.2, .8, .3, 1);
+  /* Nền mờ giờ do ::backdrop của <dialog> đảm nhiệm ⇒ hiệu ứng "mờ dần" chuyển sang
+     chính thẻ card (opacity + ních lên) cho khớp trước đây. */
+  opacity: 0; transform: translateY(10px) scale(.98);
+  transition: opacity .14s ease, transform .16s cubic-bezier(.2, .8, .3, 1);
 }
-.app-confirm.show .app-confirm-card { transform: none; }
+.app-confirm.show .app-confirm-card { opacity: 1; transform: none; }
 .app-confirm-card.tone-warn { border-top-color: #e2a03f; }
 .app-confirm-card.tone-error { border-top-color: #d9534f; }
 .app-confirm-card h2 { margin: 0 0 10px; font-size: 16px; color: #14313a; }
@@ -574,8 +638,18 @@ aside { padding-bottom: 18px; }   /* side-bottom giờ là phần tử thường
 .boot-tip.show { opacity: 1; transform: none; }
 /* Khi sẵn sàng: giao diện BÊN DƯỚI được hé lộ dần (mờ + nhích lên nhẹ) song song với
    màn hình chờ mờ đi — chuyển cảnh mượt, không "bụp" một cái. */
-body.app-ready > aside, body.app-ready > main { animation: app-enter .55s cubic-bezier(.2, .7, .3, 1) both; }
-@keyframes app-enter { from { opacity: 0; transform: translateY(8px); } }
+/* KHONG dung `fill-mode: both` o day. Keyframe chi khai `from` nen `both` giu lai trang
+   thai dau (translateY(8px)) tren <main> khi animation bi throttling (tab nen, cua so bi che)
+   va khong kip chay het. Ma <main> CO transform ⇒ theo dac ta CSS no thanh containing block
+   cho MOI `position: fixed` ben trong: #app-confirm (hop xac nhan) va #notice-stack (toast)
+   bi dinh vi theo khung cao ~1500px cua <main> thay vi theo khung nhin ⇒ roi xuong duoi man
+   hinh va khong bam duoc. Bo `both` + khai `to` tuong minh: animation xong thi transform
+   tro ve `none`, khong con gi ket lai. */
+body.app-ready > aside, body.app-ready > main { animation: app-enter .55s cubic-bezier(.2, .7, .3, 1); }
+@keyframes app-enter {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: none; }
+}
 @media (prefers-reduced-motion: reduce) {
   .boot-aurora, .boot-bar i, .boot-steps li.active::before, .boot-panel, .boot-tip { animation: none; }
   body.app-ready > aside, body.app-ready > main { animation: none; }

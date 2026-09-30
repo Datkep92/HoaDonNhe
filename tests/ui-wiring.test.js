@@ -522,29 +522,16 @@ test('tab Sao kê ngân hàng: khối Kho dữ liệu nằm TRONG #pane-data, #p
   assert.ok(!findNode(paneData.children, node => node.id === 'pane-bank'), '#pane-bank KHÔNG được nằm trong #pane-data (sẽ bị ẩn theo)');
   assert.deepEqual(
     paneBank.children.map(node => node.cls),
-    ['bank-overview', 'card filters bank-filters', 'results bank-results'],
-    'thứ tự con của #pane-bank phải là: dải số → bộ lọc → bảng giao dịch',
+    ['bank-kpis', 'bank-visual-grid', 'card bank-filter-panel', 'card bank-table-card'],
+    'thứ tự con của #pane-bank phải là: KPI → biểu đồ → bộ lọc → bảng giao dịch',
   );
 });
 
-test('tab Sao kê ngân hàng: dải số trải hết 2 cột, bộ lọc ở cột hẹp, bảng ở cột rộng', () => {
+test('tab Sao kê ngân hàng Giai đoạn 1: dashboard một cột, biểu đồ và bộ lọc co giãn', () => {
   const css = fs.readFileSync(path.join(root, 'src', 'data-view.css'), 'utf8');
-  // Luật gốc: #pane-bank là lưới (một cột khi cửa sổ hẹp).
-  assert.ok(
-    /#pane-bank \{ display: grid; grid-template-columns: minmax\(0, 1fr\);/.test(css),
-    '#pane-bank phải là lưới một cột ở màn hẹp (bộ lọc trên, bảng dưới)',
-  );
-  // Màn rộng: 2 cột. Nếu phần này mất, bố cục trở lại một cột — không sai, nhưng phải biết là đã đổi.
-  assert.ok(
-    /#pane-bank \{ grid-template-columns: 312px minmax\(0, 1fr\); align-items: start; \}/.test(css),
-    '#pane-bank phải là lưới 2 cột (312px | phần còn lại) khi cửa sổ rộng',
-  );
-  // Không có dòng này, ô lưới đầu tiên (dải số) chiếm cột trái ⇒ bộ lọc nhảy sang cột rộng
-  // và bảng giao dịch bị nhét vào cột 312px (chỉ thấy một góc).
-  assert.ok(
-    /\.bank-overview \{[^}]*grid-column: 1 \/ -1/.test(css),
-    '.bank-overview phải trải hết cả 2 cột để bộ lọc về cột trái và bảng về cột phải',
-  );
+  assert.ok(/#pane-bank,#pane-bank\.workspace\{display:grid;grid-template-columns:minmax\(0,1fr\)/.test(css), 'dashboard phải xếp một cột, không tạo khoảng trống');
+  assert.ok(/\.bank-visual-grid\{display:grid;grid-template-columns:minmax\(0,2fr\) minmax\(270px,1fr\)/.test(css), 'biểu đồ và cảnh báo phải theo tỷ lệ 2:1');
+  assert.ok(/\.bank-filter-grid\{display:grid;grid-template-columns:repeat\(7/.test(css), 'bộ lọc phải là lưới co giãn');
 });
 
 test('nhập sao kê: PDF-có-chữ đọc local không ra dữ liệu thì phải có đường chuyển sang AI', () => {
@@ -602,21 +589,36 @@ test('nhập sao kê: có popup tiến trình → kết quả, đồng bộ vớ
   assert.ok(/job\.finish\('ok'/.test(ui) && /job\.finish\('error'/.test(ui), 'tiến trình phải tự biến thành kết quả xong/hỏng');
 });
 
-test('hộp xác nhận: thay confirm() gốc bằng popup đồng bộ hệ thống (không dùng <dialog>)', () => {
+test('hộp xác nhận: thay confirm() gốc bằng popup đồng bộ hệ thống, mở bằng <dialog> showModal()', () => {
   // Hộp xám "127.0.0.1 says" của trình duyệt nhìn lệch hẳn tông app ⇒ luồng nhập sao kê
-  // phải dùng hộp xác nhận riêng (div + nền mờ), trả về Promise<boolean> như confirm().
+  // phải dùng hộp xác nhận riêng, trả về Promise<boolean> như confirm().
   const renderer = fs.readFileSync(path.join(root, 'src', 'renderer.js'), 'utf8');
   assert.ok(/function askConfirm\(/.test(renderer), 'renderer.js phải có hàm askConfirm dùng chung');
   assert.ok(/window\.askConfirm = askConfirm/.test(renderer), 'askConfirm phải được công khai qua window');
   // Vẫn phải rơi về hộp gốc của trình duyệt khi bản cũ thiếu HTML:
   // confirm() cho xác nhận, prompt() khi hộp đó cần ô nhập chữ — cả hai đều trả kết quả được.
-  assert.ok(/if \(!box\) return Promise\.resolve\((options\.input \? prompt\(|confirm\()/.test(renderer),
+  assert.ok(/if \(!box\) return Promise\.resolve\((options\.input \ ? prompt\(|confirm\()/.test(renderer)
+    || /if \(!box\) return Promise\.resolve\((options\.input \? prompt\(|confirm\()/.test(renderer),
     'bản cũ không có HTML thì phải rơi về confirm()/prompt() để không vỡ luồng');
   for (const id of ['app-confirm', 'app-confirm-title', 'app-confirm-text', 'app-confirm-input', 'app-confirm-ok', 'app-confirm-cancel']) {
     assert.ok(ids.has(id), `index.html phải có sẵn phần tử #${id}`);
   }
-  const block = html.slice(html.indexOf('id="app-confirm"'), html.indexOf('id="notice-stack"'));
-  assert.ok(!/<dialog/.test(block), 'hộp xác nhận phải dựng bằng div, KHÔNG dùng <dialog>');
+
+  // BẮT BUỘC phải là <dialog> + showModal(). Hộp này được mở TỪ TRONG hộp khác đang modal
+  // (nút Xoá / Chuyển MST… trong hộp Quản lý file sao kê). Bản cũ dựng bằng <div> z-index 80:
+  // một <dialog> showModal() nằm trong TOP LAYER, không z-index nào của phần tử thường vượt
+  // được ⇒ hộp xác nhận nằm DƯỚI hộp cha + nền mờ ⇒ "modal nằm dưới, không bấm được".
+  const confirmTag = /<dialog[^>]*id="app-confirm"|<div[^>]*id="app-confirm"/.exec(html);
+  assert.ok(confirmTag && confirmTag[0].startsWith('<dialog'), 'hộp xác nhận phải là <dialog> để nằm trong top layer');
+  assert.ok(/box\.showModal\(\)/.test(renderer), 'askConfirm phải gọi showModal()');
+  assert.ok(!/box\.hidden = false/.test(renderer), 'hộp xác nhận <dialog> không điều khiển bằng [hidden]');
+
+  // Esc: <dialog> huỷ bằng sự kiện `cancel`, KHÔNG phải default action của keydown. Chỉ chặn
+  // keydown thì hộp cha cũng nhận `cancel` và bị đóng theo ⇒ một lần Esc mất cả hai hộp.
+  assert.ok(/addEventListener\('cancel'/.test(renderer) && /onCancel[^\n]*preventDefault/.test(renderer)
+    || /onCancel = event => \{ event\.preventDefault\(\); dismiss\(\); \}/.test(renderer),
+    'Esc phải xử lý qua sự kiện cancel và preventDefault để không kéo hộp cha đóng theo');
+
   const ui = fs.readFileSync(path.join(root, 'src', 'data-ui.js'), 'utf8');
   // Luồng nhập sao kê (xác nhận tài khoản · hỏi gửi AI · kết quả khớp/cảnh báo · xoá file) không còn confirm() gốc.
   for (const title of ['Kiểm tra tài khoản trước khi nhập', 'CẢNH BÁO — kiểm tra kỹ trước khi lưu', 'Số liệu KHỚP — lưu vào kho?',
@@ -626,8 +628,33 @@ test('hộp xác nhận: thay confirm() gốc bằng popup đồng bộ hệ th�
   const bankFlow = ui.slice(ui.indexOf('async function importBankFile('), ui.indexOf('// ---- Hộp quản lý file sao kê'));
   assert.ok(!/[^k]confirm\(/.test(bankFlow), 'luồng nhập sao kê không được còn confirm() gốc');
   const css = fs.readFileSync(path.join(root, 'src', 'style.css'), 'utf8');
-  assert.ok(/\.app-confirm \{/.test(css) && /\.app-confirm-card\.tone-warn/.test(css), 'style.css phải có style hộp xác nhận + kiểu màu cảnh báo');
+  assert.ok(/dialog#app-confirm \{/.test(css), 'phải bỏ khoảng trắng/viền mặc định của <dialog> cho hộp xác nhận');
+  assert.ok(/dialog#app-confirm::backdrop \{/.test(css), 'nền mờ của hộp xác nhận phải nằm trên ::backdrop');
+  assert.ok(/\.app-confirm-card\.tone-warn/.test(css) && /\.app-confirm-card\.tone-error/.test(css),
+    'style.css phải có kiểu màu cảnh báo / lỗi của hộp xác nhận');
 });
+
+test('lớp phủ position:fixed KHÔNG được nằm trong <main> (animation vào app làm hỏng containing block)', () => {
+  // <main> có animation `app-enter` (translateY). Theo đặc tả CSS, một phần tử đang có
+  // transform trở thành containing block cho MỌI `position: fixed` bên trong. Animation bị
+  // throttling và dừng ở frame đầu (tab nền, cửa sổ bị che) thì transform kẹt lại ⇒
+  // #notice-stack bám khung cao của <main> (~1500px) thay vì khung nhìn ⇒ toast rơi dưới
+  // màn hình, không thấy. Lớp phủ dạng này phải nằm ở cấp <body>.
+  const mainStart = html.indexOf('<main');
+  const mainEnd = html.indexOf('</main>');
+  assert.ok(mainStart >= 0 && mainEnd > mainStart, 'index.html phải có <main>');
+  const inMain = html.slice(mainStart, mainEnd);
+  for (const id of ['notice-stack']) {
+    const at = inMain.indexOf(`id="${id}"`);
+    assert.equal(at, -1, `#${id} là lớp phủ position:fixed, không được nằm trong <main>`);
+    assert.ok(html.includes(`id="${id}"`), `#${id} phải còn trong index.html`);
+  }
+  // Lớp phủ dạng <dialog> thì miễn nhiễm (top layer) nên vị trí không quan trọng — nhưng
+  // vẫn phải bảo đảm hộp xác nhận không phụ thuộc z-index để nổi lên trên hộp cha.
+  assert.ok(!/\.app-confirm \{[^}]*z-index/.test(fs.readFileSync(path.join(root, 'src', 'style.css'), 'utf8')),
+    'hộp xác nhận không được dựa vào z-index để nổi lên trên hộp cha');
+});
+
 
 test('toàn app: hết hộp native confirm()/alert()/prompt(), chỉ còn lưới an toàn khi thiếu HTML', () => {
   // Hộp xám của trình duyệt ("127.0.0.1:55978 says") nhìn lệch hẳn tông app ⇒ mọi chỗ hỏi
@@ -775,15 +802,47 @@ test('Thanh phiên gọn + bộ lọc kỳ nằm riêng trong tab Tổng quan', 
   for (const key of ['current_month', 'month', 'quarter', 'year', 'custom']) {
     assert.ok(html.includes(`<option value="${key}"`), `thiếu kiểu kỳ: ${key}`);
   }
-  assert.ok(ui.includes("$('overview-period-mode').onchange"), 'JS phải gắn sự kiện bộ lọc kỳ');
-  assert.ok(!ui.includes('paintPeriod();'), 'không được gọi hàm paintPeriod của bộ lọc cũ đã loại bỏ');
-  assert.ok(ui.includes('function periodQuery()') && ui.includes('overviewPeriod'),
-    'phải có trạng thái kỳ + chuỗi query gửi kèm');
+  // Bộ chọn kỳ nay là MỘT bộ CHUNG cho toàn app, đặt ở header (ngoài pane-overview) để luôn
+  // nhìn thấy được — trước đây nó nằm trong tab Tổng quan nên sang tab khác là biến mất.
+  assert.ok(ui.includes("$('app-range-mode').onchange"), 'JS phải gắn sự kiện bộ lọc kỳ chung');
+  assert.ok(ui.includes('function setAppRange(') && ui.includes('function paintAppRange('),
+    'phải có một nguồn sự thật duy nhất cho kỳ: setAppRange() + paintAppRange()');
+  // Một hàng dán duy nhất: tab + tiêu đề + MST + bộ lọc kỳ. KHÔNG được tách thêm hàng
+  // "KỲ LỌC" hay thêm nút chip kỳ ở header — trước đó có 4 hàng trước nội dung và nhãn kỳ
+  // ("Năm 2026") hiện hai lần.
+  for (const id of ['app-range-bar', 'app-range-mode', 'app-range-label']) {
+    assert.ok((html.match(new RegExp(`id="${id}"`, 'g')) || []).length === 1, `#${id} phải chỉ xuất hiện đúng 1 lần`);
+  }
+  assert.ok(!html.includes('view-range-chip'), 'không được thêm nút chip kỳ riêng ở header (nhãn kỳ đã có trong bộ lọc)');
+  assert.ok(!html.includes('app-range-caption'), 'không cần badge "KỲ LỌC" — nhãn "Kỳ" của select là đủ');
+  // Bộ lọc kỳ gộp thành MỘT nút: nhãn kỳ là <summary> mở bộ chọn, không phải select + nhãn.
+  assert.ok(/<details class="app-range" id="app-range-details"><summary[^>]*id="app-range-label"/.test(html),
+    'nhãn kỳ phải là <summary> bấm được để mở bộ chọn');
+  assert.ok(!/class="app-range-bar"/.test(html), 'thanh kỳ cũ (select + nhãn cạnh nhau) đã bỏ');
+  assert.ok(/\.app-range\[open\] > summary\{/.test(style), 'nút kỳ phải đổi màu khi đang mở');
+  assert.ok(/<main id="main-content"><div class="app-top"><header>/.test(html),
+    'header và bộ lọc kỳ phải nằm chung khối .app-top để dán gọn một chỗ');
+  assert.ok(/\.app-top\{position:sticky/.test(style), 'khối .app-top phải dán theo — kỳ luôn nhìn thấy khi cuộn');
+  assert.ok(!html.includes('overview-period-mode'), 'ô chọn kỳ cũ trong tab Tổng quan phải bỏ (đã gộp vào header)');
+  assert.ok(!html.includes('data-period-mode'), 'ô Năm/Quý/Tháng trùng lặp ở tab Kho dữ liệu phải bỏ');
+  // Không được còn ba trạng thái kỳ cạnh tranh nhau.
+  for (const dead of ['let range = {', 'let bankRange =', 'let overviewPeriod =', 'bankRangeMode']) {
+    assert.ok(!ui.includes(dead), `đã gộp kỳ chung thì không được còn "${dead}"`);
+  }
+  // Mọi bề mặt lọc (chip ở Kho dữ liệu, chip ở Sao kê, chip ở MISA) đều GHI vào appRange.
+  for (const call of ['setBankQuickRange(', 'setAppRange(']) {
+    assert.ok(ui.includes(call), `thiếu ${call}`);
+  }
+  assert.ok(ui.includes('function periodQuery()'), 'phải có chuỗi query gửi kèm theo kỳ');
   const periodCalls = (ui.match(/api\(`\/api\/db\/[^`]*\$\{period\}`\)/g) || []).join(' ');
   for (const route of ['/api/db/summary', '/api/db/bank/summary', '/api/db/reconciliation/summary', '/api/db/overview', '/api/db/debts']) {
     assert.ok(periodCalls.includes(route), `${route} phải tải theo kỳ đang chọn`);
   }
   assert.ok(!periodCalls.includes('/api/db/tax'), 'thuế vẫn theo NĂM + loại hình (mục 26), không lọc theo kỳ');
+  // Bản xuất Excel phải theo CÙNG kỳ đang xem — nếu không thì file ra sai so với màn hình.
+  assert.ok(/const filters = activeFilters\(\)/.test(ui) && /params\.set\('parts', chosen\)/.test(ui)
+    && !/RANGE_KEY, JSON\.stringify\(\{ range/.test(ui),
+    'Xuất Excel phải lấy bộ lọc chung (activeFilters), không lưu kỳ riêng');
   // Server nhận from/to và truyền xuống từng query (không có thì chạy như cũ).
   assert.ok(/queries\.summary\(db, range\)/.test(server) && /queries\.overview\(db, range\)/.test(server)
     && /queries\.debts\(db, range\)/.test(server) && /reconciliation\.summary\(db, range\)/.test(server)
@@ -792,12 +851,24 @@ test('Thanh phiên gọn + bộ lọc kỳ nằm riêng trong tab Tổng quan', 
   assert.ok(/account-updated/.test(style) && /overview-filterbar/.test(viewStyle), 'thanh phiên và bộ lọc phải có CSS riêng');
 });
 
-test('header hiển thị tiêu đề + ghi chú của tab hiện tại ở phía phải', () => {
+test('header: tên tab đứng chung hàng với dãy nút, mô tả chuyển sang tooltip', () => {
   const ui = fs.readFileSync(path.join(root, 'src', 'data-ui.js'), 'utf8');
   const style = fs.readFileSync(path.join(root, 'src', 'style.css'), 'utf8');
-  for (const id of ['view-eyebrow', 'view-title', 'view-note', 'main-license-badge']) assert.ok(ids.has(id), `thiếu #${id}`);
+  for (const id of ['view-title', 'main-license-badge']) assert.ok(ids.has(id), `thiếu #${id}`);
+  // Hàng "nhãn TỔNG QUAN + tên tab + mô tả" đã bỏ để tiết chiều cao: #view-eyebrow và
+  // #view-note không còn, mô tả nằm trong tooltip của nút tab đang bật.
+  assert.ok(!ids.has('view-eyebrow'), '#view-eyebrow đã bỏ — nó chỉ lặp lại tên nút tab');
+  assert.ok(!ids.has('view-note'), '#view-note đã bỏ — mô tả chuyển sang tooltip');
+  assert.ok(!ui.includes("$('view-eyebrow')") && !ui.includes("$('view-note')"),
+    'JS không được còn ghi vào hai phần tử đã bỏ');
+  assert.ok(/button\.title = `\$\{tabInfo\[1\]\}/.test(ui), 'phải đưa mô tả tab vào tooltip nút tab');
   for (const key of ['overview:', 'download:', 'data:', 'bank:']) assert.ok(ui.includes(key), `thiếu nội dung header cho ${key}`);
   assert.ok(/\.header-context[\s\S]*text-align:right/.test(style), 'thông tin tab phải căn sát phải');
+  // Tiêu đề phải nằm CÙNG hàng với dãy nút (header là flex, không có hàng riêng).
+  assert.ok(/app-top > header\{[^}]*flex-wrap:wrap/.test(style) && /\.view-switch\{flex:0 1 auto/.test(style)
+    && /\.header-context\{flex:1 1 auto;[^}]*text-align:right/.test(style), 'tiêu đề phải co lại cạnh dãy nút');
+  assert.ok(/<div class="view-switch"[^>]*>(?:(?!<\/header>)[\s\S])*?<div class="header-context"/.test(html),
+    'header chỉ được có MỘT hàng: dãy nút + tiêu đề, không có khối tiêu đề riêng');
 });
 
 test('Tổng quan: header (mục 18) + KPI (mục 19) + các thẻ (mục 20–23) đủ theo bảng đề bài', () => {

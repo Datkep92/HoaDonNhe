@@ -57,6 +57,16 @@ const ISSUES = Object.freeze({
 const CANCELLED_STATES = ['4', '5', '6'];
 
 const DAY_MS = 86400000;
+// Ngày 'YYYY-MM-DD' → số ngày kể từ epoch (UTC). Tính MỘT LẦN cho mỗi giao dịch rồi tái
+// dùng: bản cũ gọi dateDistance (và Date.parse 2 lần) cho TỪNG CẶP hoá đơn × giao dịch —
+// 1.000 × 5.000 là 5 triệu cặp, mỗi cặp 2 lần Date.parse ⇒ phần lớn thời gian chạy nằm ở
+// chỗ này chứ không phải ở phép so sánh tiền. Trả NaN cho ngày rỗng/rác để bị loại như trước.
+function dayNumber(value) {
+  const text = String(value || '');
+  if (!/^\d{4}-\d{2}-\d{2}/.test(text)) return NaN;
+  const ms = Date.parse(`${text.slice(0, 10)}T00:00:00Z`);
+  return Number.isFinite(ms) ? Math.round(ms / DAY_MS) : NaN;
+}
 const dateDistance = (a, b) => {
   const left = Date.parse(`${a || ''}T00:00:00Z`);
   const right = Date.parse(`${b || ''}T00:00:00Z`);
@@ -73,12 +83,13 @@ function haystackOf(transaction) {
 
 // Trả về null nếu không đủ điều kiện làm ứng viên. Khi có kết quả: { score, issues, ... }
 // `haystack` truyền vào từ ngoài (xem haystackOf) để khỏi tính lại.
-function candidateScore(invoice, transaction, haystack) {
+function candidateScore(invoice, transaction, haystack, days) {
   const expected = Number(invoice.tong_tien || 0);
   const paid = amountFor(invoice, transaction);
   if (!(expected > 0) || !(paid > 0)) return null;
-  const days = dateDistance(invoice.ngay_lap, transaction.tran_date || transaction.value_date);
-  if (days > 45) return null;
+  // `days` do rebuild() tính sẵn (xem dayNumber) — chỉ gọi dateDistance khi không có sẵn.
+  const gap = days === undefined ? dateDistance(invoice.ngay_lap, transaction.tran_date || transaction.value_date) : days;
+  if (!(gap <= 45)) return null;
   const amountDelta = Math.abs(expected - paid);
   const amountRatio = amountDelta / Math.max(expected, paid);
   if (amountRatio > 0.25) return null;
@@ -88,10 +99,10 @@ function candidateScore(invoice, transaction, haystack) {
   const exactAmount = amountDelta < 0.5;
   const issues = [];
   if (!exactAmount) issues.push(ISSUES.AMOUNT_MISMATCH);
-  if (days > 7) issues.push(ISSUES.DATE_MISMATCH);
+  if (gap > 7) issues.push(ISSUES.DATE_MISMATCH);
   if (partnerTokens.length && !partnerHit) issues.push(ISSUES.PARTNER_MISMATCH);
-  const score = (exactAmount ? 70 : Math.max(0, 50 - amountRatio * 200)) + Math.max(0, 20 - days) + (partnerHit ? 10 : 0);
-  return { score, issues, matchedAmount: Math.min(expected, paid), exactAmount, days };
+  const score = (exactAmount ? 70 : Math.max(0, 50 - amountRatio * 200)) + Math.max(0, 20 - gap) + (partnerHit ? 10 : 0);
+  return { score, issues, matchedAmount: Math.min(expected, paid), exactAmount, days: gap };
 }
 
 // Chạy lại TOÀN BỘ đối chiếu và LƯU kết quả cho TỪNG dòng (hóa đơn + giao dịch).
@@ -116,8 +127,24 @@ function rebuild(db) {
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`);
     const setIssues = issues => JSON.stringify(issues || []);
 
-    // Giao dịch CHƯA dùng vẫn còn trong pool; dùng xong thì loại khỏi pool (mô hình 1:1 — xem mục 12).
-    const pool = [...transactions];
+    // Giao dịch CHƯA dùng vẫn còn trong pool; dùng xong thì đánh dấu đã dùng (mô hình 1:1 —
+    // xem mục 12). Pool SẮP THEO NGÀY và tra bằng CỬA SỔ TRƯỢT, thay vì quét toàn bộ pool cho
+    // từng hoá đơn: bản cũ là O(hoá đơn × giao dịch) — 1.000 × 5.000 mất hơn 20 giây và giữ
+    // write-lock suốt thời gian đó. `used` thay cho `splice` (O(n) mỗi lần khớp) và giữ đúng
+    // quy tắc "một giao dịch chỉ dùng cho một hoá đơn".
+    const pool = transactions.map((transaction, index) => ({ transaction, index, day: dayNumber(transaction.tran_date || transaction.value_date) }));
+    // Giao dịch không có ngày hợp lệ (NaN) XẾP CUỐI: cửa sổ trượt chỉ đi tới ngày hữu hạn
+    // nên chúng không bao giờ lọt vào ứng viên — giữ đúng hành vi của `dateDistance` = Infinity.
+    pool.sort((a, b) => {
+      const fa = Number.isFinite(a.day) ? 0 : 1;
+      const fb = Number.isFinite(b.day) ? 0 : 1;
+      if (fa !== fb) return fa - fb;
+      return fa ? (a.index - b.index) : (a.day - b.day) || (a.index - b.index);
+    });
+    const poolIndexById = new Map(pool.map((item, at) => [item.transaction.id, at]));
+    const used = new Uint8Array(pool.length);
+    let low = 0;         // cửa sổ trái
+    let high = 0;        // cửa sổ phải (chưa bao gồm)
     const bankIssues = new Map();
     const reason = { matched: 0, cash: 0, missing: 0, unknown: 0, ambiguous: 0 };
 
@@ -148,10 +175,25 @@ function rebuild(db) {
         continue;
       }
 
-      const candidates = pool
-        .map(transaction => ({ transaction, result: candidateScore(invoice, transaction, haystacks.get(transaction.id)) }))
-        .filter(item => item.result)
-        .sort((a, b) => b.result.score - a.result.score);
+      // Ứng viên = giao dịch chưa dùng, CÓ NGÀY hợp lệ và nằm trong ±45 ngày quanh ngày lập
+      // hoá đơn. Hoá đơn không có ngày lập hợp lệ thì không có ứng viên nào (ngày rỗng trước đây
+      // cho khoảng cách Infinity ⇒ cũng không khớp được, giữ nguyên kết quả).
+      const invoiceDay = dayNumber(invoice.ngay_lap);
+      let candidates = [];
+      if (Number.isFinite(invoiceDay)) {
+        // Mở rộng cửa sổ phải tới ngày lập + 45. Các mục ngày vô hạn nằm CUỐI pool nên
+        // vòng lặp dừng trước chúng (điều kiện phải kiểm ngày hữu hạn, không dựa vào NaN).
+        while (high < pool.length && Number.isFinite(pool[high].day) && pool[high].day <= invoiceDay + 45) high += 1;
+        // Thu hẹp cửa sổ trái. Hoá đơn đi theo ngày tăng dần nên `low` chỉ tiến, không lùi.
+        while (low < high && pool[low].day < invoiceDay - 45) low += 1;
+        candidates = [];
+        for (let i = low; i < high; i += 1) {
+          if (used[i]) continue;
+          const result = candidateScore(invoice, pool[i].transaction, haystacks.get(pool[i].transaction.id), Math.abs(pool[i].day - invoiceDay));
+          if (result) candidates.push({ transaction: pool[i].transaction, result });
+        }
+        candidates.sort((a, b) => b.result.score - a.result.score);
+      }
       const best = candidates[0];
       // Không có ứng viên đủ điểm → TRANSFER_BANK_NOT_FOUND + NEEDS_REVIEW (mục 9).
       // KHÔNG kết luận "hóa đơn sai": có thể khách trả bằng tài khoản khác, ngoài khoảng ngày,
@@ -168,8 +210,9 @@ function rebuild(db) {
         issues.length ? ISSUES.NEEDS_REVIEW : STATUS.TRANSFER_BANK_FOUND, setIssues(issues), stamp, stamp);
       setInvoice.run(STATUS.TRANSFER_BANK_FOUND, setIssues(issues), invoice.id);
       bankIssues.set(best.transaction.id, issues);
-      const at = pool.indexOf(best.transaction);
-      if (at >= 0) pool.splice(at, 1);
+      // Đánh dấu đã dùng theo VỊ TRÍ trong pool (tra cảnh báo bảng tra, không quét lại pool).
+      const at = poolIndexById.get(best.transaction.id);
+      if (at !== undefined) used[at] = 1;
       reason.matched += 1;
     }
 
@@ -198,17 +241,30 @@ function stale(db) {
 }
 
 // Gọi sau khi dữ liệu đổi. Giữ nguyên hành vi nếu không có gì mới (không tốn công so khớp).
+// Bản cũ `catch { }` nuốt SẠCH lỗi: đối chiếu hỏng thì kho vẫn để trạng thái NULL và giao diện
+// hiện con số 0 như thể đã chạy — người dùng tin nhầm. Nay ghi log và báo lại qua
+// `onReconcileError` (server ghi ra nhật ký) thay vì im lặng; vẫn KHÔNG ném ra ngoài để một
+// lỗi ở lớp phụ không làm hỏng cả lượt nhập.
+let onReconcileError = null;
+function setErrorReporter(fn) { onReconcileError = typeof fn === 'function' ? fn : null; }
+function reportError(where, error) {
+  if (!onReconcileError) return;
+  try { onReconcileError(where, error); } catch { /* báo lỗi cũng lỗi thì không có gì để làm */ }
+}
 function reconcile(db) {
   try {
     if (stale(db)) return rebuild(db);
-  } catch { /* đối chiếu là lớp phụ — không được làm hỏng lượt import */ }
+  } catch (error) {
+    reportError('reconcile', error);
+    return { error: String((error && error.message) || error) };
+  }
   return null;
 }
 
 // Ép chạy lại — dùng cho chỗ DỮ LIỆU BỊ MẤT (xóa file sao kê, chuyển file sang MST khác),
 // vì khi đó không còn dòng nào mang trạng thái NULL để stale() phát hiện.
 function forceReconcile(db) {
-  try { return rebuild(db); } catch { return null; }
+  try { return rebuild(db); } catch (error) { reportError('forceReconcile', error); return null; }
 }
 
 function summary(db, range) {
@@ -216,9 +272,13 @@ function summary(db, range) {
   // DỊCH — hai cột ngày khác nhau nên tính riêng.
   const picked = dateRange(range);
   const pickedBank = dateRange(range, { column: 'tran_date' });
-  // Tự chữa số liệu: DB mở ra mà chưa từng chạy đối chiếu (hoặc dữ liệu đổi sau lần chạy cuối)
-  // thì tính lại trước khi đếm. Nếu không, UI sẽ hiện số 0 như thể "không có tiền mặt nào" (mục 35).
-  reconcile(db);
+  // KHÔNG tự ghi trong hàm ĐỌC này. Bản cũ gọi reconcile() ở đây, tức một route GET
+  // (/api/db/reconciliation/summary, mở tab Tổng quan là gọi) có thể chạy trọn rebuild() —
+  // với kho lớn là hàng chục giây trong một HTTP GET, và nắm write-lock của cả database.
+  // Nay chỉ BÁO trạng thái `stale`; giao diện thấy thì gọi POST /api/db/reconciliation/run
+  // (route có kiểm bản quyền) rồi tải lại. Nhờ vậy số liệu không bao giờ là con số 0 giả
+  // do đối chiếu hỏng mà không ai biết (mục 35).
+  const isStale = stale(db);
   // Nhóm theo payment_method GIỮ NGUYÊN như bản trước (đếm theo DỮ LIỆU hóa đơn, không phụ thuộc
   // việc đã chạy đối chiếu hay chưa) — nhóm theo reconciliation_status mới là kết quả đã lưu.
   // Thêm *_amount: GIÁ trị tiền mặt / chuyển khoản (mục 22) — cộng đúng các hoá đơn không huỷ.
@@ -270,6 +330,9 @@ function summary(db, range) {
   return {
     // Đã chạy đối chiếu chưa — UI phải hiện "Chưa đối chiếu" thay vì hiện số 0 như số thật (mục 35).
     ran: decided,
+    // Còn dữ liệu chưa được đối chiếu không? Giao diện gọi POST /api/db/reconciliation/run
+    // rồi tải lại — thay vì để hàm đọc này tự ghi (xem giải thích ở trên).
+    stale: isStale,
     // Số hoá đơn tiền mặt lấy theo DỮ LIỆU (payment_method = 'CASH'), không đếm theo trạng thái đã
     // lưu: chưa chạy đối chiếu lần nào thì trạng thái còn NULL và sẽ hiện ra "0" giả (mục 35).
     cashNoBankRequired: Number(invoice.cash_no_bank_required || 0),
@@ -320,12 +383,16 @@ function listPending(db, { limit = 200 } = {}) {
     // TRANSFER_BANK_FOUND chỉ vào danh sách khi có vấn đề kèm theo (lệch tiền/ngày/đối tượng).
     .filter(row => row.reconciliation_status !== STATUS.TRANSFER_BANK_FOUND
       || (JSON.parse(row.reconciliation_issues || '[]').length > 0));
+  // Chiều sao kê: giao dịch CHƯA CÓ hoá đơn (BANK_NO_INVOICE) **và** giao dịch đã khớp nhưng
+  // còn vấn đề kèm (MATCH + issues). Bản cũ chỉ lấy BANK_NO_INVOICE nên một dòng lệch tiền /
+  // lệch ngày bị bỏ sót khỏi danh sách "Cần kiểm tra" dù chiều hoá đơn có mặt (mục 27).
   const bank = db.prepare(`SELECT id, 'bank' AS kind, '' AS invoice_key, '' AS direction, '' AS ngay_lap,
       '' AS so_hd, '' AS khh_hd, '' AS khms_hd, COALESCE(amount, 0) AS tong_tien, '' AS payment_method,
       reconciliation_status, reconciliation_issues, '' AS review_status, COALESCE(counterparty_name, '') AS partner,
       tran_date, COALESCE(description, '') AS description, COALESCE(credit, 0) AS credit, COALESCE(debit, 0) AS debit
-    FROM bank_transactions WHERE reconciliation_status = ?
-    ORDER BY tran_date DESC, id DESC LIMIT ?`).all(BANK_STATUS.BANK_NO_INVOICE, size);
+    FROM bank_transactions
+    WHERE reconciliation_status = ? OR (reconciliation_status = ? AND COALESCE(reconciliation_issues, '') <> '[]')
+    ORDER BY tran_date DESC, id DESC LIMIT ?`).all(BANK_STATUS.BANK_NO_INVOICE, BANK_STATUS.MATCH, size);
   const mapIssues = row => ({ ...row, issues: JSON.parse(row.reconciliation_issues || '[]') });
   return { invoices: invoices.map(mapIssues), bank: bank.map(mapIssues) };
 }
@@ -333,5 +400,5 @@ function listPending(db, { limit = 200 } = {}) {
 module.exports = {
   STATUS, BANK_STATUS, ISSUES, CANCELLED_STATES,
   candidateScore, haystackOf, rebuild, stale, reconcile, forceReconcile, summary, list, listPending,
-  dateDistance, amountFor,
+  dateDistance, amountFor, dayNumber, setErrorReporter,
 };

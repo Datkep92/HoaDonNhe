@@ -857,6 +857,56 @@ table.loading tbody { transition: opacity .12s ease; }
 .overview-dashboard>.overview-donut-card>#overview-reconciliation>.overview-donut-layout { flex:1; }
 
 /* ============================================================================
+   SAO KÊ NGÂN HÀNG · GIAI ĐOẠN 1 — dashboard, biểu đồ, lọc và phân loại.
+   ========================================================================== */
+#pane-bank,#pane-bank.workspace{display:grid;grid-template-columns:minmax(0,1fr);gap:12px;align-items:start}
+.bank-kpis{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:10px}
+.bank-kpi{position:relative;min-width:0;min-height:104px;padding:14px 15px;background:#fff;border:1px solid #e1e8ee;border-radius:11px;box-shadow:0 4px 16px rgba(31,50,74,.045);overflow:hidden}
+.bank-kpi:before{content:"";position:absolute;inset:0 auto 0 0;width:3px;background:#94a3b8}
+.bank-kpi.in:before{background:#0d9488}.bank-kpi.out:before{background:#dc4c4c}.bank-kpi.warn:before{background:#d97706}.bank-kpi.balance:before{background:#4f77a3}
+.bank-kpi span{display:block;color:#77869a;font-size:9.5px;font-weight:800;letter-spacing:.055em;text-transform:uppercase}
+.bank-kpi strong{display:block;margin-top:8px;color:#17263b;font-size:17px;line-height:1.2;letter-spacing:-.025em;overflow-wrap:anywhere;font-variant-numeric:tabular-nums}
+.bank-kpi.in strong{color:#087f70}.bank-kpi.out strong{color:#c43f3f}.bank-kpi.warn strong{color:#b46420}
+.bank-kpi small{display:block;margin-top:7px;color:#94a0ae;font-size:9.5px;line-height:1.35}
+.bank-visual-grid{display:grid;grid-template-columns:minmax(0,2fr) minmax(270px,1fr);gap:12px}
+.bank-chart-card,.bank-attention-card{padding:16px;min-width:0;border-radius:12px}
+.bank-card-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:10px}
+.bank-card-head h3{margin:3px 0 0;color:#17263b;font-size:15px}
+.bank-chart-legend{display:flex;gap:13px;color:#6b7c91;font-size:10.5px}
+.bank-chart-legend span{display:flex;align-items:center;gap:5px}.bank-chart-legend i{width:9px;height:9px;border-radius:50%}
+.bank-chart-legend i.in{background:#0d9488}.bank-chart-legend i.out{background:#dc4c4c}
+.bank-chart{min-height:245px}.bank-chart svg{display:block;width:100%;height:245px;overflow:visible}
+.bank-chart-note{margin:8px 0 0;text-align:center}
+.bank-chart .grid line{stroke:#edf1f4;stroke-width:1}.bank-chart .grid text,.bank-chart .labels text{fill:#8795a6;font-size:9px}
+.bank-chart .line{fill:none;stroke-width:2.6;stroke-linecap:round;stroke-linejoin:round;vector-effect:non-scaling-stroke}
+.bank-chart .line.in{stroke:#0d9488}.bank-chart .line.out{stroke:#dc4c4c}
+.bank-chart circle{stroke:#fff;stroke-width:2;vector-effect:non-scaling-stroke}.bank-chart circle.in{fill:#0d9488}.bank-chart circle.out{fill:#dc4c4c}
+.bank-attention-card{background:linear-gradient(155deg,#fff,#fffaf5)}
+.bank-attention-row{display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:9px;align-items:center;width:100%;margin-bottom:8px;padding:11px;border:1px solid #e8edf1;border-left:3px solid #94a3b8;border-radius:8px;background:#fff;text-align:left}
+.bank-attention-row:last-child{margin-bottom:0}.bank-attention-row.ok{border-left-color:#0d9488}.bank-attention-row.warn{border-left-color:#d97706;background:#fffaf4}
+.bank-attention-row span{color:#607086;font-size:11px}.bank-attention-row strong{color:#17263b;font-size:14px;font-variant-numeric:tabular-nums}.bank-attention-row i{color:#99a5b3;font-style:normal}
+.bank-attention-row:hover{border-color:#bdd9d3;transform:translateX(2px)}
+.bank-filter-panel{padding:13px 14px;border-radius:12px}
+.bank-filter-top{display:flex;align-items:center;gap:10px;margin-bottom:10px}.bank-filter-top .search{flex:1 1 280px}.bank-filter-top input{margin:0}
+.bank-range-chips{margin-left:auto}.bank-range-chips button{padding:7px 10px}
+.bank-filter-grid{display:grid;grid-template-columns:repeat(7,minmax(115px,1fr)) auto;gap:9px;align-items:end}
+.bank-filter-grid label{display:grid;gap:4px;color:#718096;font-size:9.5px;font-weight:700;text-transform:uppercase}.bank-filter-grid input,.bank-filter-grid select{height:36px;margin:0;padding:6px 8px}
+.bank-filter-grid .bank-seg{align-self:end;flex-wrap:nowrap}.bank-filter-grid .bank-seg button{height:36px;padding:7px 10px;white-space:nowrap}
+.bank-filter-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:11px;padding-top:10px;border-top:1px solid #edf1f4}.bank-filter-actions .hint{margin:0 0 0 auto}
+.bank-table-card{min-width:0;overflow:hidden;border-radius:12px}.bank-table-card .table-head h3{margin:2px 0 0}.bank-table-card .table-scroll{max-height:52vh;min-height:260px}
+.bank-table-card table{min-width:1180px}.bank-table-card th{z-index:2}.bank-table-card td{vertical-align:middle}
+.bank-row-category{min-width:158px;height:32px;margin:0;padding:5px 7px;font-size:10.5px;background:#fff}
+.bank-status{font-size:10.5px;font-weight:700;white-space:nowrap;color:#718096}.bank-status.ok{color:#087f70}.bank-status.warn{color:#b46420}
+.bank-empty-row td{padding:34px 16px;text-align:center;color:#7b8a9c;font-size:12px;line-height:1.7;background:#fbfcfd}
+#bank-category-dialog{width:min(430px,92vw);padding:18px;background:#fff;border:1px solid #dfe7ef;border-radius:12px}
+#bank-category-dialog form label{display:block;margin:12px 0;color:#617287;font-size:11px;font-weight:700}
+#bank-category-color{width:70px;height:38px;padding:3px}
+
+@media(max-width:1380px){.bank-kpis{grid-template-columns:repeat(3,minmax(0,1fr))}.bank-filter-grid{grid-template-columns:repeat(4,minmax(130px,1fr))}}
+@media(max-width:980px){.bank-visual-grid{grid-template-columns:1fr}.bank-kpis{grid-template-columns:repeat(2,minmax(0,1fr))}.bank-filter-top{align-items:stretch;flex-direction:column}.bank-range-chips{margin-left:0;overflow-x:auto}.bank-filter-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:560px){.bank-kpis,.bank-filter-grid{grid-template-columns:1fr}.bank-kpi{min-height:92px}.bank-chart-legend{flex-direction:column;gap:5px}}
+
+/* ============================================================================
    ẨN 2 THẺ "DÒNG TIỀN / NGÂN HÀNG" VÀ "KẾT QUẢ ĐỐI CHIẾU" (theo yêu cầu người dùng).
    Ẩn bằng CSS chứ KHÔNG xoá HTML/JS: giữ nguyên mọi nhãn, id và route đang có, nên
    tests/ui-wiring.test.js vẫn kiểm được phần tử/id như cũ và muốn hiện lại chỉ cần

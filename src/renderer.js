@@ -189,16 +189,23 @@ function noticeProgress(text) {
 }
 window.noticeProgress = noticeProgress;
 // Hộp XÁC NHẬN dùng chung — thay cho confirm() gốc của trình duyệt (hộp xám "127.0.0.1 says"
-// nhìn lệch hẳn tông app). Dựng bằng div + nền mờ, đúng tông mint/teal của toast/dialog.
+// nhìn lệch hẳn tông app). Dựng bằng <dialog> + showModal(), đúng tông mint/teal của app.
 //   const ok = await askConfirm({ title, text, ok: 'Lưu', cancel: 'Huỷ', tone: 'warn' });
 // tone: 'ok' (mặc định, xanh) · 'warn' (cam, có cảnh báo) · 'error' (đỏ).
 // Thêm input: { placeholder, value, options: ['MST1', ...] } khi cần hỏi một giá trị (thay prompt()):
 //   const mst = await askConfirm({ title, text, input: { placeholder: 'MST đích', options: [...] } });
 //   → OK trả về chuỗi đã gõ, Huỷ trả về null.
+// <dialog> + showModal() là BẮT BUỘC, không phải sở thích: hộp này được mở từ bên trong các
+// hộp khác đang modal (nút Xoá / Chuyển MST… trong hộp Quản lý file sao kê). Chỉ có
+// showModal() mới đưa hộp vào TOP LAYER — nơi không `z-index` nào vượt được — nên nó luôn
+// nằm trên hộp cha; dựng bằng <div> thì nằm dưới hộp cha và không bấm được.
 // Không có HTML (bản cũ) thì rơi về confirm()/prompt() để không vỡ luồng.
 function askConfirm(info) {
   const options = typeof info === 'string' ? { text: info } : (info || {});
   const box = $('app-confirm');
+  if (!box) return Promise.resolve(options.input ? prompt(options.text || '') : confirm(options.text || ''));
+  // Đóng dở hộp cũ (nếu người dùng bấm chồng nhiều lần) để không dồn hai modal một lúc.
+  let closeTimer = null;
   if (!box) return Promise.resolve(options.input ? prompt(options.text || '') : confirm(options.text || ''));
   const text = options.text || '';
   $('app-confirm-title').textContent = options.title || 'Xác nhận';
@@ -244,25 +251,37 @@ function askConfirm(info) {
     const done = value => {
       if (settled) return; settled = true;
       document.removeEventListener('keydown', onKey, true);
+      box.removeEventListener('cancel', onCancel);
       ok.onclick = cancel.onclick = box.onclick = null;
       if (field) field.onkeydown = null;
-      box.classList.remove('show'); // mờ + thu nhỏ rồi mới ẩn, mượt như toast
-      setTimeout(() => { box.hidden = true; }, 140);
+      box.classList.remove('show'); // mờ + thu nhỏ rồi mới đóng, mượt như toast
+      // Chờ hết hiệu ứng mới đóng dialog: đóng ngay lập tức sẽ mất chuyển cảnh mờ dần.
+      clearTimeout(closeTimer);
+      closeTimer = setTimeout(() => { if (box.open) box.close(); }, 160);
       resolve(value);
     };
     // Có ô nhập: OK trả chuỗi đã gõ (rỗng coi như huỷ, giống prompt gốc), Huỷ trả null.
     const dismiss = () => done(wantsInput ? null : false);
     const accept = () => done(wantsInput ? (field.value.trim() || null) : true);
-    // Esc = Huỷ (giống hành vi hộp native), Enter trong ô nhập = đồng ý.
-    const onKey = event => {
-      if (event.key === 'Escape') { event.preventDefault(); dismiss(); }
-    };
+    // Esc = Huỷ. <dialog> KHÔNG huỷ bằng default action của keydown mà bằng sự kiện `cancel`
+    // riêng. Chỉ chặn keydown là không đủ: hộp cha (Quản lý file sao kê) cũng nhận `cancel`
+    // và bị đóng theo ⇒ bấm Esc một lần mất cả hai hộp. `cancel` không nổi lên nên chặn ở
+    // đây là đủ, và kết quả vẫn do mình quyết định ⇒ Promise luôn resolve.
+    const onCancel = event => { event.preventDefault(); dismiss(); };
+    const onKey = event => { if (event.key === 'Escape' && typeof box.showModal !== 'function') dismiss(); };
     if (field) field.onkeydown = event => { if (event.key === 'Enter') { event.preventDefault(); accept(); } };
     ok.onclick = accept;
     cancel.onclick = dismiss;
-    box.onclick = event => { if (event.target === box) dismiss(); }; // bấm ra ngoài = Huỷ
+    box.onclick = event => { if (event.target === box || event.target === box.querySelector('.app-confirm-card')) dismiss(); }; // bấm ra ngoài = Huỷ
+    box.addEventListener('cancel', onCancel);
     document.addEventListener('keydown', onKey, true);
-    box.hidden = false;
+    // showModal(): đưa hộp vào TOP LAYER nên luôn nằm TRÊN mọi hộp modal khác đang mở
+    // (nút "Xoá" / "Chuyển MST…" nằm trong hộp Quản lý file sao kê). Rơi về show() cho
+    // trình duyệt quá cũ không có modal ⇒ vẫn hiện được, chỉ kém canh tâm.
+    if (!box.hidden) box.close();
+    clearTimeout(closeTimer);
+    if (typeof box.showModal === 'function') box.showModal();
+    else { box.setAttribute('open', ''); box.style.position = 'fixed'; box.style.inset = '0'; box.style.zIndex = '80'; box.style.display = 'flex'; }
     requestAnimationFrame(() => box.classList.add('show'));
     (field || ok).focus();
   });

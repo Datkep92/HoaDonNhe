@@ -384,8 +384,15 @@ test('REPROCESS: bù hình thức thanh toán cho hoá đơn cũ từ XML gốc,
     assert.equal(third.missing, 1, 'file mất phải được đếm riêng');
     assert.deepEqual({ ...rawOf('00000053') }, { payment_method_raw: null, payment_method: 'UNKNOWN' }, 'không có file ⇒ giữ nguyên, KHÔNG tự biến thành CASH hay TRANSFER');
     assert.equal(statusOf('00000053'), null, 'KHÔNG tự bịa kết quả đối chiếu khi chưa đọc được gì');
-    // Tổng quan tự chữa số liệu: đọc summary() là tính lại theo payment_method thật.
-    reconciliation.summary(db);
+    // Route ĐỌC không được tự ghi. Bản cũ để reconciliation.summary() gọi reconcile() nên một
+    // HTTP GET mở tab Tổng quan có thể chạy trọn rebuild() (hàng chục giây + nắm write-lock).
+    // Nay GET chỉ báo `stale`; việc tính lại do route GHI /reconciliation/run đảm nhiệm —
+    // đúng như data-ui.js refreshOverview() làm.
+    const stale = reconciliation.summary(db);
+    assert.equal(stale.stale, true, 'GET phải báo stale thay vì tự tính lại');
+    assert.equal(statusOf('00000053'), null, 'đọc summary() không được ghi gì vào DB');
+    reconciliation.rebuild(db);
     assert.equal(statusOf('00000053'), 'PAYMENT_METHOD_UNKNOWN');
+    assert.equal(reconciliation.summary(db).stale, false, 'đã tính lại thì hết stale');
   });
 });

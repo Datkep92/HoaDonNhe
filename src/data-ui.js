@@ -34,6 +34,9 @@ let overviewReady = false;
 // Tổng quan cập nhật theo kiểu "stale while revalidate": giữ DOM cũ khi tải, nhớ ảnh DOM của từng
 // kỳ để quay lại hiện tức thì, và bỏ phản hồi cũ nếu người dùng đổi kỳ liên tiếp.
 let overviewRequestVersion = 0;
+// Khoá chống vòng lặp: thấy `stale` thì gọi /reconciliation/run rồi tải lại; nếu rebuild
+// xong vẫn stale (dữ liệu lỗi) thì phải dừng, không POST mãi.
+let overviewHealing = false;
 const overviewDomCache = new Map();
 const OVERVIEW_CACHE_IDS = [
   'overview-kpis', 'overview-monthly', 'overview-sell', 'overview-buy',
@@ -46,15 +49,17 @@ const OVERVIEW_CACHE_IDS = [
   let rows = [];
   let selectedKey = '';
   let products = [];
-  let range = { from: '', to: '', chip: 'all' };
-let taxBusinessType = '';
-  let periodLabel = '';
+  // `range` / `bankRange` / `overviewPeriod` đã bỏ — kỳ nay là `appRange` dùng chung (xem
+  // setAppRange). Các biến bên dưới là trạng thái RIÊNG của từng bảng, vẫn giữ nguyên.
+  let taxBusinessType = '';
   // Mỗi bảng có lựa chọn chiều riêng, không dùng chung một ô lọc.
   const tabState = { products: { dir: '' }, list: { dir: '', state: 'all' }, partners: { kind: 'all' }, bank: { flow: '' } };
-  // Bộ lọc RIÊNG của tab Sao kê ngân hàng (không dùng chung với Kho dữ liệu).
-  let bankRange = { from: '', to: '' };
   let bankPage = 0;
   let bankTotal = 0;
+  let bankCategoryData = { defaults: [], custom: [], accounts: [] };
+  // Tóm tắt gần nhất của tab sao kê — giữ lại để các phần vẽ sau (biểu đồ, bảng giao dịch)
+  // biết "khoảng lọc rỗng" thì DỮ LIỆU CÓ THẬT nằm ở khoảng nào, thay vì im lặng.
+  let bankSummaryData = null;
   let importPoll = null;
   let autosyncPoll = null;
   let backfillPoll = null;
@@ -105,76 +110,212 @@ let taxBusinessType = '';
     return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
   };
   const now = new Date();
-  const currentMonth = window.Period.rangeFor('month', now.getFullYear(), now.getMonth() + 1);
-  let overviewPeriod = { key: 'current_month', from: currentMonth.from, to: currentMonth.to, label: 'Tháng hiện tại' };
+  // ============================================================================
+  // BỘ LỌC CHUNG CHO TOÀN APP — MỘT khoảng ngày duy nhất, mọi tab dùng chung.
+  //
+  // Trước đây có BA trạng thái độc lập cùng sống:
+  //   overviewPeriod (Tổng quan) · range (Kho dữ liệu, đồng thời là bộ lọc của Xuất Excel)
+  //   · bankRange (Sao kê ngân hàng)
+  // ⇒ mở app ra thấy Tổng quan = tháng này, Kho dữ liệu = năm, Sao kê = tất cả: ba con số
+  // khác nhau, mà bộ chọn kỳ thì chỉ hiện ở Tổng quan (nó nằm trong pane-overview) nên người
+  // dùng không biết mình đang xem kỳ nào.
+  //
+  // Nay: MỘT `appRange`, một chỗ lưu, một bộ điều khiển ở header. Đổi kỳ ở bất kỳ đâu
+  // (chip ở Kho dữ liệu, chip ở Sao kê, chip ở MISA, hay bộ chọn ở header) thì TẤT CẢ các
+  // tab và bản xuất Excel đều theo kỳ đó.
+  //
+  // `key` là CÁCH CHỌN (để vẽ lại đúng ô điều khiển); from/to mới là khoảng ngày thật.
+  // from/to RỖNG = "Tất cả" — cũng chính là cách phục hồi hành vi cũ của tab Đối tác.
+  // ============================================================================
+  const APP_RANGE_KEY = 'hoadon.app.range';
+  let appRange = { key: 'year', from: '', to: '', label: '', year: now.getFullYear(), month: now.getMonth() + 1, quarter: Math.floor(now.getMonth() / 3) + 1 };
+
+  // Khoảng nhanh dùng chung: mọi chip "chọn nhanh" trong app gọi đúng hàm này nên cùng một
+  // công thức ngày — trước đây tab Sao kê tự tính riêng một bản (setBankQuickRange).
+  function quickRangeOf(kind) {
+    const today = new Date();
+    if (kind === 'all') return { from: '', to: '', label: 'Tất cả thời gian' };
+    if (kind === 'today') return { from: isoDate(today), to: isoDate(today), label: 'Hôm nay' };
+    if (kind === '7d') { const from = new Date(today); from.setDate(from.getDate() - 6); return { from: isoDate(from), to: isoDate(today), label: '7 ngày gần nhất' }; }
+    if (kind === 'month') return { ...window.Period.rangeFor('month', today.getFullYear(), today.getMonth() + 1), label: 'Tháng này' };
+    if (kind === 'quarter') return { ...window.Period.rangeFor('quarter', today.getFullYear(), Math.floor(today.getMonth() / 3) + 1), label: 'Quý này' };
+    return { ...window.Period.rangeFor('year', today.getFullYear()), label: 'Năm nay' };
+  }
+
+  // Nhãn cho header — luôn nói rõ đang xem kỳ nào, kể cả khi không lọc.
+  function appRangeLabel() {
+    if (appRange.label) return appRange.label;
+    if (appRange.from && appRange.to) return `${shortDay(appRange.from)} - ${shortDay(appRange.to)}`;
+    return 'Tất cả thời gian';
+  }
+  // Chuỗi query kèm cho MỌI lệnh tải — rỗng khi kỳ = "Tất cả" (URL giữ nguyên như cũ).
+  function periodQuery() {
+    if (!appRange.from) return '';
+    return `?from=${encodeURIComponent(appRange.from)}&to=${encodeURIComponent(appRange.to)}`;
+  }
+  const appRangeTail = () => appRange.from
+    ? `&from=${encodeURIComponent(appRange.from)}&to=${encodeURIComponent(appRange.to)}` : '';
+
+  // Tải lại đúng thứ ĐANG HIỆN — đổi kỳ không được làm nặng app (không tải tab đang ẩn).
+  function reloadForRange() {
+    if (view === 'overview') { restoreOverviewSnapshot(); void refreshOverview(false); }
+    else if (view === 'data') { page = 0; void refreshVisibleData(); }
+    else if (view === 'bank') { bankPage = 0; void refreshBank(); }
+  }
+
+  // Nguồn sự thật duy nhất của mọi thay đổi kỳ.
+  //
+  // Chống tải lặp: nếu kỳ mới GIỐNG HỆT kỳ đang xem thì bỏ qua — không lưu, không vẽ lại,
+  // không tải. Đây là lưới an toàn chứ không chỉ là tối ưu: bất kỳ đâu gắn thêm handler vào
+  // một nhóm chip (mà trước đây đã xảy ra: chip Sao kê bị gắn 2 handler) cũng chỉ tốn 1 lượt
+  // tải thay vì 2. Đo thực tế trước khi có chặn này: 1 lần bấm chip = 8 request thay vì 4.
+  function setAppRange(next, { reload = true } = {}) {
+    // So trên from/to + label — `key` là CÁCH CHỌN (để vẽ lại ô điều khiển) nên hai cách chọn
+    // khác nhau cho ra cùng một khoảng ngày vẫn phải được coi là không đổi.
+    const before = `${appRange.from}|${appRange.to}|${appRange.label}`;
+    appRange = { ...appRange, ...next };
+    if (`${appRange.from}|${appRange.to}|${appRange.label}` === before) return;
+    saveAppRange();
+    paintAppRange();
+    if (reload) reloadForRange();
+  }
+  function saveAppRange() {
+    try { localStorage.setItem(APP_RANGE_KEY, JSON.stringify(appRange)); } catch { /* che do rieng tu */ }
+  }
+
   // Năm mà biểu đồ 12 tháng đang vẽ — để bấm vào một tháng thì biết đích danh tháng/năm nào (mục 7).
   let overviewYear = new Date().getFullYear();
-  // Chuỗi query đi kèm cho MỌI lệnh tải của Tổng quan (không chọn kỳ → chuỗi rỗng, URL giữ nguyên).
-  function periodQuery() {
-    if (!overviewPeriod.from) return '';
-    return `?from=${encodeURIComponent(overviewPeriod.from)}&to=${encodeURIComponent(overviewPeriod.to)}`;
+  function overviewRangeLabel() { return appRangeLabel(); }
+
+  // ---- BỘ ĐIỀU KHIỂN KỲ Ở HEADER (thay cho khối overview-filterbar cũ) ----
+  // Ẩn/hiện các ô phụ theo kiểu chọn: năm/tháng/quý chỉ hiện khi chọn đúng kiểu đó.
+  function paintAppRangeMode() {
+    const mode = $('app-range-mode').value;
+    $('app-range-year-wrap').hidden = mode !== 'month' && mode !== 'quarter' && mode !== 'year';
+    $('app-range-month-wrap').hidden = mode !== 'month';
+    $('app-range-quarter-wrap').hidden = mode !== 'quarter';
+    $('app-range-from-wrap').hidden = mode !== 'custom';
+    $('app-range-to-wrap').hidden = mode !== 'custom';
   }
-  function overviewRangeLabel() {
-    return overviewPeriod.label || 'Tháng hiện tại';
+
+  // Chip sáng là chip KHỚP ĐÚNG khoảng ngày đang xem — suy từ from/to thật chứ không từ
+  // "đã chọn bằng cách nào". Nếu lấy từ cách chọn thì chọn "Tháng 8/2026" ở header vẫn làm
+  // chip "Tháng này" sáng ⇒ nghĩa là đang xem tháng này, trong khi thực tế là tháng 8.
+  function activeRangeChip() {
+    for (const kind of ['all', 'today', '7d', 'month', 'quarter', 'year']) {
+      const quick = quickRangeOf(kind);
+      if (quick.from === (appRange.from || '') && quick.to === (appRange.to || '')) return kind;
+    }
+    return 'custom';
   }
-  function paintOverviewPeriodMode() {
-    const mode = $('overview-period-mode').value;
-    $('overview-year-wrap').hidden = mode === 'current_month' || mode === 'custom';
-    $('overview-month-wrap').hidden = mode !== 'month';
-    $('overview-quarter-wrap').hidden = mode !== 'quarter';
-    $('overview-from-wrap').hidden = mode !== 'custom';
-    $('overview-to-wrap').hidden = mode !== 'custom';
+
+  // Vẽ LẠI toàn bộ bề mặt của bộ lọc từ `appRange`: control ở header, chip ở Kho dữ liệu,
+  // chip ở Sao kê, chip + ô ngày ở MISA, và nhãn kỳ trên header. Mọi nơi đều đọc CÙNG một
+  // nguồn nên không thể xảy ra chuyện "tab này tháng 9, tab kia năm ngoái".
+  function paintAppRange() {
+    paintAppRangeMode();
+    const chip = activeRangeChip();
+    appRange.chip = chip;
+    // Header: nhãn + các ô.
+    if ($('app-range-mode')) $('app-range-mode').value = appRange.key;
+    if ($('app-range-year')) $('app-range-year').value = String(appRange.year);
+    if ($('app-range-month')) $('app-range-month').value = String(appRange.month);
+    if ($('app-range-quarter')) $('app-range-quarter').value = String(appRange.quarter);
+    if ($('app-range-from')) $('app-range-from').value = appRange.from || '';
+    if ($('app-range-to')) $('app-range-to').value = appRange.to || '';
+    if ($('app-range-label')) $('app-range-label').textContent = appRangeLabel();
+    // Chip chọn nhanh (Kho dữ liệu + Sao kê): chỉ chip khớp đúng khoảng ngày được sáng.
+    for (const button of document.querySelectorAll('.data-chips button')) {
+      button.classList.toggle('active', button.dataset.range === chip);
+    }
+    // Ô ngày của tab Kho dữ liệu, Sao kê và MISA đều hiện đúng kỳ đang lọc.
+    const from = appRange.from || '';
+    const to = appRange.to || '';
+    for (const id of ['data-from', 'data-to', 'data-bank-from', 'data-bank-to', 'mia-from', 'mia-to']) {
+      if ($(id)) $(id).value = '';
+    }
+    if ($('data-from')) $('data-from').value = from;
+    if ($('data-to')) $('data-to').value = to;
+    if ($('data-bank-from')) $('data-bank-from').value = from;
+    if ($('data-bank-to')) $('data-bank-to').value = to;
+    if ($('mia-from')) $('mia-from').value = from;
+    if ($('mia-to')) $('mia-to').value = to;
+    if ($('data-range-label')) $('data-range-label').textContent = appRangeLabel();
+    if ($('mia-range-label')) $('mia-range-label').textContent = appRangeLabel();
   }
-  function applyOverviewPeriod(reload = true) {
-    const mode = $('overview-period-mode').value;
-    const year = Number($('overview-period-year').value) || now.getFullYear();
-    const month = Number($('overview-period-month').value) || now.getMonth() + 1;
-    const quarter = Number($('overview-period-quarter').value) || Math.floor(now.getMonth() / 3) + 1;
+
+  // Đọc bộ điều khiển ở header rồi ghi vào `appRange` — nơi DUY NHẤT nhận input từ control này.
+  function applyAppRange(reload = true) {
+    const mode = $('app-range-mode').value;
+    const year = Number($('app-range-year').value) || now.getFullYear();
+    const month = Number($('app-range-month').value) || now.getMonth() + 1;
+    const quarter = Number($('app-range-quarter').value) || Math.floor(now.getMonth() / 3) + 1;
     let chosen;
-    if (mode === 'current_month') chosen = { ...window.Period.rangeFor('month', now.getFullYear(), now.getMonth() + 1), label: 'Tháng hiện tại' };
-    else if (mode === 'month') chosen = window.Period.rangeFor('month', year, month);
-    else if (mode === 'quarter') chosen = window.Period.rangeFor('quarter', year, quarter);
-    else if (mode === 'year') chosen = window.Period.rangeFor('year', year);
+    if (mode === 'all') chosen = { from: '', to: '', label: 'Tất cả thời gian' };
+    else if (mode === 'current_month') chosen = { ...window.Period.rangeFor('month', now.getFullYear(), now.getMonth() + 1), label: 'Tháng này' };
+    else if (mode === 'today') chosen = quickRangeOf('today');
+    else if (mode === '7d') chosen = quickRangeOf('7d');
+    else if (mode === 'month') chosen = { ...window.Period.rangeFor('month', year, month), label: `Tháng ${month}/${year}` };
+    else if (mode === 'quarter') chosen = { ...window.Period.rangeFor('quarter', year, quarter), label: `Quý ${quarter}/${year}` };
+    else if (mode === 'year') chosen = { ...window.Period.rangeFor('year', year), label: `Năm ${year}` };
     else {
-      const from = $('overview-period-from').value;
-      const to = $('overview-period-to').value;
+      const from = $('app-range-from').value;
+      const to = $('app-range-to').value;
       chosen = { from, to, label: from && to ? `${shortDay(from)} - ${shortDay(to)}` : 'Khoảng thời gian' };
     }
-    overviewPeriod = { key: mode, from: chosen.from || '', to: chosen.to || '', label: chosen.label };
-    $('overview-period-label').textContent = overviewPeriod.label;
-    paintOverviewPeriodMode();
-    try {
-      localStorage.setItem(OVERVIEW_PERIOD_KEY, JSON.stringify({
-        ...overviewPeriod, year, month, quarter,
-      }));
-    } catch { /* chế độ riêng tư */ }
-    if (reload && (mode !== 'custom' || (overviewPeriod.from && overviewPeriod.to))) {
-      restoreOverviewSnapshot();
-      setOverviewLoading(true);
-      void refreshOverview(false);
-    }
+    setAppRange({ key: mode, from: chosen.from || '', to: chosen.to || '', label: chosen.label || '', year, month, quarter }, { reload });
   }
-  function initOverviewPeriod() {
+
+  function initAppRange() {
     const years = [];
     for (let year = now.getFullYear() + 1; year >= now.getFullYear() - 12; year -= 1) years.push(String(year));
-    $('overview-period-year').replaceChildren(...years.map(year => new Option(year, year)));
-    $('overview-period-month').replaceChildren(...Array.from({ length: 12 }, (_, index) => new Option(`Tháng ${index + 1}`, String(index + 1))));
-    $('overview-period-quarter').replaceChildren(...Array.from({ length: 4 }, (_, index) => new Option(`Quý ${index + 1}`, String(index + 1))));
-    $('overview-period-year').value = String(now.getFullYear());
-    $('overview-period-month').value = String(now.getMonth() + 1);
-    $('overview-period-quarter').value = String(Math.floor(now.getMonth() / 3) + 1);
-    try {
-      const saved = JSON.parse(localStorage.getItem(OVERVIEW_PERIOD_KEY) || '{}');
-      if (['current_month', 'month', 'quarter', 'year', 'custom'].includes(saved.key)) {
-        $('overview-period-mode').value = saved.key;
-        if (saved.year) $('overview-period-year').value = String(saved.year);
-        if (saved.month) $('overview-period-month').value = String(saved.month);
-        if (saved.quarter) $('overview-period-quarter').value = String(saved.quarter);
-        $('overview-period-from').value = saved.from || '';
-        $('overview-period-to').value = saved.to || '';
-      }
-    } catch { /* bỏ qua */ }
-    applyOverviewPeriod(false);
+    $('app-range-year').replaceChildren(...years.map(year => new Option(year, year)));
+    $('app-range-month').replaceChildren(...Array.from({ length: 12 }, (_, index) => new Option(`Tháng ${index + 1}`, String(index + 1))));
+    $('app-range-quarter').replaceChildren(...Array.from({ length: 4 }, (_, index) => new Option(`Quý ${index + 1}`, String(index + 1))));
+    $('app-range-year').value = String(appRange.year);
+    $('app-range-month').value = String(appRange.month);
+    $('app-range-quarter').value = String(appRange.quarter);
+    let saved = null;
+    try { saved = JSON.parse(localStorage.getItem(APP_RANGE_KEY) || 'null'); } catch { /* bỏ qua */ }
+    if (!saved) {
+      // Nâng cấp lần đầu: lấy kỳ người dùng đang dùng ở tab Kho dữ liệu (cũng là bộ lọc của
+      // Xuất Excel) để không đổi kỳ nào đột ngột khi lên bản mới.
+      try {
+        const legacy = JSON.parse(localStorage.getItem(RANGE_KEY) || '{}');
+        if (legacy.range && (legacy.range.from || legacy.range.to)) {
+          saved = { key: 'custom', from: legacy.range.from || '', to: legacy.range.to || '', label: '' };
+        }
+      } catch { /* bỏ qua */ }
+    }
+    if (saved && typeof saved === 'object') {
+      const key = ['all', 'today', '7d', 'month', 'quarter', 'year', 'custom'].includes(saved.key) ? saved.key : 'all';
+      let from = /^\d{4}-\d{2}-\d{2}$/.test(String(saved.from || '')) ? saved.from : '';
+      let to = /^\d{4}-\d{2}-\d{2}$/.test(String(saved.to || '')) ? saved.to : '';
+      if (!from && !to && ['month', 'quarter', 'year'].includes(key)) {
+      // from/to rỗng + key là kỳ cố định (tháng/quý/năm) = trạng thái hỏng (bản cũ lưu
+      // kỳ nhưng không lưu ngày) → về "Tất cả", không mở app lên thấy kỳ rỗng.
+      const today = new Date();
+      const fallback = key === 'year' ? window.Period.rangeFor('year', today.getFullYear())
+        : key === 'quarter' ? window.Period.rangeFor('quarter', today.getFullYear(), Math.floor(today.getMonth() / 3) + 1)
+          : window.Period.rangeFor('month', today.getFullYear(), today.getMonth() + 1);
+      from = fallback.from;
+      to = fallback.to;
+    }
+    appRange = {
+      key,
+      from,
+      to,
+      label: from && to ? String(saved.label || `${shortDay(from)} - ${shortDay(to)}`) : 'Tất cả thời gian',
+      year: Number(saved.year) || now.getFullYear(),
+      month: Number(saved.month) || now.getMonth() + 1,
+      quarter: Number(saved.quarter) || Math.floor(now.getMonth() / 3) + 1,
+    };
+    saveAppRange();
+    } else if (!appRange.from && !appRange.to) {
+      appRange = { ...window.Period.rangeFor('year', now.getFullYear()), key: 'year', label: `Năm ${now.getFullYear()}`, year: now.getFullYear(), month: now.getMonth() + 1, quarter: Math.floor(now.getMonth() / 3) + 1 };
+      saveAppRange();
+    }
+    paintAppRange();
   }
 
   function td(text, className) {
@@ -237,9 +378,16 @@ let taxBusinessType = '';
       accounting: ['HỖ TRỢ KẾ TOÁN', 'Xuất file nhập MISA AMIS', 'Dọc hoá đơn bán ra theo kỳ và xuất file “Mẫu bán hàng” đúng cấu trúc để nhập vào phần mềm kế toán.'],
     };
     const info = viewInfo[next] || viewInfo.overview;
-    $('view-eyebrow').textContent = info[0];
     $('view-title').textContent = info[1];
-    $('view-note').textContent = info[2];
+    // Mô tả tab không còn hàng riêng nữa ⇒ chuyển sang tooltip của nút tab đang bật và
+    // aria-label của cả dãy nút, vẫn tra được mà không tốn chiều cao.
+    for (const [id, name] of [['view-overview', 'overview'], ['view-download', 'download'], ['view-data', 'data'], ['view-bank', 'bank'], ['view-accounting', 'accounting']]) {
+      const button = $(id);
+      const tabInfo = viewInfo[name] || viewInfo.overview;
+      button.title = `${tabInfo[1]} — ${tabInfo[2]}`;
+      button.setAttribute('aria-label', `${tabInfo[1]}. ${tabInfo[2]}`);
+    }
+    if ($('view-switch')) $('view-switch').title = info[2];
     // Pane: bỏ hidden ở cái mới trước khi gán hidden cho cái cũ
     // để animation fadeIn chạy đúng (nếu gán hidden trước, pane mới sẽ
     // bị display:none → không animate được).
@@ -331,7 +479,7 @@ let taxBusinessType = '';
     for (let index = oldChildren.length - 1; index >= nextChildren.length; index -= 1) oldChildren[index].remove();
     for (let index = common; index < nextChildren.length; index += 1) target.append(nextChildren[index].cloneNode(true));
   }
-  function overviewCacheKey() { return `${overviewPeriod.from}|${overviewPeriod.to}`; }
+  function overviewCacheKey() { return `${appRange.from}|${appRange.to}`; }
   function saveOverviewSnapshot() {
     const snapshot = {};
     for (const id of OVERVIEW_CACHE_IDS) if ($(id)) snapshot[id] = $(id).innerHTML;
@@ -523,6 +671,21 @@ let taxBusinessType = '';
         api(`/api/db/tax?businessType=${encodeURIComponent(taxBusinessType || '')}`),
       ]);
       if (requestVersion !== overviewRequestVersion) return;
+      // Đối chiếu CHƯA chạy / dữ liệu đổi sau lần cuối: route GET chỉ ĐỌC và báo `stale` (không
+      // tự ghi — bản cũ để một HTTP GET chạy trọn rebuild(), với kho lớn là hàng chục giây
+      // và nắm write-lock của cả database). Ở đây mới chủ động gọi route ghi
+      // `/reconciliation/run` rồi tải lại, nên số liệu vẫn tự lành như trước.
+      if (reconciliation && reconciliation.stale && !overviewHealing) {
+        overviewHealing = true;
+        try {
+          await post('/api/db/reconciliation/run', {});
+          if (requestVersion !== overviewRequestVersion) return;
+          setOverviewLoading(true);
+          await refreshOverview(false);
+        } catch (error) { fail(error); }
+        finally { overviewHealing = false; }
+        return;
+      }
       // Danh sách cảnh báo (mục 27) tính MỘT LẦN ngay đây: số trên KPI "Cần kiểm tra" phải bằng
       // TỔNG các dòng trong thẻ cảnh báo bên dưới — cùng một bộ đếm, không đếm hai kiểu.
       const alertCounts = [
@@ -838,8 +1001,7 @@ let taxBusinessType = '';
   }
 
   // Kỳ đang chọn ở header đi kèm mọi popup (mục 1) — nối vào chuỗi query đã có tham số.
-  const rangeTail = () => overviewPeriod.from
-    ? `&from=${encodeURIComponent(overviewPeriod.from)}&to=${encodeURIComponent(overviewPeriod.to)}` : '';
+  const rangeTail = () => appRangeTail();
 
   // ----------------------------------------------------- CÔNG NỢ → CHI TIẾT (mục 5)
   async function openParty(direction, name) {
@@ -850,7 +1012,7 @@ let taxBusinessType = '';
     showList({
       title: `${label}: ${name || 'Chưa rõ tên'}`,
       subtitle: `${num.format(rows.length)} hóa đơn chuyển khoản chưa đối chiếu · ${shortMoney(value.amount)}`
-        + (overviewPeriod.from ? ` · kỳ ${overviewPeriod.label}` : ''),
+        + (appRange.from ? ` · kỳ ${appRangeLabel()}` : ' · tất cả thời gian'),
       head: INVOICE_LIST_HEAD,
       rows: invoiceListRows(rows, row => `${PAYMENT_LABELS[row.payment_method] || 'Chưa rõ'} · ${pendingLabels[row.reconciliation_status] || 'Chưa đối chiếu'}`),
       emptyText: 'Không có hóa đơn nào của đối tượng này trong kỳ.',
@@ -904,8 +1066,8 @@ let taxBusinessType = '';
   // server đếm (total), UI không tự lọc lại.
   async function openInvoiceList({ direction = '', from = '', to = '', title = '', noteOf } = {}) {
     const query = new URLSearchParams({ limit: '200', offset: '0' });
-    const usedFrom = from || overviewPeriod.from;
-    const usedTo = to || overviewPeriod.to;
+    const usedFrom = from || appRange.from;
+    const usedTo = to || appRange.to;
     if (direction) query.set('direction', direction);
     if (usedFrom) query.set('from', usedFrom);
     if (usedTo) query.set('to', usedTo);
@@ -1049,97 +1211,42 @@ let taxBusinessType = '';
   }
 
   // ------------------------------------------------------------------ bộ lọc gọn
-  function quickRange(kind) {
-    const now = new Date();
-    if (kind === 'all') return { from: '', to: '', chip: 'all' };
-    if (kind === 'today') return { from: isoDate(now), to: isoDate(now), chip: kind };
-    if (kind === '7d') { const from = new Date(now); from.setDate(from.getDate() - 6); return { from: isoDate(from), to: isoDate(now), chip: kind }; }
-    if (kind === 'month') return { from: isoDate(new Date(now.getFullYear(), now.getMonth(), 1)), to: isoDate(new Date(now.getFullYear(), now.getMonth() + 1, 0)), chip: kind };
-    if (kind === 'quarter') { const q = Math.floor(now.getMonth() / 3); return { from: isoDate(new Date(now.getFullYear(), q * 3, 1)), to: isoDate(new Date(now.getFullYear(), q * 3 + 3, 0)), chip: kind }; }
-    return { from: isoDate(new Date(now.getFullYear(), 0, 1)), to: isoDate(new Date(now.getFullYear(), 11, 31)), chip: kind };
-  }
+  // Công thức ngày của các khoản nhanh đã gộp vào quickRangeOf() ở phần bộ lọc chung.
+  function quickRange(kind) { const value = quickRangeOf(kind); return { from: value.from, to: value.to, chip: kind }; }
 
-  // Chọn nhanh theo Năm / Quý / Tháng — dùng chung công thức ngày với tab Tra cứu & tải (src/period.js).
-  function syncPeriodOptions() {
-    const now = new Date();
-    const years = [];
-    for (let year = now.getFullYear() + 1; year >= now.getFullYear() - 12; year -= 1) years.push(String(year));
-    $('data-period-year').replaceChildren(...years.map(year => new Option(year, year)));
-    $('data-period-month').replaceChildren(...Array.from({ length: 12 }, (_, i) => new Option(`Tháng ${i + 1}`, String(i + 1))));
-    $('data-period-quarter').replaceChildren(...Array.from({ length: 4 }, (_, i) => new Option(`Quý ${i + 1}`, String(i + 1))));
-    $('data-period-year').value = String(now.getFullYear());
-    $('data-period-month').value = String(now.getMonth() + 1);
-    $('data-period-quarter').value = String(Math.floor(now.getMonth() / 3) + 1);
-    paintPeriodMode();
-  }
+  // Ô Năm/Quý/Tháng của tab Kho dữ liệu đã bỏ — bộ chọn kỳ nay ở header. Hai hàm cũ và
+  // `applyPeriod` giữ lại dạng gọn để không phải sửa từng chỗ gọi.
+  function syncPeriodOptions() { /* đã gộp vào initAppRange() */ }
+  function paintPeriodMode() { paintAppRangeMode(); }
+  function applyPeriod() { applyAppRange(); }
 
-  function paintPeriodMode() {
-    const mode = $('data-period-mode').value;
-    $('data-period-month').hidden = mode !== 'month';
-    $('data-period-quarter').hidden = mode !== 'quarter';
-  }
-
-  // Áp khoảng ngày của kỳ đã chọn rồi tải lại bảng đang mở. Nhãn hiện đúng kiểu:
-  // "2023" · "Quý 1 2023" · "Tháng 1 2023".
-  function applyPeriod() {
-    const mode = $('data-period-mode').value;
-    const year = Number($('data-period-year').value);
-    const unit = mode === 'quarter' ? Number($('data-period-quarter').value) : Number($('data-period-month').value);
-    const chosen = window.Period.rangeFor(mode, year, unit);
-    range = { from: chosen.from, to: chosen.to, chip: 'period' };
-    periodLabel = mode === 'year' ? String(year) : (mode === 'quarter' ? `Quý ${unit} ${year}` : `Tháng ${unit} ${year}`);
-    savePrefs();
-    paintRange();
-    reloadAll();
-  }
-
-  function paintRange() {
-    for (const button of document.querySelectorAll('.data-chips button')) button.classList.toggle('active', button.dataset.range === range.chip);
-    $('data-from').value = range.from;
-    $('data-to').value = range.to;
-    $('data-period-label').textContent = range.chip === 'period' ? periodLabel : '';
-  }
+  // Kỳ KHÔNG còn là trạng thái riêng của tab này nữa — nó là `appRange` chung (xem setAppRange).
+  // Hàm giữ lại vì nhiều chỗ gọi; chỉ giao việc cho bộ lọc chung.
+  function paintRange() { paintAppRange(); }
 
   function savePrefs() {
+    // `size` và loại hình kinh doanh vẫn là sở thích RIÊNG của tab. Kỳ thì không lưu ở đây nữa
+    // (đã lưu trong APP_RANGE_KEY) — lưu hai nơi sẽ lại sinh ra hai nguồn sự thật.
     try {
-      localStorage.setItem(RANGE_KEY, JSON.stringify({ range, size }));
+      localStorage.setItem(SIZE_KEY, String(size));
       localStorage.setItem(TAX_KEY, taxBusinessType);
-      localStorage.setItem(PERIOD_KEY, JSON.stringify({
-        label: periodLabel,
-        mode: $('data-period-mode').value,
-        year: $('data-period-year').value,
-        month: $('data-period-month').value,
-        quarter: $('data-period-quarter').value,
-      }));
     } catch { /* chế độ riêng tư */ }
   }
 
   function restorePrefs() {
-    syncPeriodOptions();
-    initOverviewPeriod();
+    initAppRange();
     try {
-      const saved = JSON.parse(localStorage.getItem(RANGE_KEY) || '{}');
-      if (saved.range && typeof saved.range === 'object') range = { from: saved.range.from || '', to: saved.range.to || '', chip: saved.range.chip || 'all' };
       const savedSize = Number(localStorage.getItem(SIZE_KEY));
       if ([50, 100, 200].includes(savedSize)) size = savedSize;
       const savedTax = localStorage.getItem(TAX_KEY);
       if (savedTax) taxBusinessType = savedTax;
-      const savedPeriod = JSON.parse(localStorage.getItem(PERIOD_KEY) || '{}');
-      if (savedPeriod.mode) {
-        $('data-period-mode').value = savedPeriod.mode;
-        if (savedPeriod.year) $('data-period-year').value = savedPeriod.year;
-        if (savedPeriod.month) $('data-period-month').value = savedPeriod.month;
-        if (savedPeriod.quarter) $('data-period-quarter').value = savedPeriod.quarter;
-        periodLabel = String(savedPeriod.label || '');
-      }
     } catch { /* bỏ qua */ }
-    paintPeriodMode();
     $('data-size').value = String(size);
     paintRange();
   }
 
   function activeFilters() {
-    return { q: $('data-q').value.trim(), from: range.from, to: range.to };
+    return { q: $('data-q').value.trim(), from: appRange.from, to: appRange.to };
   }
 
   function reloadAll() {
@@ -1284,22 +1391,86 @@ let taxBusinessType = '';
   }
 
   // ------------------------------------------------------------------ đối tác
+  // Bấm một đối tác ở tab Đối tác → toàn bộ hoá đơn của đối tác đó, xem được PDF và phân
+  // loại TM/CK ngay trong danh sách (dùng CHUNG showList + invoiceListRows với các popup
+  // khác — không dựng bảng mới). from/to KHÔNG gửi: tab Đối tác cố ý không lọc theo kỳ.
+  async function openPartnerInvoices(direction, partner) {
+    const name = partner.ten || '(Chưa rõ tên)';
+    const label = direction === 'SELL' ? 'Khách hàng' : 'Nhà cung cấp';
+    const query = new URLSearchParams({ direction, mst: partner.mst || '', ten: partner.ten || '', limit: '200', offset: '0' });
+    // Cùng kỳ chung — để số dòng khớp đúng con số đang hiện ở danh sách đối tác.
+    if (appRange.from) query.set('from', appRange.from);
+    if (appRange.to) query.set('to', appRange.to);
+    const value = await api(`/api/db/partners/invoices?${query.toString()}`);
+    const rows = value.rows || [];
+    const total = Number(value.total || rows.length);
+    // Danh sách đã hiện `so_hoa_don`; nếu chi tiết ra LỆCH thì KHÔNG được báo "chưa có
+    // hóa đơn nào" — người dùng sẽ tưởng đối tác này không có gì. Nói thẳng là lệch.
+    const listed = Number(partner.so_hoa_don || 0);
+    const mismatch = listed > 0 && total !== listed;
+    showList({
+      title: `${label}: ${name}`,
+      subtitle: `${num.format(total)} hóa đơn`
+        + (partner.mst ? ` · MST ${partner.mst}` : ' · chưa có MST')
+        + ` · ${shortMoney(value.amount)}`
+        + ` · ${appRangeLabel()}`
+        + (rows.length < total ? ` · đang hiện ${num.format(rows.length)} dòng mới nhất` : ''),
+      head: INVOICE_LIST_HEAD,
+      rows: invoiceListRows(rows, row => `${row.direction === 'BUY' ? 'Mua vào' : 'Bán ra'} · ${PAYMENT_LABELS[row.payment_method] || 'Chưa rõ'}`),
+      emptyText: mismatch
+        ? `Danh sách đối tác ghi ${num.format(listed)} hóa đơn nhưng không tìm thấy hóa đơn nào khớp — tên/MST trong kho đã đổi so với lúc nhập. Thử tải lại tab Đối tác.`
+        : 'Đối tác này chưa có hóa đơn nào trong kho dữ liệu.',
+      reload: () => openPartnerInvoices(direction, partner),
+    });
+  }
+
   async function loadPartners() {
     paintTableLoading(true);
     try {
     // Tab Đối tác là DANH BẠ đối tác: tổng hợp mọi hoá đơn đã nhập, KHÔNG lọc theo kỳ
     // — đúng như sheet "Nhà cung cấp"/"Khách hàng" trong file Excel xuất ra.
-    const value = await latestApi('partners', `/api/db/partners?kind=${encodeURIComponent(tabState.partners.kind)}&limit=200`);
+    // Tab Đối tác nay theo KỲ CHUNG của app (đồng bộ với xuất Excel). Muốn xem toàn bộ thì
+    // chọn kỳ "Tất cả thời gian" — khi đó from/to rỗng và hành vi y hệt bản cũ.
+    const params = new URLSearchParams({ kind: encodeURIComponent(tabState.partners.kind), limit: '200' });
+    if (appRange.from) params.set('from', appRange.from);
+    if (appRange.to) params.set('to', appRange.to);
+    const value = await latestApi('partners', `/api/db/partners?${params.toString()}`);
     const body = $('data-partners');
     body.replaceChildren();
     for (const partner of value.rows || []) {
-      body.append(makeRow([
-        [partner.loai === 'NCC' ? 'NCC' : (partner.loai === 'KH' ? 'Khách' : (tabState.partners.kind === 'supplier' ? 'NCC' : 'Khách'))],
-        [partner.mst || ''], [partner.ten || ''],
+      // CHIỀU phải suy ra từ CHÍNH DÒNG ĐANG HIỆN, không đoán lại từ segment: kind='all'
+      // trộn NCC với khách nên nếu đoán sai, bấm một khách hàng lại ra nhà cung cấp.
+      const isBuyer = partner.loai === 'KH'
+        || (!partner.loai && tabState.partners.kind === 'buyer');
+      const direction = isBuyer ? 'SELL' : 'BUY';
+      const row = makeRow([
+        [isBuyer ? 'Khách' : 'NCC'],
+        [partner.mst || ''],
+        [partner.ten || ''],
         [num.format(partner.so_hoa_don || 0), 'num'],
         [num.format(partner.tong_thue || 0), 'num'],
         [num.format(partner.tong_tien || 0), 'num'],
-      ]));
+      ]);
+      // Tên là nút bấm chính (giống cột "Số / Ký hiệu" trong danh sách hoá đơn) — có
+      // cursor + phím Enter để mở bằng bàn phím, không bắt buộc người dùng trỏ đúng ô.
+      const nameCell = row.querySelector('td:nth-child(3)');
+      if (nameCell) {
+        nameCell.textContent = '';
+        const open = document.createElement('button');
+        open.type = 'button';
+        open.className = 'link invoice-link';
+        open.textContent = partner.ten || '(Chưa rõ tên)';
+        open.title = `Xem ${num.format(partner.so_hoa_don || 0)} hóa đơn của đối tác này`;
+        nameCell.append(open);
+      }
+      // Dùng đúng class `clickable` sẵn có (bảng Hoá đơn cũng dùng) để có cursor + hover
+      // đồng nhất, không tự chế class mới.
+      row.classList.add('clickable');
+      row.title = 'Bấm để xem các hóa đơn của đối tác này';
+      row.onclick = () => openPartnerInvoices(direction, partner).catch(fail);
+      row.onkeydown = event => { if (event.key === 'Enter') { event.preventDefault(); openPartnerInvoices(direction, partner).catch(fail); } };
+      row.tabIndex = 0;
+      body.append(row);
     }
     }
     finally { paintTableLoading(false); }
@@ -1580,47 +1751,157 @@ let taxBusinessType = '';
     const max = $('data-bank-max').value.trim();
     return {
       q: $('data-bank-q').value.trim(),
-      from: bankRange.from, to: bankRange.to,
+      from: appRange.from, to: appRange.to,
       min: min === '' ? '' : String(Number(min) || 0),
       max: max === '' ? '' : String(Number(max) || 0),
+      category: $('data-bank-category').value,
+      status: $('data-bank-status').value,
+      account: $('data-bank-account').value,
+      flow: tabState.bank.flow,
     };
   }
 
   function paintBankTiles(summary) {
     const tiles = $('data-bank-tiles');
     tiles.replaceChildren();
-    const show = (label, value, kind) => {
-      const box = document.createElement('div');
-      box.className = kind ? `data-tile ${kind}` : 'data-tile';
-      box.append(Object.assign(document.createElement('span'), { textContent: label }));
-      box.append(Object.assign(document.createElement('strong'), { textContent: value }));
+    // Khi bộ lọc không lọc gì về ngày (chế độ "Tất cả") thì số dư đầu/cuối kỳ lấy đúng
+    // dòng đầu/cuối của cả sao kê. Khi bộ lọc có ngày, số dư chỉ có nghĩa trong khoảng đó.
+    const empty = !(summary.transactions || 0);
+    const balanceNote = empty ? 'Khoảng lọc không có giao dịch' : (appRange.from || appRange.to ? 'Trong khoảng đang lọc' : 'Cả sao kê của MST');
+    const values = [
+      ['Tiền vào', num.format(summary.moneyIn || 0), 'in', `${num.format(summary.transactions || 0)} giao dịch trong bộ lọc`],
+      ['Tiền ra', num.format(summary.moneyOut || 0), 'out', `Chênh lệch ${num.format(summary.net || 0)}`],
+      ['Dòng tiền thuần', num.format(summary.net || 0), Number(summary.net || 0) < 0 ? 'out' : 'in', 'Tiền vào trừ tiền ra'],
+      ['Số dư đầu kỳ', summary.openingBalance == null ? '—' : num.format(summary.openingBalance), 'balance', balanceNote],
+      ['Số dư cuối kỳ', summary.closingBalance == null ? '—' : num.format(summary.closingBalance), 'balance', balanceNote],
+      // Đếm MỘT LẦN mỗi giao dịch còn việc (chưa khớp HOẶC chưa phân loại). Cộng
+      // unmatched+pending+uncategorized như bản cũ sẽ tính một dòng vừa lệch vừa chưa phân
+      // loại thành 2 → thẻ báo nhiều hơn số dòng thật, người dùng đối chiếu không khớp.
+      ['Cần xử lý', num.format(summary.needAttention != null ? summary.needAttention : Number(summary.unmatched || 0) + Number(summary.pending || 0)), 'warn',
+        `${num.format(summary.uncategorized || 0)} chưa phân loại · ${num.format(summary.unmatched || 0)} cần kiểm tra`],
+    ];
+    for (const [label, value, tone, note] of values) {
+      const box = document.createElement('article'); box.className = `bank-kpi ${tone}`;
+      box.innerHTML = `<span>${label}</span><strong>${value}</strong><small>${note}</small>`;
       tiles.append(box);
-    };
-    const ky = summary.from ? `${shortDay(summary.from)} → ${shortDay(summary.to)}` : '—';
-    show('MST', app.selected || '—');
-    show('Khoảng ngày', ky, 'range');
-    show('Giao dịch', num.format(summary.transactions || 0));
-    show('Tiền vào', num.format(summary.moneyIn || 0), 'bank-in');
-    show('Tiền ra', num.format(summary.moneyOut || 0), 'bank-out');
-    show('File đã nhập', num.format(summary.files || 0), 'time');
+    }
+  }
+
+  function paintBankAttention(summary) {
+    const target = $('data-bank-attention');
+    const rows = [
+      ['Đã đối chiếu', summary.matched || 0, 'ok', 'matched'],
+      ['Cần kiểm tra', summary.unmatched || 0, 'warn', 'unmatched'],
+      ['Chưa đối chiếu', summary.pending || 0, '', 'pending'],
+      ['Chưa phân loại', summary.uncategorized || 0, 'warn', 'uncategorized'],
+    ];
+    target.innerHTML = rows.map(([label, value, tone, filter]) => `<button type="button" class="bank-attention-row ${tone}" data-bank-attention="${filter}"><span>${label}</span><strong>${num.format(value)}</strong><i>›</i></button>`).join('');
+  }
+
+  // Bảng giao dịch rỗng là lúc dễ gây hiểu nhầm nhất: trước đây `body.replaceChildren()`
+  // rồi không thêm gì, để lại một ô trắng cao 260px — trông y hệt tab chết. Nói rõ ba
+  // trường hợp: chưa nhập gì / có dữ liệu nhưng nằm ngoài bộ lọc / lọc quá hẹp.
+  function bankEmptyHint() {
+    const total = Number((bankSummaryData && bankSummaryData.allTransactions) || 0);
+    if (!total) return 'Chưa có sao kê nào cho MST này. Bấm “Nhập file sao kê…” để nạp Excel / CSV / PDF.';
+    const scope = bankSummaryData.allFrom ? `${shortDay(bankSummaryData.allFrom)} → ${shortDay(bankSummaryData.allTo)}` : 'toàn bộ';
+    const filtered = appRange.from || appRange.to || tabState.bank.flow || $('data-bank-q').value.trim();
+    const extra = $('data-bank-category').value || $('data-bank-status').value || $('data-bank-account').value
+      || $('data-bank-min').value.trim() || $('data-bank-max').value.trim();
+    const why = filtered || extra ? `Khoảng lọc đang chọn không có giao dịch nào.` : `Chưa nhập sao kê nào cho MST này.`;
+    return `${why} MST đang có ${num.format(total)} giao dịch (${scope}) — bấm “Tất cả” hoặc “Xoá lọc” để xem.`;
+  }
+
+  // Nhãn trục Y của biểu đồ sao kê. `shortMoney` in ra "632.070.000" — 11 ký tự, rộng
+  // hơn cả lề trái 54px nên số tràn ra ngoài khung. Rút gọn theo "tr" cho khung này.
+  const bankAxisMoney = value => {
+    const number = Math.round(Number(value) || 0);
+    const abs = Math.abs(number);
+    if (abs >= 1e9) return `${num.format(Math.round(number / 1e8) / 10)} tỷ`;
+    if (abs >= 1e6) return `${num.format(Math.round(number / 1e5) / 10)} tr`;
+    if (abs >= 1e3) return `${num.format(Math.round(number / 100) / 10)} ng`;
+    return num.format(number);
+  };
+
+  function paintBankChart(rows, daily) {
+    const target = $('data-bank-chart');
+    if (!rows || !rows.length) { target.innerHTML = bankEmptyHint(); return; }
+    const compact = rows.length > 62;
+    const grouped = new Map();
+    for (const row of rows) {
+      const key = compact ? String(row.day || '').slice(0, 7) : row.day;
+      const item = grouped.get(key) || { day: key, money_in: 0, money_out: 0 };
+      item.money_in += Number(row.money_in || 0); item.money_out += Number(row.money_out || 0); grouped.set(key, item);
+    }
+    const data = [...grouped.values()]; const width = 760; const height = 250;
+    const left = 54; const right = 14; const top = 14; const bottom = 36;
+    const cw = width - left - right; const ch = height - top - bottom;
+    const max = Math.max(1, ...data.flatMap(row => [row.money_in, row.money_out]));
+    const x = index => left + (data.length < 2 ? cw / 2 : index * cw / (data.length - 1));
+    const y = value => top + ch - Number(value || 0) / max * ch;
+    const poly = key => data.map((row, index) => `${x(index).toFixed(1)},${y(row[key]).toFixed(1)}`).join(' ');
+    const grid = [0, .25, .5, .75, 1].map(ratio => `<line x1="${left}" y1="${top + ch - ratio * ch}" x2="${width - right}" y2="${top + ch - ratio * ch}"/><text x="${left - 8}" y="${top + ch - ratio * ch + 4}" text-anchor="end">${bankAxisMoney(max * ratio)}</text>`).join('');
+    const stride = Math.max(1, Math.ceil(data.length / 8));
+    const labels = data.map((row, index) => index % stride ? '' : `<text x="${x(index)}" y="${height - 11}" text-anchor="middle">${compact ? row.day.slice(5) + '/' + row.day.slice(0, 4) : shortDay(row.day)}</text>`).join('');
+    const points = data.map((row, index) => `<g><title>${row.day}: vào ${num.format(row.money_in)} · ra ${num.format(row.money_out)}</title><circle class="in" cx="${x(index)}" cy="${y(row.money_in)}" r="3"/><circle class="out" cx="${x(index)}" cy="${y(row.money_out)}" r="3"/></g>`).join('');
+    target.innerHTML = `<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="Biểu đồ tiền vào và tiền ra"><g class="grid">${grid}</g><polyline class="line in" points="${poly('money_in')}"/><polyline class="line out" points="${poly('money_out')}"/>${points}<g class="labels">${labels}</g></svg>`
+      + bankChartNote(daily, rows.length);
+  }
+
+  // Biểu đồ lấy tối đa 400 ngày gần nhất. Nếu còn dữ liệu ngoài cửa sổ thì PHẢI nói ra —
+  // im lặng vẽ thiếu khiến người dùng tưởng sao kê chỉ có tới ngày đó.
+  function bankChartNote(daily, shown) {
+    if (!daily || !daily.truncated) return '';
+    const from = shown && daily.rows && daily.rows.length ? ` từ ${shortDay(daily.rows[0].day)}` : '';
+    return `<p class="hint bank-chart-note">Biểu đồ chỉ vẽ ${num.format(shown)} ngày gần nhất (còn ${num.format((daily.totalDays || 0) - shown)} ngày${from} đã ngoài giới hạn 400 ngày) — thu hẹp khoảng ngày ở bộ lọc để xem phần còn lại.</p>`;
+  }
+
+  function bankCategoryOptions(selected = '') {
+    const rows = [...(bankCategoryData.defaults || []), ...(bankCategoryData.custom || [])];
+    const seen = new Set();
+    return rows.filter(row => row.name && !seen.has(row.name) && seen.add(row.name))
+      .map(row => `<option value="${safeOverviewText(row.name)}"${row.name === selected ? ' selected' : ''}>${safeOverviewText(row.name)}</option>`).join('');
+  }
+
+  function paintBankFilterOptions() {
+    const category = $('data-bank-category'); const selectedCategory = category.value;
+    category.innerHTML = '<option value="">Tất cả nhóm</option><option value="__uncategorized__">Chưa phân loại</option>' + bankCategoryOptions(selectedCategory);
+    category.value = selectedCategory;
+    const account = $('data-bank-account'); const selectedAccount = account.value;
+    account.innerHTML = '<option value="">Tất cả tài khoản</option>' + (bankCategoryData.accounts || []).map(value => `<option value="${safeOverviewText(value)}">${safeOverviewText(value)}</option>`).join('');
+    account.value = selectedAccount;
+  }
+
+  async function loadBankDashboard() {
+    const params = new URLSearchParams(bankFilters());
+    const [summary, daily, categories] = await Promise.all([
+      latestApi('bankSummary', `/api/db/bank/summary?${params}`),
+      latestApi('bankDaily', `/api/db/bank/daily?${params}`),
+      latestApi('bankCategories', '/api/db/bank/categories'),
+    ]);
+    bankCategoryData = categories || bankCategoryData;
+    bankSummaryData = summary || null;
+    paintBankFilterOptions(); paintBankTiles(summary); paintBankAttention(summary);
+    paintBankChart((daily && daily.rows) || [], daily || null);
   }
 
   async function refreshBank() {
-    await loadBankSummary().catch(error => { if (!isAbort(error)) fail(error); });
-    await loadBank().catch(ignoreAbort);
+    await Promise.all([loadBankDashboard().catch(error => { if (!isAbort(error)) fail(error); }), loadBank().catch(ignoreAbort)]);
   }
 
   async function loadBankSummary() {
-    paintBankTiles(await latestApi('bankSummary', '/api/db/bank/summary'));
+    await loadBankDashboard();
   }
 
   // Cùng cơ chế với các bảng khác: mờ khi tải, AbortController huỷ request cũ, phân trang riêng.
   async function loadBank() {
-    const card = document.querySelector('#pane-bank .table-card');
+    // Bảng sao kê đã đổi class từ `.table-card` sang `.bank-table-card` (xem src/index.html).
+    // Selector cũ trả null ⇒ trạng thái "đang tải" (mờ bảng) không bao giờ chạy.
+    const card = document.querySelector('#pane-bank .bank-table-card');
     if (card) card.classList.toggle('loading', true);
     try {
       const filters = bankFilters();
-      const params = new URLSearchParams({ ...filters, flow: tabState.bank.flow, limit: String(size), offset: String(bankPage * size) });
+      const params = new URLSearchParams({ ...filters, limit: String(size), offset: String(bankPage * size) });
       const value = await latestApi('bank', `/api/db/bank/transactions?${params.toString()}`);
       bankTotal = value.total || 0;
       const body = $('data-bank-rows');
@@ -1631,22 +1912,74 @@ let taxBusinessType = '';
         tr.append(td(shortDay(tran.tran_date)));
         tr.append(td(tran.description || ''));
         tr.append(td(tran.counterparty_name || ''));
-        tr.append(td(tran.reference || ''));
+        const status = tran.reconciliation_status === 'MATCH' ? ['Đã đối chiếu', 'ok'] : tran.reconciliation_status === 'BANK_NO_INVOICE' ? ['Cần kiểm tra', 'warn'] : ['Chưa đối chiếu', ''];
+        const statusCell = td(status[0]); statusCell.className = `bank-status ${status[1]}`; tr.append(statusCell);
+        const categoryCell = document.createElement('td');
+        const category = document.createElement('select'); category.className = 'bank-row-category'; category.dataset.id = tran.id;
+        category.innerHTML = '<option value="">Chưa phân loại</option>' + bankCategoryOptions(tran.category || ''); category.value = tran.category || '';
+        categoryCell.append(category); tr.append(categoryCell);
         tr.append(td(tran.credit == null ? '—' : num.format(tran.credit), 'num in'));
         tr.append(td(tran.debit == null ? '—' : num.format(tran.debit), 'num out'));
         tr.append(td(tran.balance == null ? '—' : num.format(tran.balance), 'num'));
-        tr.append(td(tran.file_name || ''));
-        tr.title = 'Đối ứng: ' + (tran.counterparty_account || '—') + (tran.detail ? ' · ' + tran.detail : '');
+        tr.append(td(tran.account || tran.bank || '—'));
+        tr.title = 'Mã GD: ' + (tran.reference || '—') + ' · Đối ứng: ' + (tran.counterparty_account || '—') + (tran.detail ? ' · ' + tran.detail : '');
         body.append(tr);
       }
       const pages = Math.max(1, Math.ceil(bankTotal / size));
       if (bankPage >= pages) bankPage = pages - 1;
+      // Không có dòng nào ⇒ chèn dòng thông báo. `bankEmptyHint()` cần summary đã tải,
+      // mà refreshBank() chạy song song với loadBank() — nếu chưa có thì gọi lại summary.
+      if (!(value.rows || []).length) {
+        if (!bankSummaryData) await loadBankDashboard().catch(ignoreAbort);
+        const empty = document.createElement('tr');
+        empty.className = 'bank-empty-row';
+        const cell = document.createElement('td');
+        cell.colSpan = 10;
+        cell.textContent = bankEmptyHint();
+        empty.append(cell);
+        body.append(empty);
+      }
       $('data-bank-count').textContent = `${num.format(bankTotal)} giao dịch`;
       $('data-bank-page').textContent = `Trang ${bankPage + 1} / ${pages}`;
       $('data-bank-prev').disabled = bankPage <= 0;
       $('data-bank-next').disabled = bankPage + 1 >= pages;
     }
     finally { if (card) card.classList.toggle('loading', false); }
+  }
+
+  // Chip kỳ ở tab Sao kê KHÔNG còn trạng thái riêng: bấm chip ở đây = đổi kỳ chung của app,
+  // nên Tổng quan / Kho dữ liệu / MISA và cả bản xuất Excel cùng đổi theo.
+  function setBankQuickRange(mode, reload = true) {
+    if (mode === 'custom') {
+      const from = $('data-bank-from').value;
+      const to = $('data-bank-to').value;
+      setAppRange({ key: 'custom', from, to, label: from && to ? `${shortDay(from)} - ${shortDay(to)}` : 'Khoảng thời gian' }, { reload });
+      return;
+    }
+    setAppRange({ key: mode, ...quickRangeOf(mode) }, { reload });
+  }
+
+  async function setBankTransactionCategory(select) {
+    select.disabled = true;
+    try {
+      await post('/api/db/bank/category', { id: Number(select.dataset.id), category: select.value });
+      if ($('data-bank-category').value) await refreshBank();
+      else await loadBankDashboard();
+      if (window.notice) window.notice(select.value ? `Đã phân loại: ${select.value}.` : 'Đã bỏ phân loại giao dịch.');
+    } catch (error) { fail(error); await loadBank().catch(ignoreAbort); }
+    finally { select.disabled = false; }
+  }
+
+  async function createBankCategory(event) {
+    event.preventDefault();
+    const name = $('bank-category-name').value.trim();
+    const error = $('bank-category-error'); error.hidden = true;
+    try {
+      await post('/api/db/bank/categories', { name, color: $('bank-category-color').value });
+      $('bank-category-dialog').close(); $('bank-category-name').value = '';
+      bankCategoryData = await api('/api/db/bank/categories'); paintBankFilterOptions();
+      if (window.notice) window.notice(`Đã tạo nhóm “${name}”.`);
+    } catch (cause) { error.textContent = cause.message; error.hidden = false; }
   }
 
   // Hộp thoại "Kiểm tra trước khi lưu" — chỉ dùng khi phải nhờ AI đọc lại: hiện bảng đối chiếu
@@ -1862,10 +2195,23 @@ ${(verification.issues || []).join('\n')}`,
 
         setProgress(80, `Đang lưu ${file.name} vào kho MST ${mst}…`);
         const result = await post('/api/db/bank/import-rows', { fileName: file.name, fileHash: preview.fileHash || '', rows: preview.rows });
-        setProgress(100, `Đã lưu ${file.name}: mới ${num.format(result.imported)}, trùng ${num.format(result.duplicate)}, lỗi ${num.format(result.failed)}.`);
-        const doneText = `✓ ${route}: đã nhập ${file.name} — ${num.format(result.imported)} giao dịch mới, ${num.format(result.duplicate)} trùng, ${num.format(result.failed)} dòng lỗi.`;
-        if (job) job.finish('ok', doneText);
-        else if (window.notice) window.notice(`Đã nhập sao kê ${file.name} vào MST ${mst}: ${num.format(result.imported)} giao dịch mới, ${num.format(result.duplicate)} trùng, ${num.format(result.failed)} dòng lỗi.`);
+        // KHÔNG được báo "✓ … trùng N" khi không có dòng nào lọt vào kho. Trước đây mất dòng
+        // vì trùng row_hash cũng ra đúng dòng thông báo này ⇒ người dùng tin là đã có sẵn.
+        const lost = (result.duplicate || 0) > 0 && result.imported === 0;
+        const detail = `mới ${num.format(result.imported)}, trùng ${num.format(result.duplicate)}, lỗi ${num.format(result.failed)}`;
+        const warn = lost || (result.duplicate || 0) > 0;
+        const samples = [].concat(result.duplicateSamples || []).slice(0, 3).join(' · ');
+        const extra = lost
+          ? `KHÔNG có dòng nào được lưu — mọi dòng đều bị coi là trùng. ${samples}`
+          : warn ? ` (${samples})` : '';
+        const text = `Sao kê ${file.name}: ${detail}.${extra}`;
+        setProgress(100, text);
+        const doneText = `${lost || (result.failed || 0) > 0 ? '⚠' : '✓'} ${route}: ${text}`;
+        if (job) job.finish(lost || (result.failed || 0) > 0 ? 'error' : 'ok', doneText);
+        else if (window.notice) {
+          if (lost || (result.failed || 0) > 0) window.noticeFail(text);
+          else window.notice(text);
+        }
         bankPage = 0;
         await loadBankSummary().catch(ignoreAbort);
         await loadBank();
@@ -2000,10 +2346,22 @@ Xoá luôn ${num.format(file.rows_imported || 0)} giao dịch của file này. K
       const restore = busyButton($('overview-refresh'), 'Đang đối chiếu…');
       void refreshOverview(true).finally(restore);
     };
-    // Bộ lọc kỳ nằm riêng trong tab Tổng quan.
-    $('overview-period-mode').onchange = () => applyOverviewPeriod();
-    for (const id of ['overview-period-year', 'overview-period-month', 'overview-period-quarter']) $(id).onchange = () => applyOverviewPeriod();
-    for (const id of ['overview-period-from', 'overview-period-to']) $(id).onchange = () => applyOverviewPeriod();
+    // Bộ lọc kỳ chung (hàng dán ngay dưới header) — nguồn duy nhất cho mọi tab và cho xuất Excel.
+    // Nhãn kỳ là <summary> nên bấm là mở; các ô bên trong chỉ hiện khi thật sự cần.
+    const rangeBox = $('app-range-details');
+    $('app-range-mode').onchange = () => applyAppRange();
+    for (const id of ['app-range-year', 'app-range-month', 'app-range-quarter']) $(id).onchange = () => applyAppRange();
+    for (const id of ['app-range-from', 'app-range-to']) $(id).onchange = () => applyAppRange();
+    if (rangeBox) {
+      // Bấm ra ngoài thì đóng — nếu không, panel sẽ che nội dung và không có cách gỡ.
+      document.addEventListener('pointerdown', event => {
+        if (rangeBox.open && !rangeBox.contains(event.target)) rangeBox.open = false;
+      });
+      // Esc đóng (giống hộp xác nhận: nhãn là nút bấm, cần một cách thoát rõ ràng).
+      document.addEventListener('keydown', event => {
+        if (rangeBox.open && event.key === 'Escape') { rangeBox.open = false; $('app-range-label').focus(); }
+      }, true);
+    }
     // Bấm một dòng "Cần kiểm tra" → mở đúng danh sách chi tiết tương ứng (mục 27).
     $('overview-alerts').onclick = event => {
       const row = event.target.closest('button.alert-row');
@@ -2115,17 +2473,17 @@ Xoá luôn ${num.format(file.rows_imported || 0)} giao dịch của file này. K
     }
     document.addEventListener('click', event => { if (exportMenu.open && !exportMenu.contains(event.target)) closeExportMenu(); });
 
-    // Chọn nhanh Năm / Quý / Tháng.
-    $('data-period-mode').onchange = () => { paintPeriodMode(); applyPeriod(); };
-    for (const id of ['data-period-year', 'data-period-quarter', 'data-period-month']) $(id).onchange = applyPeriod;
+    // Chọn nhanh Năm / Quý / Tháng đã bỏ cùng với ô ở tab này (xem #app-range-bar).
+    $('data-size').onchange = () => { size = Number($('data-size').value) || 50; reloadAll(); };
     $('data-prev').onclick = () => { if (page > 0) { page -= 1; loadList().catch(ignoreAbort); } };
     $('data-next').onclick = () => { page += 1; loadList().catch(ignoreAbort); };
-    $('data-size').onchange = () => { size = Number($('data-size').value) || 50; reloadAll(); };
-    $('data-from').onchange = () => { range = { from: $('data-from').value, to: $('data-to').value, chip: 'custom' }; paintRange(); reloadAll(); };
-    $('data-to').onchange = () => { range = { from: $('data-from').value, to: $('data-to').value, chip: 'custom' }; paintRange(); reloadAll(); };
+    $('data-from').onchange = $('data-to').onchange = () => {
+      const from = $('data-from').value;
+      const to = $('data-to').value;
+      setAppRange({ key: 'custom', from, to, label: from && to ? `${shortDay(from)} - ${shortDay(to)}` : 'Khoảng thời gian' });
+    };
       $('data-clear').onclick = () => {
       $('data-q').value = '';
-      range = { from: '', to: '', chip: 'all' };
       tabState.products.dir = '';
       tabState.list.dir = '';
       tabState.list.state = 'all';
@@ -2133,11 +2491,13 @@ Xoá luôn ${num.format(file.rows_imported || 0)} giao dịch của file này. K
       for (const id of ['data-seg-products', 'data-seg-list']) for (const button of $(id).querySelectorAll('button')) button.classList.toggle('active', button.dataset.dir === 'all');
       for (const button of $('data-seg-state').querySelectorAll('button')) button.classList.toggle('active', button.dataset.state === 'all');
       for (const button of $('data-seg-partners').querySelectorAll('button')) button.classList.toggle('active', button.dataset.kind === 'all');
-      paintRange();
-      reloadAll();
+      // "Xoá lọc" trả về "Tất cả" — cùng kỳ chung của app, nên mọi tab khác cũng mở lại.
+      setAppRange({ key: 'all', from: '', to: '', label: 'Tất cả thời gian' });
+      void reloadAll();
     };
+    // Chip chọn nhanh: đổi kỳ CHUNG, không chỉ tab này.
     for (const button of document.querySelectorAll('.data-chips button')) {
-      button.onclick = () => { range = quickRange(button.dataset.range); paintRange(); reloadAll(); };
+      button.onclick = () => setBankQuickRange(button.dataset.range);
     }
     let typing = null;
     $('data-q').oninput = () => { clearTimeout(typing); typing = setTimeout(reloadAll, 250); };
@@ -2152,7 +2512,7 @@ Xoá luôn ${num.format(file.rows_imported || 0)} giao dịch của file này. K
     bindSegment('data-seg-partners', button => { tabState.partners.kind = button.dataset.kind; loadPartners().catch(ignoreAbort); });
 
     // Sao kê ngân hàng (tab riêng): bộ lọc chi tiết, chiều, phân trang, nhập file, xoá lọc.
-    bindSegment('data-seg-bank', button => { tabState.bank.flow = button.dataset.flow || ''; bankPage = 0; loadBank().catch(ignoreAbort); });
+    bindSegment('data-seg-bank', button => { tabState.bank.flow = button.dataset.flow || ''; bankPage = 0; refreshBank(); });
     $('data-bank-prev').onclick = () => { if (bankPage > 0) { bankPage -= 1; loadBank().catch(ignoreAbort); } };
     $('data-bank-next').onclick = () => { bankPage += 1; loadBank().catch(ignoreAbort); };
     // ------------------------------------------------------------------ HỖ TRỢ KẾ TOÁN (MISA)
@@ -2164,15 +2524,18 @@ Xoá luôn ${num.format(file.rows_imported || 0)} giao dịch của file này. K
 
     const miaLocal = date => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
 
+    // Chip kỳ của tab MISA cũng ghi vào bộ lọc CHUNG, nên xuất file luôn đúng kỳ đang xem
+    // và các tab khác đổi theo. Ô Từ/Đến ngày tự hiện theo kỳ chung (paintAppRange).
     function miaApplyRange(kind) {
-      const now = new Date();
-      let from; let to;
-      if (kind === 'this-month') { from = new Date(now.getFullYear(), now.getMonth(), 1); to = new Date(now.getFullYear(), now.getMonth() + 1, 0); }
-      else if (kind === 'last-month') { from = new Date(now.getFullYear(), now.getMonth() - 1, 1); to = new Date(now.getFullYear(), now.getMonth(), 0); }
-      else if (kind === 'this-quarter') { const q = Math.floor(now.getMonth() / 3); from = new Date(now.getFullYear(), q * 3, 1); to = new Date(now.getFullYear(), q * 3 + 3, 0); }
-      else { from = new Date(now.getFullYear(), 0, 1); to = new Date(now.getFullYear(), 11, 31); }
-      $('mia-from').value = miaLocal(from);
-      $('mia-to').value = miaLocal(to);
+      const map = { 'this-month': 'month', 'last-month': 'custom', 'this-quarter': 'quarter', 'this-year': 'year' };
+      if (kind === 'last-month') {
+        const now = new Date();
+        const first = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+        const last = new Date(now.getFullYear(), now.getMonth(), 0);
+        setAppRange({ key: 'custom', from: miaLocal(first), to: miaLocal(last), label: 'Tháng trước' });
+      } else {
+        setAppRange({ key: map[kind] || 'all', ...quickRangeOf(map[kind] || 'all') });
+      }
       miaPreviewData = null;
       setMiaBadge('idle');
     }
@@ -2313,24 +2676,47 @@ Xoá luôn ${num.format(file.rows_imported || 0)} giao dịch của file này. K
     $('data-bank-files').onclick = openBankFiles;
     $('bank-file-close').onclick = () => $('bank-file-dialog').close();
     let bankTyping = null;
-    const bankReload = () => { clearTimeout(bankTyping); bankTyping = setTimeout(() => { bankPage = 0; loadBank().catch(ignoreAbort); }, 250); };
+    const bankReload = () => { clearTimeout(bankTyping); bankTyping = setTimeout(() => { bankPage = 0; refreshBank(); }, 250); };
     $('data-bank-q').oninput = bankReload;
     $('data-bank-min').oninput = bankReload;
     $('data-bank-max').oninput = bankReload;
-    $('data-bank-from').onchange = () => { bankRange.from = $('data-bank-from').value; bankPage = 0; loadBank().catch(ignoreAbort); };
-    $('data-bank-to').onchange = () => { bankRange.to = $('data-bank-to').value; bankPage = 0; loadBank().catch(ignoreAbort); };
+    $('data-bank-from').onchange = $('data-bank-to').onchange = () => setBankQuickRange('custom');
+    $('data-bank-category').onchange = () => { bankPage = 0; refreshBank(); };
+    $('data-bank-status').onchange = () => { bankPage = 0; refreshBank(); };
+    $('data-bank-account').onchange = () => { bankPage = 0; refreshBank(); };
+    // KHÔNG gắn handler riêng cho #data-bank-ranges: chip sao kê cũng mang class .data-chips
+    // nên vòng lặp gắn handler chung ở trên đã lo. Gắn thêm ở đây ⇒ bấm một chip chạy
+    // setBankQuickRange HAI LẦN ⇒ 8 request thay vì 4 (đã đo được), thấy giật rõ.
+    $('data-bank-attention').onclick = event => {
+      const button = event.target.closest('[data-bank-attention]'); if (!button) return;
+      const filter = button.dataset.bankAttention;
+      if (filter === 'uncategorized') {
+        $('data-bank-category').value = '__uncategorized__';
+        $('data-bank-status').value = '';
+      } else {
+        $('data-bank-category').value = '';
+        $('data-bank-status').value = filter;
+      }
+      bankPage = 0; refreshBank();
+    };
+    $('data-bank-rows').onchange = event => {
+      const select = event.target.closest('.bank-row-category'); if (select) setBankTransactionCategory(select);
+    };
+    $('data-bank-new-category').onclick = () => { $('bank-category-error').hidden = true; $('bank-category-dialog').showModal(); $('bank-category-name').focus(); };
+    $('bank-category-close').onclick = () => $('bank-category-dialog').close();
+    $('bank-category-cancel').onclick = () => $('bank-category-dialog').close();
+    $('bank-category-form').onsubmit = createBankCategory;
     $('data-bank-clear').onclick = () => {
       $('data-bank-q').value = ''; $('data-bank-min').value = ''; $('data-bank-max').value = '';
-      $('data-bank-from').value = ''; $('data-bank-to').value = '';
-      bankRange = { from: '', to: '' };
+      $('data-bank-category').value = ''; $('data-bank-status').value = ''; $('data-bank-account').value = '';
       tabState.bank.flow = '';
       for (const button of $('data-seg-bank').querySelectorAll('button')) button.classList.toggle('active', button.dataset.flow === '');
-      bankPage = 0;
-      loadBank().catch(ignoreAbort);
+      bankPage = 0; setBankQuickRange('all');
     };
     // Bấm đúp vào nhãn trạng thái = xoá toàn bộ sao kê (ít dùng, giấu để khỏi bấm nhầm).
     $('data-bank-note').ondblclick = deleteBankFile;
     $('data-bank-note').title = 'Bấm đúp để xoá toàn bộ sao kê của MST này.';
+    paintAppRange();
 
     $('invoice-close').onclick = closeInvoice;
     $('invoice-print').onclick = printInvoice;

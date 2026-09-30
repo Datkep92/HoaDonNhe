@@ -124,8 +124,17 @@ jobs:
           $tag = if ($env:REF_NAME -match '^(cntax-)?v\d') { $env:REF_NAME } else { "v$($env:VERSION)" }
           $setup = "release/CN-Tax-Tools-Setup-v$($env:VERSION).exe"
           $binary = "release/CN-Tax-Tools-v$($env:VERSION).exe"
+          # File ghi chú nằm trong .github/ vì thư mục `release/` bị .gitignore loại — bản 1.0.9 từng
+          # dùng release/RELEASE_NOTES.md nên file đó không có trong repo và lệnh gh release create
+          # dừng lỗi NGAY SAU khi đã build xong, khiến Release không có asset nào đính kèm.
+          # Thiếu file thì tự tạo nội dung tối giản: phát hành thiếu mô tả còn hơn không phát hành.
+          $notes = ".github/RELEASE_NOTES.md"
+          if (-not (Test-Path $notes)) {
+            "CN Tax Tools v$($env:VERSION)" | Set-Content -Path $notes -Encoding utf8
+            Write-Warning "Khong tim thay $notes - dung noi dung toi gian."
+          }
           gh release create $tag `
             $setup "$setup.sha256" `
             $binary "$binary.sha256" `
             --title "CN Tax Tools v$($env:VERSION)" `
-            --notes-file release/RELEASE_NOTES.md
+            --notes-file $notes

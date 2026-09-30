@@ -104,6 +104,12 @@ function applySchema(db) {
       ensureColumn(db, 'invoices', 'review_status', 'TEXT');
       ensureColumn(db, 'invoices', 'reviewed_at', 'TEXT');
     }
+    // v10: phân loại giao dịch sao kê. Chỉ thêm cột/bảng, không sửa dữ liệu gốc.
+    if (current < 10) {
+      ensureColumn(db, 'bank_transactions', 'category', 'TEXT');
+      ensureColumn(db, 'bank_transactions', 'category_source', 'TEXT');
+      ensureColumn(db, 'bank_transactions', 'categorized_at', 'TEXT');
+    }
     for (const sql of INDEXES) db.exec(sql);
     for (const sql of FTS5) db.exec(sql);
     // Backfill FTS cho DB tạo trước v3 (câu lệnh này chạy sau khi trigger đã tạo).

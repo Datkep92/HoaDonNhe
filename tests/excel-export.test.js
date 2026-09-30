@@ -107,10 +107,15 @@ test('xuất Excel tôn trọng bộ lọc đang xem: khoảng ngày và tìm ki
     assert.equal(ranged.rows(SHEET.buy).length, 2, 'chỉ còn HĐ 21/09 (header + 1)');
     assert.equal(ranged.rows(SHEET.sell).length, 2, 'HĐ bán 23/09 nằm trong khoảng');
     assert.equal(ranged.rows(SHEET.productsBuy).length, 2, 'chỉ còn mặt hàng của HĐ 21/09');
-    // Đối tác là DANH BẠ: KHÔNG lọc theo kỳ (khớp tab Đối tác), nên vẫn gộp ĐỦ 2 hoá đơn mua vào.
+    // Đối tác đi theo KỲ CHUNG, đồng bộ với tab Đối tác trên màn hình: trong 15–30/09 chỉ có
+    // HĐ 21/09 mua vào, nên sheet gộp đúng 1 hoá đơn (trước đây bỏ qua kỳ nên gộp cả 2).
     assert.equal(ranged.rows(SHEET.suppliers).length, 2, 'header + 1 nhà cung cấp');
-    assert.equal(ranged.rows(SHEET.suppliers)[1][2], 2, 'gộp cả 2 hoá đơn mua vào, không chỉ hoá đơn trong kỳ');
+    assert.equal(ranged.rows(SHEET.suppliers)[1][2], 1, 'chỉ gộp hoá đơn trong kỳ — khớp màn hình');
     assert.equal(ranged.rows(SHEET.buyers).length, 2, 'header + 1 khách hàng');
+
+    // Không lọc kỳ (from/to rỗng = chế độ "Tất cả thời gian") ⇒ đủ danh sách như bản cũ.
+    const all = open(excelExport.buildWorkbook(db, {}).buffer);
+    assert.equal(all.rows(SHEET.suppliers)[1][2], 2, '"Tất cả thời gian" gộp cả 2 hoá đơn');
 
     // "cong ty" không dấu vẫn khớp "CÔNG TY…" ⇒ chứng minh đi qua FTS như tab Danh sách.
     const searched = open(excelExport.buildWorkbook(db, { q: 'cong ty' }).buffer);
@@ -120,17 +125,22 @@ test('xuất Excel tôn trọng bộ lọc đang xem: khoảng ngày và tìm ki
   });
 });
 
-test('sheet đối tác là DANH BẠ: đủ danh sách dù kỳ đang chọn không có hoá đơn nào', () => {
+test('sheet đối tác đi theo kỳ chung, và "Tất cả thời gian" thì đủ danh sách', () => {
   withDb(db => {
     seed(db);
-    // Khoảng 01–05/09 không có hoá đơn nào, nhưng tab Đối tác vẫn hiện NCC/Khách ⇒ file phải có.
+    // Bộ lọc đã thống nhất toàn app ⇒ sheet đối tác phải khớp đúng tab Đối tác trên màn hình.
+    // Khoảng 01–05/09 không có hoá đơn nào ⇒ sheet đối tác cũng rỗng (trước đây vẫn ghi đủ).
     const empty = excelExport.buildWorkbook(db, { from: '2026-09-01', to: '2026-09-05' }).counts;
     assert.equal(empty.buy, 0, 'hoá đơn mua vào theo kỳ vẫn lọc');
-    assert.equal(empty.suppliers, 1, 'nhà cung cấp KHÔNG bị lọc theo kỳ');
-    assert.equal(empty.buyers, 1, 'khách hàng KHÔNG bị lọc theo kỳ');
+    assert.equal(empty.suppliers, 0, 'nhà cung cấp cũng theo kỳ — khớp màn hình');
+    assert.equal(empty.buyers, 0, 'khách hàng cũng theo kỳ — khớp màn hình');
 
     const ranged = excelExport.buildWorkbook(db, { from: '2026-09-15', to: '2026-09-30' }).counts;
-    assert.equal(ranged.suppliers, 1, 'vẫn 1 nhà cung cấp, không phụ thuộc kỳ');
+    assert.equal(ranged.suppliers, 1, 'trong kỳ có HĐ 21/09 ⇒ 1 nhà cung cấp');
+
+    // Lối thoát an toàn: from/to rỗng = "Tất cả thời gian" ⇒ đủ danh sách như bản cũ.
+    const all = excelExport.buildWorkbook(db, {}).counts;
+    assert.equal(all.suppliers, 1, '"Tất cả thời gian" vẫn đủ danh sách');
   });
 });
 

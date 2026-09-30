@@ -634,4 +634,33 @@ function partners(db, { kind = 'buyer', limit = 100, from = '', to = '' } = {}) 
   return db.prepare(`SELECT *, 'NCC' AS loai FROM (${supplier}) UNION ALL SELECT *, 'KH' AS loai FROM (${buyer}) ORDER BY tong_tien DESC LIMIT ?`).all(...params, ...params, size);
 }
 
-module.exports = { summary, overview, debts, debtsDetail, goodsDetail, productInvoices, taxOverview, listInvoices, getInvoice, products, partners, filtersOf, ftsMatchOf, invoiceWhere, activeSql, inactiveSql, EXCLUDED_SQL };
+// Toàn bộ hoá đơn của MỘT đối tác — bấm vào một dòng trong tab Đối tác là ra đây.
+// Khớp ĐÚNG cách `partners()` gom nhóm (cùng cặp cột + cùng điều kiện hoá đơn còn hiệu lực)
+// thì số dòng trả về luôn bằng `so_hoa_don` đã hiện ở danh sách. Dùng COALESCE cho cả MST
+// lẫn TÊN vì nhiều hoá đơn không có MST ⇒ nhóm ('', 'TÊN') phải khớp lại đúng như vậy.
+// MST/tên do URL mang tới nên đi qua tham số hoá — KHÔNG nối vào SQL.
+function partnerInvoices(db, { direction = '', mst = '', ten = '', from = '', to = '', limit = 200, offset = 0 } = {}) {
+  const dir = direction === 'SELL' ? 'SELL' : 'BUY';
+  const size = Math.max(1, Math.min(500, Number(limit) || 200));
+  const skip = Math.max(0, Number(offset) || 0);
+  const mstCol = dir === 'SELL' ? 'mst_mua' : 'mst_ban';
+  const tenCol = dir === 'SELL' ? 'ten_mua' : 'ten_ban';
+  // KHỚP CẢ MST LẪN TÊN, đúng như cách `partners()` gom nhóm — nếu chỉ khớp MST thì một
+  // MST có hai tên ghi khác nhau sẽ gộp làm một và ra thừa hoá đơn. TRIM hai bên để khoảng
+  // trắng thừa trong dữ liệu không làm khớp hụt (rơi về 0 dòng trong khi danh sách vẫn
+  // hiện N hóa đơn — người dùng tưởng đối tác không có hoá đơn nào).
+  const where = ['direction = ?', activeSql(), `TRIM(COALESCE(${mstCol}, '')) = ?`, `TRIM(COALESCE(${tenCol}, '')) = ?`];
+  const params = [dir, String(mst || '').trim(), String(ten || '').trim()];
+  if (from) { where.push('ngay_lap >= ?'); params.push(String(from)); }
+  if (to) { where.push('ngay_lap <= ?'); params.push(String(to)); }
+  const clause = `WHERE ${where.join(' AND ')}`;
+  const totals = db.prepare(`SELECT COUNT(*) AS c, COALESCE(SUM(tong_tien), 0) AS amount, COALESCE(SUM(tien_thue), 0) AS tax FROM invoices ${clause}`).get(...params);
+  const rows = db.prepare(`SELECT id, invoice_key, direction, ngay_lap, khms_hd, khh_hd, so_hd,
+      mst_ban, ten_ban, mst_mua, ten_mua, tong_tien, tien_truoc_thue, tien_thue, tthai,
+      payment_method_raw, payment_method, reconciliation_status, review_status, file_xml
+    FROM invoices ${clause}
+    ORDER BY ngay_lap DESC, id DESC LIMIT ? OFFSET ?`).all(...params, size, skip);
+  return { total: Number(totals.c || 0), amount: Number(totals.amount || 0), tax: Number(totals.tax || 0), limit: size, offset: skip, rows };
+}
+
+module.exports = { summary, overview, debts, debtsDetail, goodsDetail, productInvoices, taxOverview, listInvoices, getInvoice, products, partners, partnerInvoices, filtersOf, ftsMatchOf, invoiceWhere, activeSql, inactiveSql, EXCLUDED_SQL };

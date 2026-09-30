@@ -49,6 +49,27 @@ function findMakensis() {
 // thứ người dùng nhận được (bản 1.0.7 phát hành thiếu hẳn tab Sao kê ngân hàng mà không ai biết).
 // Bản không có trong bảng thì bỏ qua mục này, phần cài đặt/cập nhật vẫn đầy đủ.
 const WHATS_NEW = {
+  '1.1.0': [
+    '- **Một kỳ lọc chung cho toàn bộ app**: trước mỗi tab một bộ lọc riêng và tự khởi đầu bằng',
+    '  kỳ khác nhau (Tổng quan = tháng này, Kho dữ liệu = năm, Sao kê = tất cả) nên chuyển tab thấy',
+    '  số lệch nhau mà không biết vì sao. Nay **một nút kỳ duy nhất ở đầu trang**: bấm vào đổi, và',
+    '  **mọi tab cùng đổi theo** — kể cả bản xuất Excel. Chọn “Tất cả thời gian” để xem tất cả.',
+    '- **Tab Sao kê ngân hàng Giai đoạn 1**: 6 thẻ số, biểu đồ tiền vào – tiền ra theo thời gian,',
+    '  ô “Cần xử lý”, bộ lọc tài khoản/nhóm giao dịch/trạng thái đối chiếu và **phân nhóm giao dịch**.',
+    '  Mở tab không còn trống trơn: nếu kỳ đang chọn không có giao dịch, app ghi rõ dữ liệu nằm ở khoảng nào.',
+    '- **Bấm một đối tác là ra danh sách hóa đơn của đối tác đó**, xem được hóa đơn khổ A4 và',
+    '  phân loại tiền mặt / chuyển khoản ngay trong danh sách.',
+    '- **Sửa lỗi mất giao dịch khi nhập sao kê**: trước đây hai giao dịch trùng ngày + số tiền +',
+    '  nội dung bị xem là trùng và **âm thầm bị bỏ** trong khi vẫn báo “số liệu khớp”. Nay mỗi lần xuất',
+    '  hiện được giữ đủ, và những dòng bị bỏ đều nêu rõ thay vì giấu chung vào số liệu “trùng”.',
+    '- **Sửa lỗi sao kê dài hơn 1 MB không lưu được**: giờ nhận tới 20 MB và báo rõ khi vượt hạn mức.',
+    '- **Sửa hộp xác nhận bấm không được**: nút “Xoá” / “Chuyển MST…” trong hộp Quản lý file sao kê',
+    '  mở hộp xác nhận nằm **dưới** hộp cha nên không bấm được.',
+    '- **Đối chiếu nhanh hơn 2,6–3,3 lần** trên kho lớn (kết quả khớp từng dòng), và lỗi đối chiếu',
+    '  giờ được ghi ra nhật ký thay vì bị bỏ qua âm thầm.',
+    '- **Giao diện gọn hơn**: đầu trang còn **2 hàng** thay vì 4 (tiết ~139px), bộ lọc kỳ thu về',
+    '  **một nút**, tiêu đề tab đứng chung hàng với dãy nút.',
+  ],
   '1.0.9': [
     '- **Tab “Tổng quan” đầy đủ**: KPI, biểu đồ bán ra/mua vào theo 12 tháng, tổng hợp hàng hoá,',
     '  công nợ phải thu – phải trả, doanh thu luỹ kế kèm **ngưỡng thuế theo năm + loại hình kinh doanh**',
@@ -155,11 +176,17 @@ function fourPart(v) {
     '```',
     '',
   ].join('\n');
-  fs.writeFileSync(path.join(releaseDir, 'RELEASE_NOTES.md'), notes);
+  // Ghi ra HAI nơi: `release/` cho người dùng xem cục bộ, và `.github/` cho CI đọc làm nội dung
+  // trang GitHub Release (`gh release create --notes-file`). Nơi thứ hai PHẢI nằm trong repo —
+  // thư mục `release/` bị .gitignore nên bản 1.0.9 đã dùng release/RELEASE_NOTES.md và lệnh gh
+  // release create dừng lỗi sau khi build xong, khiến Release không có asset đính kèm.
+  const notesBody = `${notes}\n<!-- sinh tu WHATS_NEW trong tools/build-installer.cjs — SHA-256 o day la cua Setup v${version} -->\n`;
+  fs.writeFileSync(path.join(releaseDir, 'RELEASE_NOTES.md'), notesBody);
+  fs.writeFileSync(path.join(root, '.github', 'RELEASE_NOTES.md'), notesBody);
 
   console.log(`\nSetup:   ${path.relative(root, setupExe)}`);
   console.log(`SHA-256: ${hash}`);
-  console.log(`Ghi kèm: ${path.relative(root, `${setupExe}.sha256`)} và release/RELEASE_NOTES.md`);
+  console.log(`Ghi kèm: ${path.relative(root, `${setupExe}.sha256`)}, release/RELEASE_NOTES.md, .github/RELEASE_NOTES.md`);
 })().catch(error => {
   console.error(`\nLỖI đóng gói Setup: ${error.message}`);
   process.exit(1);

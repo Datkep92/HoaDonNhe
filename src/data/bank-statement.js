@@ -8,7 +8,9 @@
 // Nguyên tắc giữ đúng tài liệu (§16, §24, §26, §50):
 //   • JS chuẩn hoá ngày + số tiền, KHÔNG dùng AI cho việc máy làm được chắc chắn.
 //   • SQLite là kho dữ liệu chuẩn cuối; dữ liệu gắn với MST đang chọn (1 MST = 1 data.db).
-//   • Chống trùng bằng row_hash UNIQUE: nhập lại cùng file không sinh giao dịch thứ hai.
+//   • Chống trùng bằng row_hash UNIQUE (nội dung + số thứ tự lần xuất hiện trong lô nhập):
+//     nhập lại cùng dữ liệu không sinh giao dịch thứ hai, nhưng hai giao dịch THẬT trùng
+//     hình dạng trong cùng một sao kê vẫn vào đủ kho.
 //   • KHÔNG đụng pipeline hoá đơn hiện có — module mới, tái dùng đúng chỗ có sẵn:
 //       - đọc Excel: resources/xlsx.cjs (cùng nguồn với excel-export.js)
 //       - ngày:      src/vn-date.js
@@ -824,7 +826,9 @@ function parseDate(raw) {
   if (match) {
     let [, day, month, year] = match;
     if (year.length === 2) year = `20${year}`;
-    if (Number(day) > 12 && Number(month) <= 12) return `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`;
+    // Ngân hàng Việt Nam viết dd/mm/yyyy — kể cả khi ngày ≤ 12 (05/06 là 5 tháng 6, không
+    // phải 6 tháng 5). Bản cũ có nhánh `if (day > 12 && month <= 12)` rồi trả về ĐÚNG biểu
+    // thức đó y hệt nhánh else ⇒ code chết và dễ bị hiểu là app có đoán ngày MĨ. Đã bỏ.
     return `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`;
   }
   const serial = Number(text);
@@ -839,11 +843,36 @@ function cleanText(value) {
   return String(value ?? '').replace(/\s+/g, ' ').trim();
 }
 
-// Mã chống trùng (§26): ngày + tiền vào + tiền ra + nội dung + mã GD. Cùng một giao dịch
-// xuất lại từ ngân hàng (kể cả tên file khác) vẫn khớp hash ⇒ không nhân đôi.
-function rowHashOf(row) {
-  const parts = [row.tranDate, row.credit ?? '', row.debit ?? '', row.description, row.reference];
-  return crypto.createHash('sha1').update(parts.join('|'), 'utf8').digest('hex');
+// Mã chống trùng (§26): ngày + tiền vào + tiền ra + nội dung + mã GD + SỐ DƯ + TK đối ứng.
+//
+// Vì sao phải có `balance` + `counterparty_account` (bản cũ thiếu hai trường này):
+// sao kê thật có những cặp giao dịch CÙNG ngày + CÙNG số tiền + CÙNG nội dung, chỉ khác
+// số dư hoặc khác bên thụ (chuyển tiếp giữa các tài khoản của cùng khách, phí cùng số tiền).
+// Không có `balance` thì hash của hai dòng đó TRÙNG NHAU ⇒ dòng thứ hai bị UNIQUE loại và
+// biến mất âm thầm, trong khi người dùng vẫn thấy "SỐ LIỆU KHỚP" (verifyRows kiểm chuỗi
+// số dư TRƯỚC khi ghi, nên không phát hiện được việc mất dòng). Nguyên tắc tài liệu:
+// "Hai dòng này không được tự động coi là duplicate."
+//
+// Phần còn lại của cặp trùng-hệt-100% (2 lần tiền giống nhau trong một ngày, không mã GD,
+// cùng số dư) không giải quyết được bằng hash — xem `importRows`: mỗi lần xuất hiện trong
+// cùng một lô nhập được đánh số thứ tự, nên cả hai vẫn vào đủ kho.
+function rowContentOf(row) {
+  return [row.tranDate, row.credit ?? '', row.debit ?? '', row.description,
+    row.reference, row.balance ?? '', row.counterpartyAccount].join('|');
+}
+function rowHashOf(row, occurrence = 0) {
+  // occurrence = số thứ tự lần xuất hiện của NỘI DUNG NÀY trong cùng lô nhập (0, 1, 2…).
+  // Nhập lại đúng dữ liệu cũ sinh lại đúng dãy occurrence đó ⇒ vẫn khớp UNIQUE ⇒ vẫn bị
+  // chặn trùng như §26 yêu cầu, còn hai dòng giống nhau trong MỘT lần nhập thì khác occurrence
+  // và cùng được giữ.
+  return crypto.createHash('sha1').update(`${occurrence}|${rowContentOf(row)}`, 'utf8').digest('hex');
+}
+
+// Lỗi INSERT vì vi phạm UNIQUE — TÁCH RIÊNG khỏi lỗi thật. `catch { duplicate += 1 }` bản
+// cũ nuốt mọi lỗi (NOT NULL, FK…) và gọi chúng là "trùng", che mất sự cố ghi.
+function isUniqueViolation(error) {
+  const message = String((error && error.message) || error || '');
+  return /UNIQUE constraint failed/i.test(message);
 }
 
 // Chuẩn hoá + kiểm tra MỘT dòng. Trả về { row } hoặc { error }.
@@ -912,8 +941,13 @@ function importRows(db, { fileName, fileHash = '', rows }) {
   const { cleaned, map, dataRows } = analyzeStatement(rows);
 
   const hash = fileHash || rowsHashOf(cleaned);
-  const existing = db.prepare('SELECT id, file_name FROM bank_files WHERE file_hash = ?').get(hash);
-  if (existing) throw new Error(`Dữ liệu này đã nhập trước đó (${existing.file_name}). Không nhập lại cùng một file.`);
+  // Chặn nhập lại CÙNG dữ liệu — nhưng chỉ khi lần trước thật sự đã vào kho. File đánh dấu
+  // 'empty' (0 dòng lọt, xem cuối hàm) thì phải nhập lại được, không thì người dùng mất
+  // vĩnh viễn dữ liệu chỉ vì một lần nhập bị trùng hết.
+  const existing = db.prepare('SELECT id, file_name, status FROM bank_files WHERE file_hash = ?').get(hash);
+  if (existing && existing.status !== 'empty') {
+    throw new Error(`Dữ liệu này đã nhập trước đó (${existing.file_name}). Không nhập lại cùng một file.`);
+  }
   let imported = 0;
   let duplicate = 0;
   let failed = 0;
@@ -921,6 +955,10 @@ function importRows(db, { fileName, fileHash = '', rows }) {
   let maxDate = null;
   let creditSum = 0;
   let debitSum = 0;
+  // Vài dòng bị bỏ để giao diện nói rõ MẤT gì, không chỉ nói "trùng N".
+  const duplicateSamples = [];
+  const failedSamples = [];
+  const note = (list, row, why) => { if (list.length < 5) list.push(`${row.tranDate || '?'} · ${row.description || '(không nội dung)'}${why}`); };
   const insertTran = db.prepare(`INSERT INTO bank_transactions
     (file_id, tran_date, value_date, description, detail, counterparty_name, counterparty_account,
      reference, credit, debit, amount, balance, currency, row_hash, file_name, created_at, updated_at)
@@ -933,28 +971,47 @@ function importRows(db, { fileName, fileHash = '', rows }) {
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
       .run(fileName, hash, null, null, null, null, dataRows.length, 0, 0, 0, stamp, 'importing');
     const fileId = Number(info.lastInsertRowid);
+    // Đếm số lần đã gặp mỗi NỘI DUNG trong chính lô này. Hai dòng giống hệt nhau trong một
+    // sao kê là HAI GIAO DỊCH THẬT (ví dụ 2 lần rút cùng số tiền trong ngày, không mã GD) —
+    // chúng được đánh số 0, 1 nên cùng được ghi. Ngược lại, nhập lại đúng dữ liệu cũ sinh lại
+    // đúng dãy số 0, 1 đó ⇒ vẫn đụng UNIQUE ⇒ vẫn bị chặn trùng đúng §26.
+    const occurrences = new Map();
     for (const raw of dataRows) {
       const result = normalizeRow(raw, map);
-      if (result.error) { failed += 1; continue; }
+      if (result.error) { failed += 1; note(failedSamples, { tranDate: '', description: '' }, ` — ${result.error}`); continue; }
       const row = result.row;
+      const content = rowContentOf(row);
+      const occurrence = occurrences.get(content) || 0;
+      occurrences.set(content, occurrence + 1);
       try {
         insertTran.run(fileId, row.tranDate, row.valueDate, row.description, row.detail, row.counterpartyName,
           row.counterpartyAccount, row.reference, row.credit, row.debit, row.amount, row.balance, row.currency,
-          rowHashOf(row), fileName, stamp, stamp);
+          rowHashOf(row, occurrence), fileName, stamp, stamp);
         imported += 1;
         if (!minDate || row.tranDate < minDate) minDate = row.tranDate;
         if (!maxDate || row.tranDate > maxDate) maxDate = row.tranDate;
         if (row.credit) creditSum += row.credit;
         if (row.debit) debitSum += row.debit;
-      } catch {
-        duplicate += 1; // UNIQUE(row_hash): giao dịch đã có từ file khác/lần nhập trước
+      } catch (error) {
+        // CHỈ UNIQUE mới là "trùng". Lỗi thật (NOT NULL, FK…) phải nổi lên để không lặng lẽ
+        // biến sự cố ghi thành con số "trùng" khiến người dùng tin là dữ liệu đã có sẵn.
+        if (!isUniqueViolation(error)) throw error;
+        duplicate += 1;
+        note(duplicateSamples, row, ` — đã có trong kho (lần ${occurrence + 1} của nội dung này)`);
       }
     }
     db.prepare(`UPDATE bank_files SET rows_imported = ?, rows_duplicate = ?, rows_error = ?,
         period_from = ?, period_to = ? WHERE id = ?`)
       .run(imported, duplicate, failed, minDate, maxDate, fileId);
-    db.prepare(`UPDATE bank_files SET status = 'imported' WHERE id = ?`).run(fileId);
-    return { fileId, imported, duplicate, failed, total: dataRows.length, minDate, maxDate, creditTotal: creditSum, debitTotal: debitSum };
+    // File mà 0 dòng lọt vào kho KHÔNG được đánh dấu 'imported' (trước đây là vậy): nó khoá
+    // vĩnh viễn hash của mình ở dòng 943, người dùng không bao giờ nạp lại được dữ liệu đó.
+    // 'empty' = đã thử, chưa vào được gì; lần sau vẫn nhập lại được.
+    db.prepare('UPDATE bank_files SET status = ? WHERE id = ?').run(imported > 0 ? 'imported' : 'empty', fileId);
+    return {
+      fileId, imported, duplicate, failed, total: dataRows.length,
+      minDate, maxDate, creditTotal: creditSum, debitTotal: debitSum,
+      duplicateSamples, failedSamples,
+    };
   };
 
   // withTransaction của sqlite.js: đã ở trong transaction thì dùng lại, chưa thì tự mở.
@@ -976,8 +1033,10 @@ function parseWorkbookBuffer(buffer, fileName) {
 // Nhập FILE Excel/CSV — giữ NGUYÊN hành vi cũ (hash file, chặn nhập lại cùng file).
 function importWorkbook(db, { buffer, fileName }) {
   const fileHash = fileHashOf(buffer);
-  const existing = db.prepare('SELECT id, file_name FROM bank_files WHERE file_hash = ?').get(fileHash);
-  if (existing) throw new Error(`File này đã nhập trước đó (${existing.file_name}). Không nhập lại cùng một file.`);
+  const existing = db.prepare('SELECT id, file_name, status FROM bank_files WHERE file_hash = ?').get(fileHash);
+  if (existing && existing.status !== 'empty') {
+    throw new Error(`File này đã nhập trước đó (${existing.file_name}). Không nhập lại cùng một file.`);
+  }
   return importRows(db, { fileName, fileHash, rows: parseWorkbookBuffer(buffer, fileName) });
 }
 
@@ -1083,8 +1142,8 @@ function moveFileToMst(sourceDb, targetDb, { fileId, toMst }) {
   const id = Number(fileId);
   const file = sourceDb.prepare('SELECT * FROM bank_files WHERE id = ?').get(id);
   if (!file) throw new Error('Không tìm thấy file sao kê để chuyển.');
-  const dupFile = targetDb.prepare('SELECT id FROM bank_files WHERE file_hash = ?').get(file.file_hash);
-  if (dupFile) throw new Error('MST đích đã có chính file này rồi.');
+  const dupFile = targetDb.prepare('SELECT id, status FROM bank_files WHERE file_hash = ?').get(file.file_hash);
+  if (dupFile && dupFile.status !== 'empty') throw new Error('MST đích đã có chính file này rồi.');
   const transactions = sourceDb.prepare('SELECT tran_date, value_date, description, detail, counterparty_name, counterparty_account, reference, credit, debit, amount, balance, currency, row_hash FROM bank_transactions WHERE file_id = ? ORDER BY id').all(id);
   const stamp = new Date().toISOString();
   const { withTransaction } = require('./sqlite');
@@ -1112,8 +1171,18 @@ function moveFileToMst(sourceDb, targetDb, { fileId, toMst }) {
     return { moved, duplicate, toMst };
   };
   const result = withTransaction(targetDb, () => run(targetDb));
-  sourceDb.prepare('DELETE FROM bank_transactions WHERE file_id = ?').run(id);
-  sourceDb.prepare('DELETE FROM bank_files WHERE id = ?').run(id);
+  // Xoá ở MST NGUỒN phải NGUYÊN TỬ với bước ghi ở MST đích, và phải là MỘT transaction.
+  // Bản cũ để hai lệnh DELETE trần trụi ngoài transaction: chết giữa chừng thì file đã có ở
+  // cả hai MST (đếm trùng tiền), hoặc mất hẳn ở nguồn. Gom lại, và chỉ chạy khi đích đã nhận
+  // xong — không có tính phân tán nên không thể chạy chung một transaction trên 2 file.
+  withTransaction(sourceDb, () => {
+    const total = sourceDb.prepare('SELECT COUNT(*) AS c FROM bank_transactions WHERE file_id = ?').get(id).c;
+    // Đích nhận thiếu ⇒ KHÔNG xoá ở nguồn, dữ liệu không mất (bản cũ xoá vô điều kiện).
+    if (result.moved < total) {
+      throw new Error(`MST đích chỉ nhận được ${result.moved}/${total} giao dịch — giữ nguyên bản gốc ở MST này, không xoá.`);
+    }
+    sourceDb.prepare('DELETE FROM bank_files WHERE id = ?').run(id);
+  });
   // Giao dịch RỜI đi ⇒ số liệu hai bên đều đổi. Dòng bị xóa không còn mang trạng thái NULL
   // nên stale() không phát hiện được → phải ép chạy lại.
   const { forceReconcile, reconcile } = require('./reconciliation');
@@ -1123,12 +1192,14 @@ function moveFileToMst(sourceDb, targetDb, { fileId, toMst }) {
 }
 
 // Xoá một file sao kê ⇒ xoá luôn giao dịch của file đó (ON DELETE CASCADE).
+// Một transaction cho cả việc xoá: bản cũ chạy hai lệnh rời nhau, chết giữa chừng là để lại
+// dữ liệu lơ lửng. Dựa vào CASCADE nên chỉ cần một lệnh — lệnh xoá bảng con ở trên là thừa.
 function deleteFile(db, fileId) {
   const id = Number(fileId);
   const file = db.prepare('SELECT id, file_name FROM bank_files WHERE id = ?').get(id);
   if (!file) throw new Error('Không tìm thấy file sao kê để xoá.');
-  db.prepare('DELETE FROM bank_transactions WHERE file_id = ?').run(id);
-  db.prepare('DELETE FROM bank_files WHERE id = ?').run(id);
+  const { withTransaction } = require('./sqlite');
+  withTransaction(db, () => { db.prepare('DELETE FROM bank_files WHERE id = ?').run(id); });
   // Giao dịch biến mất ⇒ những hóa đơn từng "đã khớp" giờ không còn ⇒ ép tính lại.
   require('./reconciliation').forceReconcile(db);
   return { deleted: file.file_name };
@@ -1138,25 +1209,77 @@ function deleteFile(db, fileId) {
 // TRUY VẤN cho UI — cùng phong cách với queries.js (SQLite là nguồn đọc duy nhất).
 // ---------------------------------------------------------------------------
 
-function summary(db, range) {
-  // Kỳ đang chọn ở header: giao dịch lọc theo ngày giao dịch; không chọn kỳ thì giữ nguyên.
-  const picked = dateRange(range, { column: 'tran_date' });
+const DEFAULT_CATEGORIES = Object.freeze([
+  ['Khách hàng thanh toán', '#0d9488'], ['Thanh toán nhà cung cấp', '#dc4c4c'],
+  ['Thuế, phí', '#d97706'], ['Lương nhân viên', '#7c3aed'],
+  ['Chi phí vận chuyển', '#2563eb'], ['Điện, nước, Internet', '#0891b2'],
+  ['Rút tiền mặt', '#475569'], ['Chuyển khoản nội bộ', '#64748b'],
+]);
+
+function transactionFilter(filters = {}) {
+  const where = []; const params = [];
+  const { q = '', from = '', to = '', flow = '', min = '', max = '', category = '', status = '', account = '' } = filters;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(from)) { where.push('t.tran_date >= ?'); params.push(from); }
+  if (/^\d{4}-\d{2}-\d{2}$/.test(to)) { where.push('t.tran_date <= ?'); params.push(to); }
+  if (flow === 'in') where.push('t.credit IS NOT NULL');
+  if (flow === 'out') where.push('t.debit IS NOT NULL');
+  const minNum = Number(min); const maxNum = Number(max);
+  if (min !== '' && Number.isFinite(minNum)) { where.push('COALESCE(t.credit, t.debit) >= ?'); params.push(minNum); }
+  if (max !== '' && Number.isFinite(maxNum)) { where.push('COALESCE(t.credit, t.debit) <= ?'); params.push(maxNum); }
+  if (category === '__uncategorized__') where.push("COALESCE(t.category, '') = ''");
+  else if (category) { where.push('t.category = ?'); params.push(category); }
+  // 'unmatched' = "CẦN KIỂM TRA" ở tab Sao kê. KHÔNG được chỉ bắt BANK_NO_INVOICE: một dòng
+  // khớp được nhưng lệch tiền / lệch ngày / lệch đối tượng vẫn mang status='MATCH' kèm
+  // issues (xem reconciliation.js) — chiều hoá đơn có found_review để thấy, chiều sao kê
+  // thì không, nên người dùng tưởng đã xong. Bắt thêm nhóm MATCH+có NEEDS_REVIEW cho cân.
+  if (status === 'matched') where.push("t.reconciliation_status = 'MATCH' AND COALESCE(t.reconciliation_issues, '') NOT LIKE '%NEEDS_REVIEW%'");
+  if (status === 'unmatched') where.push("(t.reconciliation_status = 'BANK_NO_INVOICE' OR COALESCE(t.reconciliation_issues, '') LIKE '%NEEDS_REVIEW%')");
+  if (status === 'pending') where.push('t.reconciliation_status IS NULL');
+  if (account) { where.push("COALESCE(f.account, '') = ?"); params.push(account); }
+  const text = String(q || '').trim();
+  if (text) {
+    where.push('(t.description LIKE ? OR t.detail LIKE ? OR t.counterparty_name LIKE ? OR t.reference LIKE ? OR t.counterparty_account LIKE ?)');
+    const like = `%${text}%`; params.push(like, like, like, like, like);
+  }
+  return { clause: where.length ? `WHERE ${where.join(' AND ')}` : '', params };
+}
+
+function summary(db, filters = {}) {
+  const picked = transactionFilter(filters);
   const totals = db.prepare(`SELECT COUNT(*) AS transactions,
-      COALESCE(SUM(credit), 0) AS money_in,
-      COALESCE(SUM(debit), 0) AS money_out,
-      MIN(tran_date) AS from_date, MAX(tran_date) AS to_date
-    FROM bank_transactions ${picked.where}`).get(...picked.params);
-  const files = db.prepare(`SELECT COUNT(*) AS files,
-      COALESCE(SUM(rows_error), 0) AS rows_error
-    FROM bank_files`).get();
+      COALESCE(SUM(t.credit), 0) AS money_in, COALESCE(SUM(t.debit), 0) AS money_out,
+      MIN(t.tran_date) AS from_date, MAX(t.tran_date) AS to_date,
+      SUM(CASE WHEN t.reconciliation_status = 'MATCH' THEN 1 ELSE 0 END) AS matched,
+      SUM(CASE WHEN t.reconciliation_status = 'BANK_NO_INVOICE' THEN 1 ELSE 0 END) AS unmatched,
+      SUM(CASE WHEN t.reconciliation_status IS NULL THEN 1 ELSE 0 END) AS pending,
+      SUM(CASE WHEN COALESCE(t.category, '') = '' THEN 1 ELSE 0 END) AS uncategorized,
+      SUM(CASE WHEN COALESCE(t.reconciliation_status, '') <> 'MATCH' OR COALESCE(t.category, '') = '' THEN 1 ELSE 0 END) AS need_attention,
+      SUM(CASE WHEN t.reconciliation_status = 'MATCH' AND COALESCE(t.reconciliation_issues, '') LIKE '%NEEDS_REVIEW%' THEN 1 ELSE 0 END) AS matched_review
+    FROM bank_transactions t LEFT JOIN bank_files f ON f.id = t.file_id ${picked.clause}`).get(...picked.params);
+  const first = db.prepare(`SELECT t.balance, t.credit, t.debit FROM bank_transactions t LEFT JOIN bank_files f ON f.id=t.file_id ${picked.clause} ORDER BY t.tran_date ASC, t.id ASC LIMIT 1`).get(...picked.params);
+  const last = db.prepare(`SELECT t.balance FROM bank_transactions t LEFT JOIN bank_files f ON f.id=t.file_id ${picked.clause} ORDER BY t.tran_date DESC, t.id DESC LIMIT 1`).get(...picked.params);
+  // File trong kỳ = file CÓ GIAO DỊCH trong khoảng lọc (qua transactionFilter), không phải
+  // đếm tất cả bank_files. Bản cũ luôn trả tổng số file của MST ⇒ lọc kỳ 01/2020 (không có
+  // giao dịch nào) vẫn báo "1 file". Phải đếm FILE khác nhau, không phải số dòng — 3 dòng
+  // trong 1 file vẫn là 1 file — và rows_error chỉ cộng một lần cho mỗi file.
+  const files = db.prepare(`SELECT COUNT(*) AS files, COALESCE(SUM(rows_error), 0) AS rows_error
+    FROM bank_files WHERE id IN (
+      SELECT DISTINCT t.file_id FROM bank_transactions t LEFT JOIN bank_files f ON f.id = t.file_id ${picked.clause}
+    )`).get();
+  const scope = db.prepare(`SELECT COUNT(*) AS transactions, MIN(tran_date) AS from_date, MAX(tran_date) AS to_date,
+      (SELECT COUNT(*) FROM bank_files) AS files FROM bank_transactions`).get();
+  const opening = first && first.balance != null ? Number(first.balance) - Number(first.credit || 0) + Number(first.debit || 0) : null;
+  const closing = last && last.balance != null ? Number(last.balance) : null;
   return {
-    files: files.files,
-    transactions: totals.transactions,
-    moneyIn: totals.money_in,
-    moneyOut: totals.money_out,
-    rowsError: files.rows_error,
-    from: totals.from_date,
-    to: totals.to_date,
+    files: files.files, rowsError: files.rows_error, allFiles: scope.files || 0,
+    transactions: totals.transactions, moneyIn: totals.money_in, moneyOut: totals.money_out,
+    net: Number(totals.money_in || 0) - Number(totals.money_out || 0),
+    openingBalance: opening, closingBalance: closing,
+    matched: totals.matched || 0, unmatched: totals.unmatched || 0, pending: totals.pending || 0,
+    matchedReview: totals.matched_review || 0,
+    uncategorized: totals.uncategorized || 0, needAttention: totals.need_attention || 0,
+    from: totals.from_date, to: totals.to_date,
+    allTransactions: scope.transactions || 0, allFrom: scope.from_date, allTo: scope.to_date,
   };
 }
 
@@ -1166,54 +1289,82 @@ function listFiles(db, { limit = 50 } = {}) {
 }
 
 // Danh sách giao dịch có phân trang + lọc (tìm kiếm, khoảng ngày, khoảng tiền, chiều vào/ra).
-function listTransactions(db, { q = '', from = '', to = '', flow = '', min = '', max = '', limit = 50, offset = 0 } = {}) {
-  const where = [];
-  const params = [];
-  if (from) { where.push('tran_date >= ?'); params.push(from); }
-  if (to) { where.push('tran_date <= ?'); params.push(to); }
-  if (flow === 'in') where.push('credit IS NOT NULL');
-  if (flow === 'out') where.push('debit IS NOT NULL');
-  // Khoảng tiền: áp lên SỐ TIỀN GIAO DỊCH (tiền vào nếu có, không thì tiền ra).
-  const minNum = Number(min);
-  const maxNum = Number(max);
-  if (min !== '' && Number.isFinite(minNum)) { where.push('COALESCE(credit, debit) >= ?'); params.push(minNum); }
-  if (max !== '' && Number.isFinite(maxNum)) { where.push('COALESCE(credit, debit) <= ?'); params.push(maxNum); }
-  const text = String(q || '').trim();
-  if (text) {
-    where.push('(description LIKE ? OR detail LIKE ? OR counterparty_name LIKE ? OR reference LIKE ? OR counterparty_account LIKE ?)');
-    const like = `%${text}%`;
-    params.push(like, like, like, like, like);
-  }
-  const clause = where.length ? `WHERE ${where.join(' AND ')}` : '';
+function listTransactions(db, filters = {}) {
+  const { limit = 50, offset = 0 } = filters;
+  const picked = transactionFilter(filters);
   const size = Math.max(1, Math.min(200, Number(limit) || 50));
   const skip = Math.max(0, Number(offset) || 0);
-  const total = db.prepare(`SELECT COUNT(*) AS c FROM bank_transactions ${clause}`).get(...params).c;
-  const rows = db.prepare(`SELECT id, file_id, tran_date, value_date, description, detail, counterparty_name,
-      counterparty_account, reference, credit, debit, amount, balance, currency, file_name
-    FROM bank_transactions ${clause}
-    ORDER BY tran_date DESC, id DESC
-    LIMIT ? OFFSET ?`).all(...params, size, skip);
+  const total = db.prepare(`SELECT COUNT(*) AS c FROM bank_transactions t LEFT JOIN bank_files f ON f.id=t.file_id ${picked.clause}`).get(...picked.params).c;
+  const rows = db.prepare(`SELECT t.id, t.file_id, t.tran_date, t.value_date, t.description, t.detail, t.counterparty_name,
+      t.counterparty_account, t.reference, t.credit, t.debit, t.amount, t.balance, t.currency, t.file_name,
+      t.reconciliation_status, t.category, t.category_source, f.account, f.bank
+    FROM bank_transactions t LEFT JOIN bank_files f ON f.id=t.file_id ${picked.clause}
+    ORDER BY t.tran_date DESC, t.id DESC LIMIT ? OFFSET ?`).all(...picked.params, size, skip);
   return { total, limit: size, offset: skip, rows };
 }
 
-// Tổng hợp theo NGÀY — nền cho thống kê/thống kê tiền vào-ra trong tab (mục §39).
-function dailyTotals(db, { from = '', to = '' } = {}) {
-  const where = [];
-  const params = [];
-  if (from) { where.push('tran_date >= ?'); params.push(from); }
-  if (to) { where.push('tran_date <= ?'); params.push(to); }
-  const clause = where.length ? `WHERE ${where.join(' AND ')}` : '';
-  return db.prepare(`SELECT tran_date AS day, COUNT(*) AS transactions,
-      COALESCE(SUM(credit), 0) AS money_in, COALESCE(SUM(debit), 0) AS money_out
-    FROM bank_transactions ${clause}
-    GROUP BY tran_date ORDER BY tran_date DESC LIMIT 120`).all(...params);
+// Tổng hợp theo NGÀY — nền cho biểu đồ tiền vào/tiền ra trong tab Sao kê.
+// Trần 400 ngày: lấy 400 ngày **MỚI NHẤT** rồi mới sắp xếp tăng dần để vẽ. Bản cũ
+// `ORDER BY tran_date ASC LIMIT 400` giữ 400 ngày CŨ NHẤT và vứt ngày mới nhất — sao kê
+// dài hơn 400 ngày thì biểu đồ âm thầm chỉ vẽ giai đoạn đầu, tức là mất dữ liệu hiển thị.
+const DAILY_LIMIT = 400;
+function dailyTotals(db, filters = {}) {
+  const picked = transactionFilter(filters);
+  // Lấy ngược (DESC) để cắt đúng phần MỚI, rồi đảo lại (ASC) cho biểu đồ vẽ theo thời gian.
+  const rows = db.prepare(`SELECT * FROM (
+      SELECT t.tran_date AS day, COUNT(*) AS transactions,
+        COALESCE(SUM(t.credit), 0) AS money_in, COALESCE(SUM(t.debit), 0) AS money_out
+      FROM bank_transactions t LEFT JOIN bank_files f ON f.id=t.file_id ${picked.clause}
+      GROUP BY t.tran_date ORDER BY t.tran_date DESC LIMIT ${DAILY_LIMIT}
+    ) ORDER BY day ASC`).all(...picked.params);
+  // Báo lại khi còn dữ liệu ngoài cửa sổ: giao diện nói rõ thay vì vẽ thiếu trong im lặng.
+  const first = db.prepare(`SELECT MIN(t.tran_date) AS from_date FROM bank_transactions t
+    LEFT JOIN bank_files f ON f.id=t.file_id ${picked.clause}`).get(...picked.params);
+  const total = db.prepare(`SELECT COUNT(DISTINCT t.tran_date) AS c FROM bank_transactions t
+    LEFT JOIN bank_files f ON f.id=t.file_id ${picked.clause}`).get(...picked.params);
+  return {
+    rows,
+    truncated: Number(total.c || 0) > rows.length,
+    totalDays: Number(total.c || 0),
+    firstDay: first ? first.from_date : null,
+    limit: DAILY_LIMIT,
+  };
+}
+
+function categories(db) {
+  const custom = db.prepare('SELECT name, color FROM bank_categories ORDER BY name COLLATE NOCASE').all();
+  const accounts = db.prepare("SELECT DISTINCT account FROM bank_files WHERE COALESCE(account, '') <> '' ORDER BY account").all().map(row => row.account);
+  return { defaults: DEFAULT_CATEGORIES.map(([name, color]) => ({ name, color })), custom, accounts };
+}
+
+function createCategory(db, { name, color = '#64748b' } = {}) {
+  const clean = String(name || '').trim().replace(/\s+/g, ' ');
+  if (!clean || clean.length > 80) throw new Error('Tên nhóm phải có từ 1 đến 80 ký tự.');
+  const safeColor = /^#[0-9a-f]{6}$/i.test(String(color || '')) ? color : '#64748b';
+  const now = new Date().toISOString();
+  db.prepare('INSERT OR IGNORE INTO bank_categories (name, color, created_at, updated_at) VALUES (?, ?, ?, ?)').run(clean, safeColor, now, now);
+  return { name: clean, color: safeColor };
+}
+
+function setCategory(db, { id, category } = {}) {
+  const transactionId = Number(id);
+  if (!Number.isInteger(transactionId) || transactionId <= 0) throw new Error('Giao dịch không hợp lệ.');
+  const clean = String(category || '').trim();
+  if (clean.length > 80) throw new Error('Tên nhóm quá dài.');
+  const exists = db.prepare('SELECT id FROM bank_transactions WHERE id = ?').get(transactionId);
+  if (!exists) throw new Error('Không tìm thấy giao dịch.');
+  const now = new Date().toISOString();
+  db.prepare('UPDATE bank_transactions SET category = ?, category_source = ?, categorized_at = ?, updated_at = ? WHERE id = ?')
+    .run(clean || null, clean ? 'MANUAL' : null, clean ? now : null, now, transactionId);
+  return { id: transactionId, category: clean };
 }
 
 module.exports = {
   parseMoney, parseDate, findHeaderRow, mapColumns, chooseMoneyMap, resolveMap, resolveMapExpanded,
-  analyzeStatement, classifyCell, inferRoles, readStatementGrids, pickBestGrid, normalizeRow, rowHashOf,
+  analyzeStatement, classifyCell, inferRoles, readStatementGrids, pickBestGrid, normalizeRow, rowHashOf, rowContentOf,
   recomposeRows, recomposeStatement,
   importWorkbook, importRows, parseWorkbookBuffer, previewRows, verifyRows, moveFileToMst,
   NORMALIZED_GRID_HEADER, normalizedRowsToGrid,
-  deleteFile, summary, listFiles, listTransactions, dailyTotals,
+  deleteFile, summary, listFiles, listTransactions, dailyTotals, categories, createCategory, setCategory,
+  DEFAULT_CATEGORIES,
 };

@@ -176,17 +176,13 @@ function fourPart(v) {
     '```',
     '',
   ].join('\n');
-  // Ghi ra HAI nơi: `release/` cho người dùng xem cục bộ, và `.github/` cho CI đọc làm nội dung
-  // trang GitHub Release (`gh release create --notes-file`). Nơi thứ hai PHẢI nằm trong repo —
-  // thư mục `release/` bị .gitignore nên bản 1.0.9 đã dùng release/RELEASE_NOTES.md và lệnh gh
-  // release create dừng lỗi sau khi build xong, khiến Release không có asset đính kèm.
-  const notesBody = `${notes}\n<!-- sinh tu WHATS_NEW trong tools/build-installer.cjs — SHA-256 o day la cua Setup v${version} -->\n`;
-  fs.writeFileSync(path.join(releaseDir, 'RELEASE_NOTES.md'), notesBody);
-  fs.writeFileSync(path.join(root, '.github', 'RELEASE_NOTES.md'), notesBody);
+  // Ghi chú sinh ở đây (không lấy từ repo) vì nó chứa SHA-256 của đúng file Setup vừa đóng gói.
+  // NSIS nhúng timestamp nên mỗi lần build cho SHA khác nhau — commit sẵn vào repo là vô nghĩa.
+  fs.writeFileSync(path.join(releaseDir, 'RELEASE_NOTES.md'), notes);
 
   console.log(`\nSetup:   ${path.relative(root, setupExe)}`);
   console.log(`SHA-256: ${hash}`);
-  console.log(`Ghi kèm: ${path.relative(root, `${setupExe}.sha256`)}, release/RELEASE_NOTES.md, .github/RELEASE_NOTES.md`);
+  console.log(`Ghi kèm: ${path.relative(root, `${setupExe}.sha256`)} và release/RELEASE_NOTES.md`);
 })().catch(error => {
   console.error(`\nLỖI đóng gói Setup: ${error.message}`);
   process.exit(1);

@@ -1,0 +1,14 @@
+# robots.txt — CN Tax Tools
+# Cho phép Google lập chỉ mục toàn bộ trang.
+
+User-agent: *
+Allow: /
+
+# Bản dùng thử, không cần lập chỉ mục
+Disallow: /404.html
+
+# Chặn tham số truy vấn để không tạo bản trùng lặp trong kết quả tìm kiếm
+Disallow: /*?
+Disallow: /*&
+
+Sitemap: https://datkep92.github.io/cntaxtools-landing/sitemap.xml

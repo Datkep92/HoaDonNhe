@@ -1,0 +1,15 @@
+{
+  "name": "CN Tax Tools — Tải hóa đơn điện tử & đối chiếu sao kê",
+  "short_name": "CN Tax Tools",
+  "description": "Ứng dụng Windows tải hóa đơn điện tử từ Cổng Cục Thuế, đối chiếu sao kê ngân hàng và xuất Excel đúng mẫu MISA AMIS. Dùng thử 30 ngày miễn phí.",
+  "lang": "vi",
+  "start_url": ".",
+  "scope": ".",
+  "display": "standalone",
+  "background_color": "#f5f8fb",
+  "theme_color": "#087f70",
+  "icons": [
+    { "src": "assets/img/app-icon.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "assets/img/logo.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

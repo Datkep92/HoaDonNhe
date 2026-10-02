@@ -164,6 +164,9 @@ function tasksFor(p) {
 // HTML hóa đơn: dùng bộ dựng giống trang tra cứu của cổng thuế (port từ luồng API của dự án
 // extension) để file .html và .pdf khớp bản chuẩn — xem src/invoice-html.js.
 const { invoiceHtml, withXmlFields } = require('./invoice-html');
+// Quy tắc "PDF này có rỗng không" dùng CHUNG với browser.js để chỗ sinh PDF và chỗ
+// ghi đĩa không lệch nhau — lệch một chỗ thì bản sửa tự-chữa biến mất.
+const { isBlankPdf } = require('./browser');
 // Chặn an toàn: nếu cổng trả cursor MỚI mãi không dừng thì dừng task đó lại thay vì lặp vô hạn.
 // 400 trang × 50 dòng = 20.000 hóa đơn/tháng, cao hơn mọi tháng thực tế đã gặp.
 const MAX_PAGES_PER_TASK = 400;
@@ -618,7 +621,19 @@ class Engine {
       const write = (kind, ext, bytes) => {
         this.check();
         const file = path.join(root, direction, kind, base + ext);
-        try { if (fs.existsSync(file) && fs.statSync(file).size > 0) { if (!item.files.includes(file)) item.files.push(file); return; } } catch {}
+        // File PDF RỖNG coi như CHƯA CÓ, để tải lại ghi đè được.
+        //
+        // Vì sao phải vậy: bản pdf() trước đây in nhầm tab about:blank nên để lại file
+        // 850 byte RỖNG mà app vẫn báo "Đã có sẵn – bỏ qua" vì size > 0. Người dùng
+        // thử tải lại bao nhiêu lần cũng không bao giờ được bản PDF đúng, trừ khi tự
+        // xoá file tay. Nay tải lại là tự sửa luôn.
+        try {
+          if (fs.existsSync(file)) {
+            const existing = fs.readFileSync(file);
+            const blank = kind === 'pdf' && isBlankPdf(existing);
+            if (existing.length > 0 && !blank) { if (!item.files.includes(file)) item.files.push(file); return; }
+          }
+        } catch {}
         atomicWrite(file, bytes); onDisk.set(path.basename(file).toLowerCase(), file); if (!item.files.includes(file)) item.files.push(file);
       };
       // XML gốc của hóa đơn này (chỉ có khi lượt tải chọn xml/zip) — cũng là nguồn MCCQT/NLap cho
@@ -646,8 +661,36 @@ class Engine {
           if (j.params.formats.includes('zip')) write('zip', '.zip', bytes[0] === 0x50 ? bytes : await zip.generateAsync({ type: 'nodebuffer' }));
         }
         if (j.params.formats.some(x => ['html', 'pdf'].includes(x))) {
+          // 1) DETAIL TRƯỚC. Chiếm 64/66 trường mà HTML cần, và bắt buộc phải có.
           const detail = JSON.parse((await this.request(`/${inv.family}/invoices/detail?${query}`, 'Xem chi tiết', () => this.check())).toString('utf8'));
           this.check();
+          // 2) XML gốc CHỈ là nguồn DỰ PHÒNG cho MCCQT/NLap — hai trường duy nhất
+          //    ngoài phần còn lại.
+          //
+          //    Vì sao không gọi vô điều kiện: detail.mhdon và detail.tdlap đã có sẵn đúng
+          //    hai giá trị đó (invoice-html.js: d._xmlMccqt || d.mhdon). Gọi export-xml luôn
+          //    là THỪA một lời gọi lên CỔNG THUẾ — cổng có giới hạn nhịp, mỗi hóa đơn
+          //    phí một lượt là tăng rủi ro bị chặn.
+          //    Đa số hóa đơn: 2 lời gọi rút còn 1. Hóa đơn thiếu mã thì mới lấy XML.
+          //    Nhánh xml/zip phía trên đã tải sẵn thì dùng lại, không tải lần hai.
+          if (!sourceXml && !(detail && detail.mhdon && detail.tdlap)) {
+            try {
+              const bytes = await this.request(`/${inv.family}/invoices/export-xml?${query}`, 'Tải XML gốc để in PDF', () => this.check());
+              this.check();
+              let zip;
+              if (bytes[0] === 0x50 && bytes[1] === 0x4b) zip = await JSZip.loadAsync(bytes);
+              else { zip = new JSZip(); zip.file('invoice.xml', bytes); }
+              const entry = Object.values(zip.files).filter(x => !x.dir && /\.xml$/i.test(x.name))[0];
+              if (entry) sourceXml = await entry.async('string');
+            } catch (error) {
+              // Tín hiệu DỪNG phải ném ra ngoài để lượt tải dừng đúng cơ chế. Nuốt mất
+              // nó thì nghẽn dây chuyền đang chạy không dừng — mỗi lượt đều phải ghi đè.
+              if (error && error.paused) throw error;
+              // Hết XML thì vẫn in được PDF bằng dữ liệu detail; chỉ mất MCCQT/NLap.
+              // KHÔNG ném lỗi ra — mất một dòng thông tin còn hơn làm hỏng cả lượt tải.
+              item.warning = 'Không lấy được XML gốc nên hóa đơn in thiếu mã tra cứu (MCCQT).';
+            }
+          }
           const html = invoiceHtml(inv, withXmlFields(detail, sourceXml));
           if (j.params.formats.includes('html')) write('html', '.html', html);
           if (j.params.formats.includes('pdf')) write('pdf', '.pdf', await this.pdf(html));

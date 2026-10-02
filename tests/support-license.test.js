@@ -176,9 +176,12 @@ test('integration with code.txt Google Apps Script & Gateway logic', async () =>
     assert.equal(devices[0][4], '2099-12-31');
 
     // 4. Verify another device cannot activate the same key
+    // Máy thứ hai PHẢI là máy khác thật, nên ép mã máy khác — nếu không cả hai
+    // sẽ ra cùng mã máy (cùng phần cứng) và giả định "2 máy" của test không còn đúng.
     const dir2 = fs.mkdtempSync(path.join(os.tmpdir(), 'hd-integration-2-'));
     fs.writeFileSync(path.join(dir2, 'support-gateway.json'), JSON.stringify({ url: `http://127.0.0.1:${port}` }));
-    const client2 = new SupportStore(dir2);
+    const client2 = new SupportStore(dir2, { machineId: 'DEV_MAYTHUHATCA2' });
+    assert.notEqual(client2.data.device.installationId, client.data.device.installationId);
     await client2.register();
     await assert.rejects(() => client2.activate('ACTIVE-KEY-9999'), /already bound to another device/);
 

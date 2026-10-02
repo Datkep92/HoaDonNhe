@@ -9,6 +9,45 @@ const mstFormat = require('./mst-format');
 const loginSource = fs.readFileSync(path.join(__dirname, 'tax-login.js'), 'utf8');
 const TAX_HOME = 'https://hoadondientu.gdt.gov.vn/';
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+// NHẬN DẠNG PDF RỖNG — quy tắc DUY NHẤT, dùng ở cả browser.js và core.js.
+//
+// File thật gặp trên máy người dùng: 850 byte, /Title (about:blank),
+// /Length 0, /MediaBox [0 0 612 792] (Letter thay vì A4). Nguyên nhân: in nhầm tab
+// about:blank. Dấu hiệu chính xác là stream rỗng; ngưỡng 1KB chỉ để bắt nhanh.
+//
+// ĐỘT NÀY đặc biệt quan trọng vì core.js dùng hàm này để coi file rỗng là "chưa có"
+// — nếu không, một file hỏng 850 byte vẫn có size > 0 nên bị bỏ qua mọi lần tải lại
+// và người dùng KHÔNG BAO GIỜ tải được bản PDF đúng, trừ khi tự xoá file tay.
+function isBlankPdf(buffer) {
+  if (!buffer || buffer.length === 0) return true;
+  if (buffer.length < 1024) return true;
+  return /\/Length\s+0\s*>>\s*stream/.test(buffer.toString('latin1'));
+}
+
+// printToPDF cần trần thời gian: hóa đơn A4 in thường trong vài giây, treo quá 60 giây
+// coi như lỗi (tab/CDP có vấn đề) — nếu không thì vòng tải kẹt vĩnh viễn ở bước này,
+// cả worker tải cùng lúc đều treo và lượt tải không bao giờ kết thúc.
+const PDF_TIMEOUT_MS = 60000;
+
+// Giới hạn thời gian cho một thao tác bất đồng bộ.
+//
+// VÌ SAO HÀM NÀY PHẢI CÓ `await` BÊN TRONG: bản cũ viết
+//     try { return Promise.race([...]) } finally { clearTimeout(timer) }
+// trong hàm KHÔNG async. `finally` ở đó chạy ngay lập tức, tức xoá timer TRƯỚC khi
+// `Promise.race` kịp settle ⇒ trần thời gian chết ngay và race treo vô hạn. Đã tái lại
+// đúng khuôn đó để chứng minh: timer hết hạn 300ms, kết quả là "không báo lỗ — treo vô
+// hạn". `await` buộc `finally` chạy SAU khi race kết thúc thì clearTimeout mới có ý nghĩa.
+async function withTimeout(start, ms, message) {
+  let timer = null;
+  try {
+    return await Promise.race([
+      start(),
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(Object.assign(new Error(message), { timeout: true })), ms);
+      }),
+    ]);
+  } finally { clearTimeout(timer); }
+}
 function browserPath() {
   const roots = [process.env.PROGRAMFILES, process.env['PROGRAMFILES(X86)'], process.env.LOCALAPPDATA].filter(Boolean);
   for (const root of roots) for (const suffix of ['Google\\Chrome\\Application\\chrome.exe', 'Microsoft\\Edge\\Application\\msedge.exe']) { const file = path.join(root, suffix); if (fs.existsSync(file)) return file; }
@@ -160,26 +199,44 @@ class TaxBrowser {
   }
   async pdf(html) {
     if (!this.client) throw new Error('Chưa có phiên trình duyệt để xuất PDF.');
-    const target = await CDP.New({ host: '127.0.0.1', port: this.port, url: 'about:blank' }); const client = await CDP({ host: '127.0.0.1', port: this.port, target });
-    // printToPDF cũng phải có giới hạn thời gian: hóa đơn A4 in thường trong vài giây, treo quá
-    // 60 giây coi như lỗi (tab/CDP có vấn đề) — không để vòng tải kẹt vĩnh viễn ở bước này.
-    const pdfWithTimeout = () => {
-      let timer = null;
-      try {
-        return Promise.race([
-          client.Page.printToPDF({ printBackground: true, preferCSSPageSize: true }),
-          new Promise((_, reject) => {
-            timer = setTimeout(() => reject(Object.assign(
-              new Error('In PDF từ trang cổng thuế không phản hồi sau 60 giây.'),
-              { timeout: true },
-            )), 60000);
-          }),
-        ]);
-      } finally { clearTimeout(timer); }
-    };
-    // Chờ thêm để ảnh nền hóa đơn (data: URL ~200KB) decode xong trước khi in, nếu không PDF sẽ mất nền.
-    try { await this.evalWithTimeout(`document.open();document.write(${JSON.stringify(html)});document.close()`); await sleep(400); const output = await pdfWithTimeout(); return Buffer.from(output.data, 'base64'); }
+    const target = await CDP.New({ host: '127.0.0.1', port: this.port, url: 'about:blank' });
+    const client = await CDP({ host: '127.0.0.1', port: this.port, target });
+    try {
+      // PHẢI ghi HTML vào CHÍNH tab vừa tạo (client), KHÔNG dùng this.evalWithTimeout.
+      //
+      // Lý do: eval()/evalWithTimeout() chạy trên `this.client` — đó là tab CỔNG
+      // THUẾ, không phải tab `client` ở đây. Bản cũ gọi this.evalWithTimeout() nên
+      // hóa đơn bị document.write vào tab cổng thuế (làm hỏng luôn trang đó), còn
+      // printToPDF thì in tab about:blank vẫn còn trống. Kết quả: mọi file PDF ra
+      // đều rỗng (~850 byte, /Title = about:blank, /Length 0, khổ Letter thay A4) và
+      // KHÔNG có lỗi nào được báo ra — người dùng phải tự mở file mới thấy.
+      await client.Runtime.evaluate({
+        expression: `(async () => {
+          document.open(); document.write(${JSON.stringify(html)}); document.close();
+          // Chờ nét chữ và ảnh nền (data: URL) nạp xong, nếu không PDF ra trắng trơn.
+          try { if (document.fonts && document.fonts.ready) await document.fonts.ready; } catch (e) {}
+          const imgs = Array.from(document.images || []);
+          await Promise.all(imgs.map(img => (img.complete && img.naturalWidth > 0) ? null
+            : new Promise(resolve => { img.onload = img.onerror = resolve; })));
+          return true;
+        })()`,
+        awaitPromise: true,
+        returnByValue: true,
+      });
+      const output = await withTimeout(
+        () => client.Page.printToPDF({ printBackground: true, preferCSSPageSize: true }),
+        PDF_TIMEOUT_MS,
+        'In PDF từ trang cổng thuế không phản hồi sau 60 giây.',
+      );
+      const bytes = Buffer.from(String(output.data || ''), 'base64');
+      // CHỐT: không bao giờ ghi ra file PDF rỗng. Ghi file hỏng thì người dùng mở ra
+      // thấy trang trắng, mất công tải lại; báo lỗi thì họ biết ngay và thử lại.
+      if (isBlankPdf(bytes)) {
+        throw new Error('Trang hóa đơn in ra rỗng (không có nội dung) — thử tải lại hoặc xuất HTML.');
+      }
+      return bytes;
+    }
     finally { try { await client.close(); } catch {}; try { await CDP.Close({ host: '127.0.0.1', port: this.port, id: target.id }); } catch {} }
   }
 }
-module.exports = { TaxBrowser, browserPath, jwtAccount, disablePasswordManager };
+module.exports = { TaxBrowser, browserPath, jwtAccount, disablePasswordManager, withTimeout, isBlankPdf, PDF_TIMEOUT_MS };

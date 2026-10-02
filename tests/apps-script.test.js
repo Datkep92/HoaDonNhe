@@ -22,6 +22,12 @@ const MIRROR_PATH = path.join(__dirname, '..', 'src', 'code.gs.txt');
 const SOURCE = fs.readFileSync(GAS_PATH, 'utf8');
 const SECRET = 'gateway-secret-for-tests';
 
+// Bản sao tham khảo của Worker trong src/. Không có gì require() nó — nó tồn tại
+// để đọc offline. Nhưng chính vì không ai dùng nên nó đã trôi lệch hàng trăm dòng
+// và còn mang logic cũ (nuốt lỗi GAS trong im lặng). Test này chặn việc trôi đó.
+const WORKER_PATH = path.join(__dirname, '..', 'cloudflare-worker', 'src', 'index.js');
+const WORKER_MIRROR = path.join(__dirname, '..', 'src', 'index.js.txt');
+
 const DEVICE_HEADERS = ['Hardware ID', 'Chat Room ID', 'License Key', 'Status', 'Expiry Date', 'First Install Time', 'Last Seen Time', 'Hardware Hash'];
 const LICENSE_HEADERS = ['License Key', 'Status', 'Expiry Date', 'Hardware ID', 'Chat Room ID', 'Activated At'];
 const BINDING_HEADERS = ['License Key', 'Hardware ID', 'Chat Room ID', 'Activated At'];
@@ -36,25 +42,48 @@ const OLD_ROOM = 'ROOM_WIN_OLD00001';
 const KEY = 'KEY-TEST0001';
 const ROOM = 'ROOM_WIN_CHAT0001';
 
+// Mã máy ổn định (bản mới) và mã cũ (UUID ngẫu nhiên của app bản cũ).
+const MACHINE = 'DEV_E478B4594B5F8BC6';
+const MACHINE_ROOM = 'ROOM_WIN_E478B4594B5F';
+
 const days = count => new Date(Date.now() + count * 86400000);
 
 function makeSheet(name, header, rows) {
   const values = [header.slice(), ...rows.map(row => row.slice())];
   return {
     getName: () => name,
+    getLastRow: () => values.length - 1,
     getDataRange: () => ({ getValues: () => values.map(row => row.slice()) }),
-    getRange: (row, col) => ({
+    getRange: (row, col, rows_, cols) => ({
       setValue: value => {
         while (values.length < row) values.push([]);
         const target = values[row - 1];
         while (target.length < col) target.push('');
         target[col - 1] = value;
       },
+      // ensureColumns_() dùng setValues để viết lại hàng tiêu đề.
+      setValues: block => {
+        for (let r = 0; r < block.length; r++) {
+          while (values.length < row + r) values.push([]);
+          const target = values[row + r - 1];
+          for (let c = 0; c < block[r].length; c++) target[c + col - 1] = block[r][c];
+        }
+      },
     }),
     appendRow: row => values.push(row.slice()),
     deleteRow: row => { values.splice(row - 1, 1); },
     __values: values,
   };
+}
+
+// Vị trí cột theo TÊN, không cứng chỉ số — cột do ensureColumns_() tự thêm vào
+// cuối nên thứ tự thay đổi theo Sheet nào thiếu cột nào.
+function colOf(sheet, name) {
+  return sheet.__values[0].indexOf(name);
+}
+function cellAt(sheet, rowNumber, name) {
+  const index = colOf(sheet, name);
+  return index < 0 ? '' : String(sheet.__values[rowNumber - 1][index] || '');
 }
 
 function load(sheets, options = {}) {
@@ -70,7 +99,21 @@ function load(sheets, options = {}) {
       MimeType: { JSON: 'application/json' },
       createTextOutput: text => ({ text, setMimeType() { return this; }, getContent() { return this.text; } }),
     },
-    SpreadsheetApp: { getActive: () => ({ getSheetByName: name => byName.get(name) || null }) },
+    SpreadsheetApp: {
+      getActive: () => ({
+        getSheetByName: name => byName.get(name) || null,
+        // ensureTabs_() cần hai hàm này để dựng cấu trúc Sheet khi thiếu.
+        insertSheet: name => {
+          const created = makeSheet(name, [], []);
+          byName.set(name, created);
+          return created;
+        },
+        getSheets: () => [...byName.values()],
+        deleteSheet: sheet => {
+          for (const [key, value] of byName) if (value === sheet) byName.delete(key);
+        },
+      }),
+    },
     Utilities: {
       getUuid: () => {
         uuid += 1;
@@ -108,6 +151,29 @@ test('bản Code.gs trong support-gateway và bản sao src/code.gs.txt phải g
   assert.equal(SOURCE, fs.readFileSync(MIRROR_PATH, 'utf8'));
 });
 
+test('bản sao src/index.js.txt phải giống Cloudflare Worker thật', () => {
+  assert.equal(
+    fs.readFileSync(WORKER_PATH, 'utf8'),
+    fs.readFileSync(WORKER_MIRROR, 'utf8'),
+    'src/index.js.txt đã lệch với cloudflare-worker/src/index.js — chạy: Copy-Item cloudflare-worker/src/index.js src/index.js.txt'
+  );
+});
+
+test('Worker không được nuốt im lặng lỗi CRM (đã từng làm khách mất bản quyền)', () => {
+  const worker = fs.readFileSync(WORKER_PATH, 'utf8');
+  // Đường đăng ký KHÔNG được tự bịa trạng thái bản quyền khi Apps Script lỗi:
+  // app ghi thẳng vào đĩa nên khách đang mua biến thành "hết hạn" vĩnh viễn.
+  assert.ok(
+    !/status:\s*'Unactivated',\s*registered:\s*false/.test(worker),
+    'Worker vẫn tự trả Unactivated khi CRM lỗi — app sẽ ghi đè mất bản quyền đang mua.'
+  );
+  // Và phải còn đường hỏi nhẹ /v1/ping để app chạy nền không tốn quota Apps Script.
+  assert.ok(worker.includes('/v1/ping'), 'thiếu /v1/ping cho kiểm tra nền');
+  assert.ok(worker.includes('/v1/sync'), 'thiếu /v1/sync cho lúc mở app');
+  // Mã máy ổn định phải được chấp nhận, nếu không app mới bị từ chối toàn bộ.
+  assert.ok(worker.includes('DEV_'), 'Worker chưa chấp nhận mã máy dạng DEV_');
+});
+
 test('sai gatewaySecret hoặc action lạ đều bị từ chối', () => {
   const ctx = standardCtx();
   const wrongSecret = post(ctx, { gatewaySecret: 'sai', action: 'license_status', ...DEVICE });
@@ -128,43 +194,58 @@ test('register_device: máy mới được ghi vào Sheet và trả đủ value'
   assert.equal(devices.__values[1][0], DEVICE.installationId);
 });
 
-test('register_device: rebind theo Hardware Hash khi Sheet CÓ tab Bindings (regression: biến roomId không tồn tại)', () => {
-  const devices = makeSheet('Devices', DEVICE_HEADERS, [[OLD_INSTALL, OLD_ROOM, KEY, 'Active', days(90), days(-20), days(-20), DEVICE.hardwareHash]]);
-  const licenses = makeSheet('Licenses', LICENSE_HEADERS, [[KEY, 'Active', days(90), OLD_INSTALL, OLD_ROOM, days(-20)]]);
-  const bindings = makeSheet('Bindings', BINDING_HEADERS, [[KEY, OLD_INSTALL, '', days(-20)]]);
-  const ctx = load([devices, licenses, bindings]);
+// ---------------------------------------------------------------------------
+// KHÔNG ĐƯỢC KHỚP DÒNG THEO HARDWARE HASH
+//
+// Sự cố thật: hash cũ băm từ (tên máy | tài khoản | card mạng) nên không đổi
+// theo bản cài. Một client gửi installationId LẠ kèm hash của máy khác đã khớp
+// đúng dòng thiết bị đó và nhận luôn license của người kia. Test dưới đây chặn
+// đúng đường khoá lỏng đó.
+// ---------------------------------------------------------------------------
 
-  const res = post(ctx, { gatewaySecret: SECRET, action: 'register_device', ...DEVICE });
+test('REGRESSION: UUID lạ + hash của máy khác KHÔNG được nhận license người khác', () => {
+  const devices = makeSheet('Devices', DEVICE_HEADERS, [[DEVICE.installationId, DEVICE.chatRoomId, KEY, 'Active', days(90), days(-40), days(-40), DEVICE.hardwareHash]]);
+  const ctx = load([devices, makeSheet('Licenses', LICENSE_HEADERS, [[KEY, 'Active', days(90), DEVICE.installationId, DEVICE.chatRoomId, days(-40)]])]);
+  // Dòng của nạn nhân đã có cả Machine ID (khách đã từng mở app bản mới).
+  post(ctx, { gatewaySecret: SECRET, action: 'register_device', ...DEVICE, machineId: MACHINE });
+
+  // Kẻ lạ: UUID hoàn toàn mới + đúng hash của máy nạn nhân.
+  const attacker = 'aaaa1111-bbbb-4ccc-8ddd-eeee2222ffff';
+  const res = post(ctx, { gatewaySecret: SECRET, action: 'register_device', installationId: attacker, chatRoomId: 'ROOM_WIN_KETHAI000001', hardwareHash: DEVICE.hardwareHash, machineId: 'DEV_BADC0DE00000001' });
 
   assert.equal(res.ok, true, JSON.stringify(res));
-  assert.equal(res.value.registered, false);
-  assert.equal(res.value.status, 'Active', 'rebind phải giữ nguyên liên kết bản quyền của máy');
-  assert.equal(devices.__values[1][0], DEVICE.installationId);
-  assert.equal(licenses.__values[1][3], DEVICE.installationId);
-  assert.equal(bindings.__values[1][1], DEVICE.installationId);
-  assert.equal(bindings.__values[1][2], DEVICE.chatRoomId, 'ô phòng chat trống thì điền phòng mới');
+  assert.equal(res.value.registered, true, 'phải tạo dòng MỚI, không được nhận dòng của người khác');
+  assert.equal(res.value.status, 'Trial', 'không được nhận license Active của máy khác');
+  assert.notEqual(res.value.hardwareId, DEVICE.installationId);
+  assert.equal(devices.__values[1][0], DEVICE.installationId, 'cột Hardware ID của nạn nhân không được ghi đè');
+  assert.equal(devices.__values.length, 3, 'phải có đúng 2 dòng: nạn nhân + kẻ lạ');
 });
 
-test('register_device: rebind KHÔNG ghi đè phòng chat đã có, và chịu được tab Bindings thiếu cột', () => {
-  const devices = makeSheet('Devices', DEVICE_HEADERS, [[OLD_INSTALL, OLD_ROOM, KEY, 'Active', days(90), days(-20), days(-20), DEVICE.hardwareHash]]);
-  const licenses = makeSheet('Licenses', LICENSE_HEADERS, [[KEY, 'Active', days(90), OLD_INSTALL, OLD_ROOM, days(-20)]]);
-  const bindings = makeSheet('Bindings', BINDING_HEADERS, [[KEY, OLD_INSTALL, 'ROOM_WIN_KEEP0001', days(-20)]]);
-  const ctx = load([devices, licenses, bindings]);
+test('khách lên từ app bản cũ: UUID khớp dòng cũ thì giữ nguyên license, không ghi đè cột nào', () => {
+  const devices = makeSheet('Devices', DEVICE_HEADERS, [[DEVICE.installationId, DEVICE.chatRoomId, KEY, 'Active', days(90), days(-40), days(-40), DEVICE.hardwareHash]]);
+  const licenses = makeSheet('Licenses', LICENSE_HEADERS, [[KEY, 'Active', days(90), DEVICE.installationId, DEVICE.chatRoomId, days(-40)]]);
+  const ctx = load([devices, licenses]);
 
-  const kept = post(ctx, { gatewaySecret: SECRET, action: 'register_device', ...DEVICE });
-  assert.equal(kept.ok, true, JSON.stringify(kept));
-  assert.equal(bindings.__values[1][2], 'ROOM_WIN_KEEP0001');
-  assert.equal(bindings.__values[1][1], DEVICE.installationId);
+  const res = post(ctx, { gatewaySecret: SECRET, action: 'register_device', ...DEVICE, machineId: MACHINE });
+  assert.equal(res.ok, true, JSON.stringify(res));
+  assert.equal(res.value.registered, false);
+  assert.equal(res.value.status, 'Active', 'khách đang mua không được mất key');
+  assert.equal(devices.__values.length, 2, 'không thêm dòng');
+  assert.equal(devices.__values[1][0], DEVICE.installationId, 'giữ UUID cũ trong cột Hardware ID');
+  assert.equal(licenses.__values[1][3], DEVICE.installationId, 'không đụng liên kết bản quyền');
+  assert.equal(cellAt(devices, 2, 'Machine ID'), MACHINE, 'ghi bổ sung mã máy ổn định');
+});
 
+test('tab Bindings thiếu cột Chat Room ID vẫn chạy được', () => {
   const noRoomColumn = makeSheet('Bindings', ['License Key', 'Hardware ID', 'Activated At'], [[KEY, DEVICE.installationId, days(-20)]]);
-  const ctx2 = load([
+  const ctx = load([
     makeSheet('Devices', DEVICE_HEADERS, [[DEVICE.installationId, DEVICE.chatRoomId, KEY, 'Active', days(90), days(-20), days(-20), DEVICE.hardwareHash]]),
     makeSheet('Licenses', LICENSE_HEADERS, [[KEY, 'Active', days(90), DEVICE.installationId, DEVICE.chatRoomId, days(-20)]]),
     noRoomColumn,
   ]);
-  const missingColumn = post(ctx2, { gatewaySecret: SECRET, action: 'license_status', ...DEVICE });
-  assert.equal(missingColumn.ok, true, JSON.stringify(missingColumn));
-  assert.equal(missingColumn.value.status, 'Active');
+  const res = post(ctx, { gatewaySecret: SECRET, action: 'license_status', ...DEVICE });
+  assert.equal(res.ok, true, JSON.stringify(res));
+  assert.equal(res.value.status, 'Active');
 });
 
 test('license_status: thiết bị chưa có trong Sheet trả value (không mất trường value)', () => {
@@ -172,6 +253,361 @@ test('license_status: thiết bị chưa có trong Sheet trả value (không m�
   const res = post(ctx, { gatewaySecret: SECRET, action: 'license_status', ...DEVICE });
   assert.equal(res.ok, true, JSON.stringify(res));
   assert.equal(res.value.status, 'Unactivated');
+});
+
+// ---------------------------------------------------------------------------
+// TỰ DỰNG CẤU TRÚC SHEET — dựng CRM mới thì Google Sheet trống, không có tab
+// nào. Nếu bắt người tạo tay 4 tab + 25 tiêu đề thì dễ sai, mà hỏng lúc đó
+// chỉ lộ ra khi khách đăng ký.
+// ---------------------------------------------------------------------------
+
+test('Sheet trống hoàn toàn: tự tạo đủ 4 tab và ghi tiêu đề cột', () => {
+  const ctx = load([makeSheet('Sheet1', ['cột rác'], [])]);   // Sheet mới tạo có 1 tab rác
+  const res = post(ctx, { gatewaySecret: SECRET, action: 'register_device', machineId: MACHINE, installationId: MACHINE, chatRoomId: MACHINE_ROOM, hardwareHash: '' });
+
+  assert.equal(res.ok, true, JSON.stringify(res));
+  assert.equal(res.value.registered, true);
+  const tabs = ctx.SpreadsheetApp.getActive().getSheets().map(s => s.getName()).sort();
+  assert.deepEqual(tabs, ['Bindings', 'Devices', 'Licenses', 'Settings'], 'phải tự tạo đủ tab và dọn tab rác');
+});
+
+test('tab vừa tạo phải có đủ cột bắt buộc, không thiếu ô nào', () => {
+  const ctx = load([makeSheet('Sheet1', ['cột rác'], [])]);
+  post(ctx, { gatewaySecret: SECRET, action: 'register_device', machineId: MACHINE, installationId: MACHINE, chatRoomId: MACHINE_ROOM, hardwareHash: '' });
+
+  const header = name => ctx.SpreadsheetApp.getActive().getSheetByName(name).__values[0];
+  for (const name of ['Hardware ID', 'Machine ID', 'Chat Room ID', 'License Key', 'Status', 'Expiry Date', 'First Install Time', 'Last Seen Time', 'Hardware Hash', 'Phone', 'Name', 'Plan', 'Telegram Topic ID']) {
+    assert.ok(header('Devices').includes(name), 'Devices thiếu cột ' + name);
+  }
+  for (const name of ['License Key', 'Status', 'Expiry Date', 'Hardware ID', 'Chat Room ID', 'Activated At', 'Max Devices']) {
+    assert.ok(header('Licenses').includes(name), 'Licenses thiếu cột ' + name);
+  }
+  for (const name of ['License Key', 'Hardware ID', 'Chat Room ID', 'Activated At']) {
+    assert.ok(header('Bindings').includes(name), 'Bindings thiếu cột ' + name);
+  }
+  for (const name of ['Key', 'Value', 'Updated At']) {
+    assert.ok(header('Settings').includes(name), 'Settings thiếu cột ' + name);
+  }
+});
+
+test('Sheet ĐÃ có đủ tab thì không đụng vào dữ liệu đang chạy', () => {
+  const devices = makeSheet('Devices', DEVICE_HEADERS, [[DEVICE.installationId, DEVICE.chatRoomId, KEY, 'Active', days(90), days(-40), days(-40), DEVICE.hardwareHash]]);
+  const before = JSON.stringify(devices.__values);
+  const ctx = standardCtx();
+  // standardCtx đã có Devices + Licenses; thêm Bindings + Settings cho đủ.
+  ctx.SpreadsheetApp.getActive().insertSheet('Bindings');
+  ctx.SpreadsheetApp.getActive().insertSheet('Settings');
+  post(ctx, { gatewaySecret: SECRET, action: 'license_status', ...DEVICE, machineId: MACHINE });
+
+  assert.equal(JSON.stringify(devices.__values), before, 'dữ liệu tab đang chạy không được đổi');
+  assert.equal(devices.__values.length, 2, 'không được thêm dòng');
+});
+
+test('Script không gắn với Sheet nào thì báo rõ, không im lặng', () => {
+  const byName = new Map();
+  const ctx = load([makeSheet('Devices', DEVICE_HEADERS, [])]);
+  // getActive() trả null = script bị tạo tách rời thay vì từ trong Google Sheet.
+  ctx.SpreadsheetApp.getActive = () => null;
+  const res = post(ctx, { gatewaySecret: SECRET, action: 'license_status', ...DEVICE });
+  assert.equal(res.ok, false);
+  assert.match(res.error, /chưa gắn với Google Sheet/i, 'phải chỉ ra cách sửa');
+});
+
+test('bỏ tab rác "Sheet1" nhưng GIU tab rác có tên lạ (tránh xoá nhầm dữ liệu)', () => {
+  const ctx = load([makeSheet('Sheet1', ['cột rác'], [])]);
+  const spare = ctx.SpreadsheetApp.getActive().insertSheet('Dữ liệu cũ của tôi');
+  spare.__values.push(['dòng dữ liệu thật']);
+  post(ctx, { gatewaySecret: SECRET, action: 'license_status', ...DEVICE });
+  const names = ctx.SpreadsheetApp.getActive().getSheets().map(s => s.getName());
+  assert.ok(names.includes('Dữ liệu cũ của tôi'), 'KHÔNG được xoá tab có tên lạ');
+});
+
+// ---------------------------------------------------------------------------
+// MÃ MÁY ỔN ĐỊNH — mục tiêu: 1 máy = 1 dòng Sheet = 1 phòng chat, và khách cài
+// lại app KHÔNG mất key, KHÔNG reset được dùng thử.
+// ---------------------------------------------------------------------------
+
+test('Sheet thiếu cột Machine ID thì tự thêm, và ghi mã máy ổn định vào', () => {
+  const devices = makeSheet('Devices', DEVICE_HEADERS, []);
+  const ctx = load([devices, makeSheet('Licenses', LICENSE_HEADERS, [])]);
+
+  const res = post(ctx, { gatewaySecret: SECRET, action: 'register_device', machineId: MACHINE, installationId: MACHINE, chatRoomId: MACHINE_ROOM, hardwareHash: '' });
+  assert.equal(res.ok, true, JSON.stringify(res));
+  assert.equal(res.value.registered, true);
+  assert.ok(colOf(devices, 'Machine ID') >= 0, 'phải tự thêm cột Machine ID');
+  assert.equal(cellAt(devices, 2, 'Machine ID'), MACHINE);
+  assert.equal(cellAt(devices, 2, 'Chat Room ID'), MACHINE_ROOM);
+});
+
+test('khách lên từ bản cũ (UUID, cột Machine ID trống) được ghi ngược mã máy ổn định', () => {
+  const devices = makeSheet('Devices', DEVICE_HEADERS, [[DEVICE.installationId, DEVICE.chatRoomId, KEY, 'Active', days(90), days(-40), days(-40), DEVICE.hardwareHash]]);
+  const ctx = load([devices, makeSheet('Licenses', LICENSE_HEADERS, [[KEY, 'Active', days(90), DEVICE.installationId, DEVICE.chatRoomId, days(-40)]])]);
+
+  const res = post(ctx, { gatewaySecret: SECRET, action: 'register_device', ...DEVICE, machineId: MACHINE });
+  assert.equal(res.ok, true, JSON.stringify(res));
+  assert.equal(res.value.registered, false, 'phải ra đúng dòng cũ, không tạo dòng mới');
+  assert.equal(res.value.status, 'Active', 'phải giữ nguyên bản quyền đang mua');
+  assert.equal(devices.__values.length, 2, 'không được thêm dòng');
+  assert.equal(cellAt(devices, 2, 'Machine ID'), MACHINE, 'phải ghi mã máy ổn định để lần sau khớp bằng nó');
+});
+
+test('KHÁCH CÀI LẠI APP: mất hết dữ liệu cục bộ, chỉ còn mã máy -> vẫn ra đúng dòng cũ', () => {
+  // Dòng đã có mã máy ổn định, First Install Time cách đây 40 ngày, key còn hạn.
+  const devices = makeSheet('Devices', DEVICE_HEADERS, [[DEVICE.installationId, DEVICE.chatRoomId, KEY, 'Active', days(90), days(-40), days(-40), DEVICE.hardwareHash]]);
+  const ctx = load([
+    devices,
+    makeSheet('Licenses', LICENSE_HEADERS, [[KEY, 'Active', days(90), DEVICE.installationId, DEVICE.chatRoomId, days(-40)]]),
+  ]);
+  // Cho lần đầu tiên ghi mã máy (khách lên từ bản cũ).
+  post(ctx, { gatewaySecret: SECRET, action: 'register_device', ...DEVICE, machineId: MACHINE });
+  assert.equal(devices.__values.length, 2);
+
+  // Lần sau: app cài lại, KHÔNG còn installationId cũ, chỉ có mã máy ổn định,
+  // và phòng chat được suy ra lại từ mã máy (không có phòng cũ).
+  const again = post(ctx, { gatewaySecret: SECRET, action: 'register_device', machineId: MACHINE, installationId: MACHINE, chatRoomId: MACHINE_ROOM, hardwareHash: '' });
+  assert.equal(again.ok, true, JSON.stringify(again));
+  assert.equal(again.value.registered, false, 'phải khớp bằng Machine ID chứ không tạo máy mới');
+  assert.equal(devices.__values.length, 2, 'KHÔNG được sinh dòng thứ hai cho cùng một máy');
+  assert.equal(again.value.status, 'Active', 'khách đang trả tiền không được mất key');
+});
+
+test('khách cài lại app KHÔNG reset được dùng thử (First Install Time của máy chủ là chuẩn)', () => {
+  const devices = makeSheet('Devices', DEVICE_HEADERS, [[DEVICE.installationId, DEVICE.chatRoomId, '', 'Unactivated', '', days(-40), days(-40), DEVICE.hardwareHash]]);
+  const ctx = load([devices, makeSheet('Licenses', LICENSE_HEADERS, [])]);
+  post(ctx, { gatewaySecret: SECRET, action: 'register_device', ...DEVICE, machineId: MACHINE });
+
+  const reinstall = post(ctx, { gatewaySecret: SECRET, action: 'register_device', machineId: MACHINE, installationId: MACHINE, chatRoomId: MACHINE_ROOM, hardwareHash: '' });
+  assert.equal(reinstall.ok, true, JSON.stringify(reinstall));
+  assert.equal(devices.__values.length, 2);
+  assert.equal(reinstall.value.status, 'Expired', '40 ngày rồi thì hết thử — không được tính lại từ hôm nay');
+  assert.equal(devices.__values.length, 2, 'KHÔNG được sinh dòng mới');
+});
+
+test('/reset trả lại suất máy nhưng máy vẫn phải kích hoạt lại được NGAY (regression)', () => {
+  const devices = makeSheet('Devices', DEVICE_HEADERS, [[DEVICE.installationId, DEVICE.chatRoomId, KEY, 'Active', days(90), days(-40), days(-40), DEVICE.hardwareHash]]);
+  const licenses = makeSheet('Licenses', LICENSE_HEADERS, [[KEY, 'Active', days(90), DEVICE.installationId, DEVICE.chatRoomId, days(-40)]]);
+  const bindings = makeSheet('Bindings', BINDING_HEADERS, [[KEY, DEVICE.installationId, DEVICE.chatRoomId, days(-40)]]);
+  const ctx = load([devices, licenses, bindings]);
+  post(ctx, { gatewaySecret: SECRET, action: 'register_device', ...DEVICE, machineId: MACHINE });
+
+  // Admin gõ /reset trong Telegram.
+  const reset = post(ctx, { gatewaySecret: SECRET, action: 'admin_command', chatRoomId: DEVICE.chatRoomId, text: '/reset' });
+  assert.equal(reset.ok, true, JSON.stringify(reset));
+  assert.equal(cellAt(devices, 2, 'Hardware ID'), DEVICE.installationId, 'KHÔNG được xoá Hardware ID — mất khoá tìm dòng');
+  assert.equal(cellAt(devices, 2, 'Machine ID'), MACHINE, 'KHÔNG được xoá Machine ID');
+  assert.equal(bindings.__values.length, 1, 'phải trả lại suất máy cho key');
+
+  // Khách bấm kích hoạt lại ngay, không cần tắt app.
+  const again = post(ctx, { gatewaySecret: SECRET, action: 'verify_key', ...DEVICE, machineId: MACHINE, key: KEY });
+  assert.equal(again.ok, true, 'phải kích hoạt lại được ngay: ' + JSON.stringify(again));
+  assert.equal(again.value.status, 'Active');
+});
+
+test('verify_key nhận ra máy bằng mã máy ổn định khi Hardware ID bị xoá (dữ liệu cũ)', () => {
+  const devices = makeSheet('Devices', DEVICE_HEADERS, [[DEVICE.installationId, DEVICE.chatRoomId, '', 'Unactivated', '', days(-1), days(-1), DEVICE.hardwareHash]]);
+  const licenses = makeSheet('Licenses', LICENSE_HEADERS, [[KEY, 'Active', days(90), '', '', days(-1)]]);
+  const ctx = load([devices, licenses]);
+  post(ctx, { gatewaySecret: SECRET, action: 'register_device', ...DEVICE, machineId: MACHINE });
+
+  // Trạng thái do /reset phiên bản CŨ để lại: Hardware ID trống, chỉ còn Machine ID.
+  devices.__values[1][colOf(devices, 'Hardware ID')] = '';
+  devices.__values[1][colOf(devices, 'Status')] = 'Unactivated';
+
+  const res = post(ctx, { gatewaySecret: SECRET, action: 'verify_key', machineId: MACHINE, installationId: MACHINE, chatRoomId: MACHINE_ROOM, key: KEY });
+  assert.equal(res.ok, true, JSON.stringify(res));
+  assert.equal(res.value.status, 'Active', 'phải kích hoạt được bằng mã máy ổn định');
+});
+
+// ---------------------------------------------------------------------------
+// SỐ MÁY — thông tin khách cần để biết key dùng được cho mấy máy
+// ---------------------------------------------------------------------------
+test('/check hiện số máy đã dùng / tổng, và /new trả về số slot', () => {
+  const devices = makeSheet('Devices', DEVICE_HEADERS, [[DEVICE.installationId, DEVICE.chatRoomId, KEY, 'Active', days(90), days(-40), days(-40), DEVICE.hardwareHash]]);
+  const licenses = makeSheet('Licenses', [...LICENSE_HEADERS.slice(0, 6), 'Max Devices'], [[KEY, 'Active', days(90), '', '', days(-40), '3']]);
+  const bindings = makeSheet('Bindings', BINDING_HEADERS, [[KEY, DEVICE.installationId, DEVICE.chatRoomId, days(-40)]]);
+  const ctx = load([devices, licenses, bindings]);
+
+  const res = post(ctx, { gatewaySecret: SECRET, action: 'admin_command', chatRoomId: DEVICE.chatRoomId, text: '/check' });
+  assert.equal(res.ok, true, JSON.stringify(res));
+  assert.match(res.value.reply, /Số máy: 1\/3/, 'phải hiện đã dùng 1 trong tổng 3');
+  assert.match(res.value.reply, /còn 2 slot/);
+  assert.equal(res.value.maxDevices, 3);
+  assert.equal(res.value.usedSlots, 1);
+});
+
+test('/check không hiện số máy khi máy chưa có key (đang dùng thử)', () => {
+  const ctx = standardCtx([], [[DEVICE.installationId, DEVICE.chatRoomId, '', 'Unactivated', '', days(-1), days(-1), DEVICE.hardwareHash]]);
+  const res = post(ctx, { gatewaySecret: SECRET, action: 'admin_command', chatRoomId: DEVICE.chatRoomId, text: '/check' });
+  assert.equal(res.ok, true, JSON.stringify(res));
+  assert.doesNotMatch(res.value.reply, /Số máy/, 'chưa có key thì số máy không có ý nghĩa, đừng hiện');
+});
+
+test('/new trả về số slot và hiện 0/N', () => {
+  // Phải có dòng thiết bị, nếu không /new không tìm thấy phòng chat này.
+  const ctx = standardCtx([], [[DEVICE.installationId, DEVICE.chatRoomId, '', 'Trial', '', days(-1), days(-1), DEVICE.hardwareHash]]);
+  const res = post(ctx, { gatewaySecret: SECRET, action: 'admin_command', chatRoomId: DEVICE.chatRoomId, text: '/new thang 3' });
+  assert.equal(res.ok, true, JSON.stringify(res));
+  assert.equal(res.value.maxDevices, 3);
+  assert.equal(res.value.usedSlots, 0);
+  assert.match(res.value.reply, /0\/3 slot/);
+  assert.ok(res.value.keyName, 'phải trả key mới');
+});
+
+test('list_devices: trả về đủ thông tin và đánh dấu online theo cửa sổ 15 phút', () => {
+  const now = Date.now();
+  const ctx = standardCtx([], [
+    [DEVICE.installationId, DEVICE.chatRoomId, KEY, 'Active', days(90), days(-40), days(-40), DEVICE.hardwareHash],
+    ['99999999-8888-4777-8666-555555555555', 'ROOM_WIN_OFFLINE01', '', 'Unactivated', '', days(-2), days(-2), ''],
+  ]);
+  const res = post(ctx, { gatewaySecret: SECRET, action: 'list_devices', now });
+  assert.equal(res.ok, true, JSON.stringify(res));
+  assert.equal(res.value.devices.length, 2);
+  assert.equal(res.value.onlineWindowMs, 15 * 60 * 1000);
+
+  const fresh = res.value.devices.find(d => d.machineId || d.hardwareId === DEVICE.installationId);
+  assert.equal(fresh.chatRoomId, DEVICE.chatRoomId);
+  assert.equal(fresh.status, 'Active');
+  assert.equal(fresh.keyName, KEY);
+  // Dòng vừa sửa => online; dòng cũ => offline.
+  const offline = res.value.devices.find(d => d.chatRoomId === 'ROOM_WIN_OFFLINE01');
+  assert.equal(offline.online, false, 'máy không mở 2 ngày thì offline');
+});
+
+// ---------------------------------------------------------------------------
+// /check_SDT — tra cứu theo số điện thoại
+// ---------------------------------------------------------------------------
+const PHONE_HEADERS = [...DEVICE_HEADERS, 'Machine ID', 'Phone', 'Name', 'Plan'];
+const PHONE_DEVICES = [
+  ['11111111-2222-4333-8444-555555555555', 'ROOM_WIN_TEST0001', 'KEY-TEST0001', 'Active', days(90), days(-40), days(-40), 'A'.repeat(64), MACHINE, '0987654321', 'Nguyễn Văn A', 'Plus'],
+  ['22222222-3333-4444-8555-666666666666', 'ROOM_WIN_TEST0002', 'KEY-OLD00001', 'Active', days(-10), days(-90), days(-90), 'B'.repeat(64), 'DEV_AAAABBBBCCCCDDDD', '0987654321', 'Nguyễn Văn A', 'Basic'],
+  ['33333333-4444-4555-8666-777777777777', 'ROOM_WIN_KHAC0001', 'KEY-KHAC0001', 'Active', days(30), days(-30), days(-30), 'C'.repeat(64), 'DEV_1111222233334444', '0900000000', 'Khách Khác', ''],
+];
+const PHONE_LICENSES = [
+  ['KEY-TEST0001', 'Active', days(90), '', 'ROOM_WIN_TEST0001', days(-40), '2'],
+  ['KEY-OLD00001', 'Active', days(-10), '', 'ROOM_WIN_TEST0002', days(-90), '1'],
+  ['KEY-KHAC0001', 'Active', days(30), '', 'ROOM_WIN_KHAC0001', days(-30), '1'],
+];
+
+const phoneCtx = (devices = PHONE_DEVICES, licenses = PHONE_LICENSES) => load([
+  makeSheet('Devices', PHONE_HEADERS, devices),
+  makeSheet('Licenses', [...LICENSE_HEADERS, 'Max Devices'], licenses),
+  makeSheet('Bindings', BINDING_HEADERS, [
+    ['KEY-TEST0001', '11111111-2222-4333-8444-555555555555', 'ROOM_WIN_TEST0001', days(-40)],
+  ]),
+]);
+
+test('find_by_phone trả mọi máy và mọi key của số đó', () => {
+  const res = post(phoneCtx(), { gatewaySecret: SECRET, action: 'find_by_phone', phone: '0987654321' });
+  assert.equal(res.ok, true, JSON.stringify(res));
+  assert.equal(res.value.found, true);
+  assert.equal(res.value.devices.length, 2, 'cùng một SĐT đăng ký trên 2 máy');
+  assert.equal(res.value.licenses.length, 2, 'mỗi máy một key, phải thấy cả hai');
+  const keys = res.value.licenses.map(l => l.keyName).sort();
+  assert.deepEqual(keys, ['KEY-OLD00001', 'KEY-TEST0001']);
+});
+
+test('find_by_phone không lẫn máy của khách khác', () => {
+  const res = post(phoneCtx(), { gatewaySecret: SECRET, action: 'find_by_phone', phone: '0987654321' });
+  const rooms = res.value.devices.map(d => d.chatRoomId);
+  assert.ok(!rooms.includes('ROOM_WIN_KHAC0001'), 'không được lẫn máy của SĐT khác');
+  const keys = res.value.licenses.map(l => l.keyName);
+  assert.ok(!keys.includes('KEY-KHAC0001'), 'không được lẫn key của SĐT khác');
+});
+
+test('find_by_phone chuẩn hoá SĐT: bỏ 0 đầu, mã 84, dấu cách và dấu chấm', () => {
+  for (const variant of ['987654321', '+84 987 654 321', '84987654321', '0987 654 321', '0987.654.321']) {
+    const res = post(phoneCtx(), { gatewaySecret: SECRET, action: 'find_by_phone', phone: variant });
+    assert.equal(res.ok, true, variant);
+    assert.equal(res.value.devices.length, 2, `SĐT "${variant}" phải ra 2 máy`);
+  }
+});
+
+test('find_by_phone: key hết hạn phải hiện Expired, không phải Active', () => {
+  // KEY-OLD00001 có hạn trong quá khứ nhưng cột Status vẫn ghi "Active".
+  // Nếu chỉ đọc cột Status thì admin bị dẫn sai.
+  const res = post(phoneCtx(), { gatewaySecret: SECRET, action: 'find_by_phone', phone: '0987654321' });
+  const old = res.value.licenses.find(l => l.keyName === 'KEY-OLD00001');
+  assert.equal(old.status, 'Expired');
+  const cur = res.value.licenses.find(l => l.keyName === 'KEY-TEST0001');
+  assert.equal(cur.status, 'Active');
+});
+
+test('find_by_phone: kèm số máy đã gán theo từng key', () => {
+  const res = post(phoneCtx(), { gatewaySecret: SECRET, action: 'find_by_phone', phone: '0987654321' });
+  const cur = res.value.licenses.find(l => l.keyName === 'KEY-TEST0001');
+  assert.equal(cur.maxDevices, 2);
+  assert.equal(cur.usedSlots, 1);
+  assert.equal(cur.boundDevices.length, 1);
+  assert.equal(cur.boundDevices[0].chatRoomId, 'ROOM_WIN_TEST0001');
+});
+
+test('find_by_phone: SĐT không có ai thì trả found=false, không phải lỗi', () => {
+  const res = post(phoneCtx(), { gatewaySecret: SECRET, action: 'find_by_phone', phone: '0999999999' });
+  assert.equal(res.ok, true, JSON.stringify(res));
+  assert.equal(res.value.found, false);
+  assert.deepEqual(res.value.devices, []);
+  assert.deepEqual(res.value.licenses, []);
+});
+
+test('find_by_phone: SĐT rác / rỗng thì không ném lỗi mà trả found=false', () => {
+  for (const bad of ['', '   ', 'khong-co-so']) {
+    const res = post(phoneCtx(), { gatewaySecret: SECRET, action: 'find_by_phone', phone: bad });
+    assert.equal(res.ok, true, `SĐT "${bad}" không được làm hỏng lệnh`);
+    assert.equal(res.value.found, false);
+  }
+});
+
+test('find_by_phone đánh dấu online theo Last Seen Time', () => {
+  const fresh = PHONE_DEVICES.map(r => r.slice());
+  fresh[0][6] = new Date(Date.now() - 60 * 1000);   // vừa mở app
+  fresh[1][6] = new Date(Date.now() - 5 * 3600000);  // 5 giờ trước
+  const res = post(phoneCtx(fresh), { gatewaySecret: SECRET, action: 'find_by_phone', phone: '0987654321' });
+  const on = res.value.devices.filter(d => d.online).map(d => d.chatRoomId);
+  assert.deepEqual(on, ['ROOM_WIN_TEST0001']);
+});
+
+test('find_by_phone là lệnh toàn cục — không được đòi mã máy', () => {
+  const res = post(phoneCtx(), { gatewaySecret: SECRET, action: 'find_by_phone', phone: '0987654321' });
+  assert.equal(res.ok, true, 'thiếu installationId vẫn phải chạy được');
+});
+
+test('REGRESSION: find_by_phone bị chặn nếu không có secret của Gateway', () => {
+  // Tra cứu theo SĐT lộ thông tin của khách, nên chỉ Gateway gọi được. Nếu lọt
+  // ra ngoài thì bất kỳ ai biết SĐT của khách cũng tra được key của họ.
+  const ctx = phoneCtx();
+  for (const payload of [
+    { action: 'find_by_phone', phone: '0987654321' },
+    { action: 'find_by_phone', phone: '0987654321', gatewaySecret: 'sai-secret' },
+    { action: 'find_by_phone', phone: '0987654321', gatewaySecret: '' },
+  ]) {
+    const res = post(ctx, payload);
+    assert.equal(res.ok, false, JSON.stringify(payload));
+    assert.match(res.error, /Unauthorized/i, 'phải từ chối, không được trả dữ liệu');
+  }
+  assert.equal(post(ctx, { gatewaySecret: SECRET, action: 'list_devices' }).ok, true, 'secret đúng thì chạy');
+});
+
+test('REGRESSION: list_devices cũng bị chặn nếu không có secret', () => {
+  const res = post(phoneCtx(), { action: 'list_devices' });
+  assert.equal(res.ok, false);
+  assert.match(res.error, /Unauthorized/i);
+});
+
+test('list_devices: không lọc theo máy — đây là lệnh toàn cục của admin', () => {
+  const ctx = standardCtx();
+  const res = post(ctx, { gatewaySecret: SECRET, action: 'list_devices' });
+  assert.equal(res.ok, true, JSON.stringify(res));
+  assert.ok(Array.isArray(res.value.devices));
+});
+
+test('mã máy DEV_ và UUID cũ đều hợp lệ; rác thì bị từ chối', () => {
+  const ctx = standardCtx();
+  const withGate = body => ({ gatewaySecret: SECRET, action: 'license_status', ...body });
+  assert.equal(post(ctx, withGate({ machineId: MACHINE, installationId: MACHINE, chatRoomId: MACHINE_ROOM })).ok, true);
+  assert.equal(post(ctx, withGate({ ...DEVICE })).ok, true, 'app bản cũ gửi UUID vẫn phải chạy');
+  assert.equal(post(ctx, withGate({ machineId: 'DEV_XYZ', installationId: MACHINE, chatRoomId: MACHINE_ROOM })).ok, false);
+  assert.equal(post(ctx, withGate({ machineId: MACHINE, installationId: MACHINE, chatRoomId: 'phong-sai-dinh-dang' })).ok, false);
+  assert.equal(post(ctx, withGate({ chatRoomId: MACHINE_ROOM })).ok, false, 'không có mã máy nào thì phải từ chối');
 });
 
 test('license_status: dùng thử luôn tính từ First Install Time của máy chủ', () => {

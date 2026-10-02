@@ -23,6 +23,10 @@ function toInvoiceShape(record, state) {
     tdlap: record.ngayLap || '',
     nbten: record.tenBan || '',
     nbmst: record.mstBan || '',
+    // Khoá phải trùng tên invoice-html.js đọc (dòng ~173): nbmch / nbtch / nbdt.
+    nbmch: record.maCh || '',
+    nbtch: record.tenCh || '',
+    nbdt: record.dtBan || '',
     nmten: record.tenMua || '',
     nmmst: record.mstMua || '',
     dvtte: record.dvtTe || '',
@@ -55,6 +59,15 @@ function toInvoiceShape(record, state) {
     // MCCQT và NLap: bộ dựng ưu tiên hai khoá `_xml*` này khi dựng HTML (xem withXmlFields).
     _xmlMccqt: record.mccqt || null,
     _xmlNlap: record.ngayLap || null,
+    tgtttbchu: record.tongTienChu || '',
+    // invoice-html.js đọc chữ ký số qua JSON trong `nbcks` (Subject hoặc X509SubjectName đều
+    // được, signerCommonName tự bóc CN=). Rỗng ⇒ không vẽ khung "Signature Valid".
+    nbcks: (record.cksSigningTime || record.cksX509SubjectName)
+      ? JSON.stringify({
+        SigningTime: record.cksSigningTime || '',
+        Subject: record.cksX509SubjectName || '',
+      })
+      : '',
     hdhhdvu: items,
   };
   return { inv, detail };

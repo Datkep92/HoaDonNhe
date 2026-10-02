@@ -128,6 +128,38 @@ test('Bước 4: khách gửi Họ tên + SĐT khi bấm mua key', async () => {
   }
 });
 
+test('CRM lỗi lúc mở app KHÔNG được làm mất bản quyền đang mua (regression)', async () => {
+  // Gateway trả về đúng thứ mà Worker từng bịa ra khi Apps Script lỗi:
+  // trạng thái rỗng + hạn rỗng. Trước đây app ghi thẳng vào đĩa và khách mua
+  // 1 năm bị báo "hết hạn" vĩnh viễn, phải tự nhập lại key.
+  const server = http.createServer((req, res) => {
+    let body = '';
+    req.on('data', chunk => { body += chunk; });
+    req.on('end', () => {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, value: { status: '', expiryAt: '' } }));
+    });
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  try {
+    const dir = tempDir('hd-crm-down-');
+    fs.writeFileSync(path.join(dir, 'support-gateway.json'), JSON.stringify({ url: `http://127.0.0.1:${server.address().port}` }));
+    const store = new SupportStore(dir);
+    // Khách cài lâu rồi và đang mua: hạn thật còn 1 năm.
+    store.data.device.firstInstallAt = Date.now() - (TRIAL_DAYS + 300) * DAY;
+    store.data.license = { status: 'Active', key: 'KEY-QUAN-TRONG', keyName: 'KEY-QUAN-TRONG', expiryAt: '2099-01-01', updatedAt: Date.now() };
+    store.save();
+
+    await store.register();
+    assert.equal(store.data.license.status, 'Active', 'không được hạ cấp trạng thái vì máy chủ trả rỗng');
+    assert.equal(store.data.license.expiryAt, '2099-01-01', 'không được xoá hạn đã biết');
+    assert.equal(store.publicLicense().status, 'Active');
+    await assert.doesNotReject(() => store.enforceLicense());
+  } finally {
+    server.close();
+  }
+});
+
 test('Offline grace: trong 3 ngày vẫn chạy, quá 3 ngày thì chặn', async () => {
   const dir = tempDir('hd-offline-');
   // Cổng chết: mọi request tới Gateway thất bại ngay (mô phỏng mất mạng).

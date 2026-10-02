@@ -124,16 +124,21 @@ jobs:
           $tag = if ($env:REF_NAME -match '^(cntax-)?v\d') { $env:REF_NAME } else { "v$($env:VERSION)" }
           $setup = "release/CN-Tax-Tools-Setup-v$($env:VERSION).exe"
           $binary = "release/CN-Tax-Tools-v$($env:VERSION).exe"
-          # Ghi chú do `npm run installer` sinh ra ngay trước đây (nằm trong release/ bị
-          # .gitignore nên không có trong repo). Nội dung chứa SHA-256 của đúng file Setup CI vừa
-          # đóng gói, nên không thể commit sẵn — NSIS nhúng timestamp, mỗi lần build ra SHA khác.
-          # Bỏ chốt an toàn: thiếu file thì tạo nội dung tối giản, phát hành thiếu mô tả còn hơn
-          # không phát hành (và không mất công build xong rồi để ngỏng asset trên tag).
-          $notes = "release/RELEASE_NOTES.md"
+          # Ưu tiên ghi chú đã commit trong repo (.github/RELEASE_NOTES.md) — release/ bị
+          # .gitignore nên bản sinh cục bộ không tồn tại trong checkout sạch của CI, và bản đó
+          # lại chứa SHA-256 của file Setup trên máy người build, không dùng được cho CI.
+          # Nhờ vậy mỗi lần phát hành đều có mục thay đổi thật thay vì một dòng tiêu đề.
+          $notes = ".github/RELEASE_NOTES.md"
           if (-not (Test-Path $notes)) {
-            "CN Tax Tools v$($env:VERSION)" | Set-Content -Path $notes -Encoding utf8
-            Write-Warning "Khong tim thay $notes - dung noi dung toi gian."
+            $notes = "release/RELEASE_NOTES.md"
+            Write-Warning "Khong co .github/RELEASE_NOTES.md - dung ban trong release/ neu co."
           }
+          if (-not (Test-Path $notes)) {
+            $notes = "release/RELEASE_NOTES.md"
+            "CN Tax Tools v$($env:VERSION)" | Set-Content -Path $notes -Encoding utf8
+            Write-Warning "Khong tim thay ghi chu - dung noi dung toi gian."
+          }
+          Write-Host "Ghi chu phat hanh: $notes"
           gh release create $tag `
             $setup "$setup.sha256" `
             $binary "$binary.sha256" `

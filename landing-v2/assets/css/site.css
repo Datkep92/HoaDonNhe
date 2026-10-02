@@ -755,24 +755,52 @@ h2 { font-size: clamp(26px, 3.2vw, 38px); line-height: 1.18; letter-spacing: -.8
 }
 
 @media (max-width: 640px) {
-  body { font-size: 15.5px; }
-  .hero { padding-top: calc(var(--nav-h) + 42px); padding-bottom: 64px; }
-  .hero::before { height: 480px; }
-  h1 { font-size: 31px; letter-spacing: -.9px; }
-  .lead { font-size: 16.5px; }
+  body { font-size: 15px; }
+  .hero { padding-top: calc(var(--nav-h) + 20px); padding-bottom: 32px; }
+  .hero::before { height: 300px; }
+  h1 { font-size: 25px; letter-spacing: -.6px; }
+  .lead { font-size: 14.5px; }
   .cta-row .btn { width: 100%; }
   .pain-grid, .roles, .steps, .price-grid, .band, .ft-in, .hi-grid { grid-template-columns: 1fr; }
-  .band div { padding: 20px 18px; }
-  .band b { font-size: 26px; }
-  .steps { gap: 26px; }
-  .pcard { padding: 26px 22px; }
-  .hi { padding: 24px 20px 26px; }
-  .frow + .frow { margin-top: 64px; }
-  .hd-center { margin-bottom: 36px; }
-  .fq summary { font-size: 15px; padding: 15px 16px; }
-  .fq .body { padding: 0 16px 16px; }
-  .gal-note { padding: 15px 16px; gap: 11px; }
-  .gal-note p { font-size: 14px; }
+  .band div { padding: 14px 12px; }
+  .band b { font-size: 20px; }
+  .steps { gap: 16px; }
+  .pcard { padding: 18px 16px; }
+  .hi { padding: 16px 14px 18px; }
+  .frow + .frow { margin-top: 36px; }
+  .hd-center { margin-bottom: 22px; }
+  .fq summary { font-size: 13.5px; padding: 12px 13px; }
+  .fq .body { padding: 0 13px 13px; }
+  .gal-note { padding: 10px 12px; gap: 8px; }
+  .gal-note p { font-size: 12.5px; }
+  .sec { padding: 32px 0; }
+  .eyebrow { font-size: 10.5px; margin-bottom: 8px; }
+  h2 { font-size: 20px; }
+  .sub { font-size: 13.5px; margin-top: 8px; }
+  .ftext h3 { font-size: 19px; }
+  .ftext > p { font-size: 13.5px; }
+  .flist li { font-size: 13px; }
+  .pain { padding: 16px 14px; }
+  .pain h3 { font-size: 14.5px; }
+  .pain p { font-size: 12.5px; }
+  .role { padding: 16px 14px; }
+  .free-bar { padding: 14px 16px; }
+  .free-bar h3 { font-size: 16px; }
+  .free-bar p { font-size: 12.5px; }
+  .hi-top { gap: 8px; margin-bottom: 8px; }
+  .hi-ico { width: 34px; height: 34px; }
+  .hi-ico svg { width: 17px; height: 17px; }
+  .hi h3 { font-size: 15px; }
+  .hi p { font-size: 12.5px; }
+  .hi .hi-list li { font-size: 12px; }
+  .gal-btn { padding: 7px 10px; font-size: 12px; }
+  .gal-btn svg { width: 13px; height: 13px; }
+  /* An section thua tren mobile */
+  #vai-tro, .cmp-wrap, .tax-wrap { display: none; }
+  .steps .step:nth-child(n+3) { display: none; }
+  .fq-list .fq:nth-child(n+5) { display: none; }
+  .price-grid .pcard:nth-child(n+2) { display: none; }
+  .pay-note { display: none; }
 }
 
 @media (prefers-reduced-motion: reduce) {

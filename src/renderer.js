@@ -655,7 +655,7 @@ let lastRenderedState = '';
 // `itemsRevision` là revision do SERVER đếm (Engine.jobRevision tăng khi nội dung job đổi).
 // accounts/pool/stats được JSON.stringify (nhỏ, vài chục phần tử) để bắt cả thay đổi bên trong.
 function stateSignature(state) {
-  return [pending, selectingMst, $('login-dialog').open ? 1 : 0, state.state, state.busy ? 1 : 0, state.authBusy ? 1 : 0, state.authenticated ? 1 : 0, state.selected, state.output, state.companyName, state.browserVisible ? 1 : 0, state.browserReady ? 1 : 0, state.mode, state.message, state.total, state.done, state.failed, state.percentage, state.itemsRevision, JSON.stringify(state.accounts), JSON.stringify(state.pool), JSON.stringify(state.stats)].join('\u0001');
+  return [pending, selectingMst, $('login-dialog').open ? 1 : 0, state.state, state.busy ? 1 : 0, state.authBusy ? 1 : 0, state.backgroundAuth ? 1 : 0, state.autoLoginBlocked ? 1 : 0,  state.authenticated ? 1 : 0, state.selected, state.output, state.companyName, state.browserVisible ? 1 : 0, state.browserReady ? 1 : 0, state.mode, state.message, state.total, state.done, state.failed, state.percentage, state.itemsRevision, JSON.stringify(state.accounts), JSON.stringify(state.pool), JSON.stringify(state.stats)].join('\u0001');
 }
 // 4 thẻ số chi tiết (TỔNG HÓA ĐƠN / ĐÃ TẢI / ĐÃ CÓ SẴN / LỖI) đọc ĐÚNG bộ đếm state.stats mà dòng
 // chữ #stats đang dùng (core.js đếm sẵn: total · downloaded · existed · failed) — không thêm logic
@@ -716,10 +716,24 @@ function render(state) {
     }
   }
   const isSelectingNew = selectingMst && selectingMst !== selected;
-  $('account-hint').textContent = initialLoading
-    ? 'Đang kiểm tra phiên đăng nhập…'
-    : isSelectingNew ? `Đang kiểm tra phiên đăng nhập cho MST ${selectingMst}…`
-      : selected ? (state.authenticated ? 'Đang online' : (account?.session === 'saved' ? 'Có phiên đã lưu nhưng đã hết hạn.' : 'Chưa đăng nhập.')) : 'Chọn một MST trong danh sách bên trái.';
+  // Nhãn phiên. `saved` + `sessionChecked=false` nghĩa là CÓ token đã lưu nhưng CHƯA
+// kiểm tra — KHÔNG phải hết hạn. Trước đây gộp chung hai thứ này nên lúc mở app mọi
+// MST đều hiện "Có phiên đã lưu nhưng đã hết hạn", đẩy người dùng vào đăng nhập lại
+// trong khi phiên vẫn dùng được.
+const sessionHint = (account, state) => {
+  if (!account) return 'Chọn một MST trong danh sách bên trái.';
+  // Đăng nhập nền đang chạy: nói rõ để người dùng hiểu vì sao nút chưa bật, thay vì
+  // tưởng app treo. KHÔNG khoá giao diện — xem foregroundAuth ở server.js.
+  if (state.backgroundAuth) return 'Đang tự đăng nhập lại bằng mật khẩu đã lưu…';
+  if (account.autoLoginBlocked) return 'Tự đăng nhập không thành công — bấm MST để đăng nhập tay.';
+  if (account.session === 'live') return 'Đang online';
+  if (account.session === 'saved') return state.sessionChecked ? 'Có phiên đã lưu nhưng đã hết hạn.' : 'Đang kiểm tra phiên đã lưu…';
+  return 'Chưa đăng nhập.';
+};
+$('account-hint').textContent = isSelectingNew
+    ? `Đang kiểm tra phiên đăng nhập cho MST ${selectingMst}…`
+    : state.authenticated ? 'Đang online'
+      : (selected ? sessionHint(account, state) : 'Chọn một MST trong danh sách bên trái.');
   $('auth-dot').classList.toggle('active', !!state.authenticated);
   // Trạng thái "đang tải" của tab Tổng quan do data-ui.js quản lý (chip cạnh nút cập nhật).
   // Renderer KHÔNG đụng vào đây để hai bên không giành nhau ẩn/hiện gây nháy.
@@ -751,11 +765,14 @@ function render(state) {
     ? `Đã khoá theo thư mục đang dùng: ${state.output}. Bấm “Đổi thư mục…” nếu muốn đổi (sẽ có cảnh báo mất dữ liệu).`
     : 'Gõ/dán đường dẫn đầy đủ, hoặc bấm “Chọn thư mục…”';
   $('empty').hidden = !!state.total;
-  // Hiện spinner loading ở khu vực kết quả khi đang tải lần đầu (chưa có state từ server)
+  // KHÔNG dựng màn hình chặn chờ đợi ở đây nữa. Trước đây khu vực kết quả bị thay bằng
+  // lời nhắc phải chờ suốt lúc kiểm tra phiên, dù dữ liệu của MST đang chọn đã nằm
+  // sẵn trên đĩa và sidebar đã vẽ xong. Chỉ còn hiện spinner ở danh sách MST khi
+  // thực sự chưa có dòng nào để vẽ.
   if (initialLoading && !state.selected) {
     const emptyEl = $('empty');
     if (emptyEl && !emptyEl.hidden) {
-      emptyEl.innerHTML = '<div class="empty-icon"><span class="loading-spinner"></span></div><h3>Đang kiểm tra phiên đăng nhập…</h3><p>Vui lòng chờ trong giây lát.</p>';
+      emptyEl.innerHTML = '<h3>Chưa có kết quả</h3><p>Bấm “▶ Tra cứu” để bắt đầu tải hoá đơn. Dữ liệu đã tải trước đó vẫn còn nguyên.</p>';
     }
   }
   const busy = state.busy || state.authBusy || pending;

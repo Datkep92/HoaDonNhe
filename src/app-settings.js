@@ -117,14 +117,48 @@
   // theo request kiểm tra License lên máy chủ liên tục.
   async function refreshLicense() { try { renderLicense(await api('/api/support/license')); } catch {} }
   async function refreshLockStatus() { try { renderLock(await api('/api/app-lock/status')); } catch {} }
-  async function refreshSettings() { await refreshLicense(); await refreshLockStatus(); }
+
+  // ---- Khởi động cùng Windows ----
+  // Không poll: chỉ đọc khi mở Cài đặt. Trạng thái nằm ở registry, mỗi lần đọc đều
+  // gọi reg.exe — hỏi liên tục là lãng phí và nong.
+  function renderAutostart(value) {
+    const box = q('autostart-enabled');
+    box.checked = !!value.enabled;
+    box.disabled = value.supported !== true;
+    q('autostart-command').textContent = value.command || 'Chưa bật';
+    const detail = q('autostart-command').closest('details');
+    if (detail) detail.hidden = !value.command;
+    if (value.supported !== true) setMessage('autostart-message', 'Máy này không chạy Windows nên không có tuỳ chọn khởi động cùng hệ điều hành.');
+    // pending = đã bật theo lựa chọn nhưng khoá Run chưa có (thường do chính sách
+    // doanh nghiệp khoá registry). Báo rõ, không để người dùng tin là đã xong.
+    else if (value.pending) setMessage('autostart-message', 'Chưa ghi được khoá khởi động (Windows có thể đang chặn). Thử tắt rồi bật lại, hoặc bật thủ công trong Task Manager → Startup.');
+    else if (value.error) setMessage('autostart-message', 'Có lỗi khi ghi khoá khởi động: ' + value.error);
+    else setMessage('autostart-message', value.enabled ? 'Đang bật.' : 'Đang tắt.');
+  }
+
+  async function refreshAutostart() {
+    try { renderAutostart(await api('/api/autostart')); } catch (error) { setMessage('autostart-message', error.message); }
+  }
+
+  async function toggleAutostart() {
+    const box = q('autostart-enabled');
+    const want = box.checked;
+    box.disabled = true;                      // chặn bấm đúp trong lúc reg.exe đang chạy
+    try { renderAutostart(await api('/api/autostart', { enabled: want })); }
+    catch (error) { box.checked = !want; setMessage('autostart-message', error.message); }
+    finally { box.disabled = false; }
+  }
+
+  async function refreshSettings() { await refreshLicense(); await refreshLockStatus(); await refreshAutostart(); }
 
   function showPane(name) {
-    const license = name === 'license';
-    q('settings-license').hidden = !license;
-    q('settings-lock').hidden = license;
-    q('settings-tab-license').classList.toggle('active', license);
-    q('settings-tab-lock').classList.toggle('active', !license);
+    const panes = ['license', 'lock', 'startup'];
+    const active = panes.includes(name) ? name : 'license';
+    panes.forEach(pane => {
+      const on = pane === active;
+      q('settings-' + pane).hidden = !on;
+      q('settings-tab-' + pane).classList.toggle('active', on);
+    });
   }
 
   function openSettings(tab = 'license') {
@@ -134,6 +168,9 @@
     q('settings-dialog').showModal();
     void refreshSettings();
   }
+
+  q('settings-tab-startup').onclick = () => showPane('startup');
+  q('autostart-enabled').onchange = toggleAutostart;
 
   // Thẻ gói nằm ngay trong dialog đăng ký (#payment-plans) — DOM là nguồn duy nhất,
   // không nhân bản sang chỗ khác. Chọn gói = đánh dấu đúng thẻ đó.
@@ -154,8 +191,11 @@
       item.querySelector('button').setAttribute('aria-checked', String(active));
     }
 
-    q('payment-title').textContent = 'Đăng ký ' + currentPlan;
-    q('payment-subtitle').textContent = card.dataset.price || '';
+    // Dự án đang phát triển nên không hiện giá. Tiêu đề và phụ đề là hằng số cố
+    // định; chọn nhóm chỉ quyết định cột Plan gửi lên CRM để admin thấy khách
+    // đang ở nhóm nào.
+    q('payment-title').textContent = 'Dự án đang phát triển';
+    q('payment-subtitle').textContent = 'Đang phát hành miễn phí cho người dùng.';
   }
 
   // "Giao diện thông tin đăng ký": chọn gói + QR + Họ tên/SĐT của khách.

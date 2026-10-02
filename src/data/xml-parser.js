@@ -104,6 +104,7 @@ function parseInvoiceXml(xml) {
   const nban = blockOf(source, 'NBan');
   const nmua = blockOf(source, 'NMua');
   const ttoan = blockOf(source, 'TToan');
+  const dscks = blockOf(source, 'DSCKS');
 
   const items = [...source.matchAll(/<HHDVu>([\s\S]*?)<\/HHDVu>/g)].map(match => {
     const body = match[1];
@@ -134,6 +135,17 @@ function parseInvoiceXml(xml) {
     // phục vụ bản xem trước hoá đơn A4, đọc trực tiếp từ XML khi người dùng bấm xem.
     dchiBan: textIn(nban, 'DChi') || null,
     dchiMua: textIn(nmua, 'DChi') || null,
+    // Cửa hàng / điện thoại người bán — XML có sẵn (MCHang, TCHang, SDThoai) nhưng trước đây
+    // không đọc, nên bản xem trước A4 thiếu 3 dòng này trong khi bản tải PDF (dựng từ detail
+    // của cổng) có ⇒ người dùng xem một đằng, nhận một nằng.
+    maCh: textIn(nban, 'MCHang') || null,
+    tenCh: textIn(nban, 'TCHang') || textIn(nban, 'TDDKDoanh') || null,
+    dtBan: textIn(nban, 'SDThoai') || null,
+    // "Tổng tiền bằng chữ": TTCKTMai trong XML là con số (thường 0), chữ nằm ở TgTTTBChu.
+    tongTienChu: textIn(ttoan, 'TgTTTBChu') || null,
+    // Chữ ký số: DSCKS chứa SigningTime và X509SubjectName (dạng DN, có CN=...).
+    cksSigningTime: textIn(dscks, 'SigningTime') || null,
+    cksX509SubjectName: textIn(dscks, 'X509SubjectName') || null,
     httToan: textIn(ttchung, 'HTTToan') || null,
     paymentMethodRaw: textIn(ttchung, 'HTTToan') || null,
     paymentMethod: normalizePaymentMethod(textIn(ttchung, 'HTTToan')),

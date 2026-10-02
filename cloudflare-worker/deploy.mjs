@@ -21,6 +21,7 @@
 // Override the probe URL with WORKER_URL.
 
 import { readFile } from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
@@ -34,7 +35,59 @@ const here = dirname(fileURLToPath(import.meta.url));
 const token = (process.env.CLOUDFLARE_API_TOKEN || '').trim();
 if (!token) fail('Thiếu CLOUDFLARE_API_TOKEN. Tạo token quyền "Account → Workers Scripts → Edit" rồi đặt biến môi trường.');
 
+// Đọc `vars` trong wrangler.jsonc làm giá trị mặc định, để không phải copy tay 3
+// biến mỗi lần deploy. Biến môi trường vẫn thắng (để deploy thử sang account khác).
+// jsonc = JSON có comment, nên phải bỏ comment trước khi JSON.parse.
+function wranglerVars() {
+  try {
+    const raw = readFileSync(join(here, 'wrangler.jsonc'), 'utf8')
+      .replace(/^\s*\/\/.*$/gm, '')
+      .replace(/\/\*[\s\S]*?\*\//g, '');
+    return JSON.parse(raw).vars || {};
+  } catch (error) {
+    console.log(`(không đọc được wrangler.jsonc: ${error.message})`);
+    return {};
+  }
+}
+const DEFAULTS = wranglerVars();
+const VARS = ['GAS_URL', 'FIREBASE_DATABASE_URL', 'TELEGRAM_CHAT_ID'];
+const setting = name => process.env[name] || DEFAULTS[name] || '';
+
 function fail(message) { console.error(`LỖI: ${message}`); process.exit(1); }
+
+// Gọi thử Apps Script xem còn sống không. Chạy TRƯỚC khi upload: deploy một
+// GAS_URL chết sẽ làm hỏng toàn bộ luồng bản quyền, mà lúc đó chỉ biết về sau
+// khi khách báo lỗi.
+//
+// Phải THỬ LẠI nhiều lần: lần gọi đầu tiên sau khi vừa deploy, Apps Script còn
+// khởi động lạnh và có thể mất 10–30 giây. Đây là lý do timeout một lần không
+// đủ để kết luận URL chết — trước đây nó chặn nhầm một URL hoàn toàn tốt.
+async function checkGas(url, attempts = 3) {
+  let last = 'chưa thử';
+  for (let i = 1; i <= attempts; i++) {
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'license_status', gatewaySecret: 'deploy-preflight-probe' }),
+        signal: AbortSignal.timeout(30000),
+      });
+      const text = (await response.text()).trim();
+      if (!response.ok) return { ok: false, why: `HTTP ${response.status}` };
+      // Script sống trả JSON. Nội dung cụ thể không quan trọng — chỉ cần biết nó
+      // KHÔNG phải trang lỗi HTML của Google (dấu hiệu deployment không tồn tại).
+      if (text.startsWith('{')) return { ok: true, why: i > 1 ? `phản hồi JSON (lần ${i})` : 'phản hồi JSON' };
+      return { ok: false, why: 'trả HTML, không phải JSON — deployment có thể không tồn tại' };
+    } catch (error) {
+      last = error.message;
+      if (i < attempts) {
+        console.log(`  (lần ${i}/${attempts} chưa phản hồi: ${last} — thử lại)`);
+        await new Promise(resolve => setTimeout(resolve, 5000));
+      }
+    }
+  }
+  return { ok: false, why: `${last} (đã thử ${attempts} lần)` };
+}
 
 async function api(path, options = {}, soft = false) {
   const response = await fetch(`${API}${path}`, { ...options, headers: { Authorization: `Bearer ${token}`, ...(options.headers || {}) } });
@@ -77,13 +130,48 @@ async function confirmTarget(account) {
 async function main() {
   const code = await readFile(join(here, 'src', MODULE), 'utf8');
   if (!code.includes('export default')) fail('src/index.js không phải ES module Worker (thiếu "export default").');
+  console.log(`src/${MODULE}: ${code.length} bytes · ${code.split('\n').length} dòng`);
+
+  // ---- Chặn GAS_URL chết TRƯỚC khi đụng vào production ----
+  // Rất đáng kiểm: URL hỏng sẽ làm mọi lệnh vào CRM chết, và lúc đó chỉ biết
+  // về sau khi khách báo lỗi. Cũng chính vì thế phải hỏi bằng chính URL đó, chứ
+  // đừng tin vào giá trị trong file — nó có thể đã cũ.
+  const gasUrl = setting('GAS_URL');
+  if (!gasUrl) {
+    console.log('\n⚠ Thiếu GAS_URL: không có trong biến môi trường lẫn wrangler.jsonc.');
+    console.log('  Lấy ở: Cloudflare → Worker hoadon-support-gateway → Settings → Variables.');
+    console.log('  Deploy với GAS_URL hỏng sẽ làm hỏng toàn bộ luồng bản quyền.\n');
+    fail('Thiếu GAS_URL.');
+  }
+  const gasProbe = await checkGas(gasUrl);
+  if (!gasProbe.ok) {
+    console.log(`\n⚠ GAS_URL KHÔNG phản hồi JSON: ${gasProbe.why}`);
+    console.log(`  ${gasUrl}`);
+    console.log('  Có thể deployment đã bị xoá/đổi. Sửa URL rồi chạy lại — không deploy lúc này.\n');
+    fail('GAS_URL chưa sống.');
+  }
+  console.log(`GAS_URL: sống (${gasProbe.why})`);
+
+  // Nhắc nhở trước khi deploy: các secret KHÔNG nằm trong mã nguồn nên deploy
+  // xong mà thiếu thì app gặp lỗi khó hiểu ("Invalid support session").
+  const absent = SECRETS.filter(name => !process.env[name]);
+  if (absent.length) {
+    console.log(`\n⚠ ${absent.length} secret CHƯA có trong môi trường: ${absent.join(', ',)}`);
+    console.log('  Script sẽ KHÔNG ghi đè các secret đang chạy trên dashboard.');
+    console.log('  Nếu worker trên dashboard đã có đủ secret thì bỏ qua cảnh báo này.');
+    console.log('  Nếu chưa: dán vào Cloudflare → Worker → Settings → Variables and Secrets (mark là Secret).\n');
+  } else {
+    console.log(`secret sẽ được set luôn: ${SECRETS.join(', ')}`);
+  }
+
   const account = await accountId();
   await confirmTarget(account);
-  const bindings = ['GAS_URL', 'FIREBASE_DATABASE_URL', 'TELEGRAM_CHAT_ID']
-    .filter(name => process.env[name])
-    .map(name => ({ type: 'plain_text', name, text: String(process.env[name]) }));
-  const missing = ['GAS_URL', 'FIREBASE_DATABASE_URL', 'TELEGRAM_CHAT_ID'].filter(name => !process.env[name]);
+  const bindings = VARS
+    .filter(name => setting(name))
+    .map(name => ({ type: 'plain_text', name, text: String(setting(name)) }));
+  const missing = VARS.filter(name => !setting(name));
   if (missing.length) console.log(`(chưa có ${missing.join(', ')} — vẫn deploy, thêm sau bằng dashboard hoặc chạy lại script)`);
+  else console.log(`vars: ${bindings.map(b => b.name).join(', ')} (lấy từ wrangler.jsonc nếu không có biến môi trường)`);
 
   const metadata = { main_module: MODULE, compatibility_date: COMPATIBILITY_DATE, ...(bindings.length ? { bindings } : {}) };
   const form = new FormData();

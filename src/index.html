@@ -77,7 +77,7 @@
 </dialog>
 <dialog id="settings-dialog" class="settings-dialog" aria-labelledby="settings-title">
   <div class="login-heading"><div><h2 id="settings-title">Cài đặt</h2><p>Activate, đăng ký và khóa giao diện cá nhân.</p></div><button id="settings-close" type="button" aria-label="Đóng cài đặt">×</button></div>
-  <div class="settings-tabs" role="tablist" aria-label="Cài đặt"><button id="settings-tab-license" class="active" type="button">Activate & Đăng ký</button><button id="settings-tab-lock" type="button">Khóa giao diện</button></div>
+  <div class="settings-tabs" role="tablist" aria-label="Cài đặt"><button id="settings-tab-license" class="active" type="button">Activate & Đăng ký</button><button id="settings-tab-lock" type="button">Khóa giao diện</button><button id="settings-tab-startup" type="button">Khởi động</button></div>
   <section id="settings-license" class="settings-pane">
     <div class="license-summary"><div><span>Gói hiện tại</span><strong id="license-current-package">Trial</strong></div><div><span>Trạng thái</span><strong id="license-current-status">Chưa kích hoạt</strong></div><div><span>Ngày hết hạn</span><strong id="license-current-expiry">—</strong></div><div><span>Tên key</span><strong id="license-current-key">—</strong></div><div><span>Khách hàng</span><strong id="license-current-name">—</strong></div><div><span>SĐT</span><strong id="license-current-phone">—</strong></div><div class="wide-info"><span>Hardware ID</span><code id="license-hardware-id">—</code></div></div>
     <form id="settings-license-form" class="settings-form"><label>License Key<input id="settings-license-key" maxlength="160" autocomplete="off" placeholder="Nhập License Key"></label><button class="primary" type="submit">Kích hoạt</button></form>
@@ -91,15 +91,22 @@
     <p id="pin-message" class="settings-message" role="status"></p>
     <p class="hint">Mã khôi phục là <b>License Key đã kích hoạt</b> trên máy này. Quên PIN: mở màn hình khoá → “Quên mã PIN? · Dùng mã khôi phục”, hoặc nhắn Zalo <a href="https://zalo.me/0395995035" target="_blank" rel="noopener noreferrer">039.599.5035</a> để được cấp lại.</p>
   </section>
+  <section id="settings-startup" class="settings-pane" hidden>
+    <label class="autostart-row" for="autostart-enabled"><span><strong>Khởi động cùng Windows</strong><small>App tự chạy nền khi bật máy, chỉ hiện biểu tượng ở thanh công cụ. Bấm vào biểu tượng để mở.</small></span><input id="autostart-enabled" type="checkbox" role="switch"></label>
+    <p id="autostart-message" class="settings-message" role="status"></p>
+    <p class="hint">Tắt công tắc này không ảnh hưởng app đang chạy — ứng dụng vẫn chạy cho tới khi bạn chọn “Thoát hoàn toàn” trên biểu tượng khay.</p>
+    <details class="autostart-detail"><summary>Đường dẫn lệnh khởi động</summary><code id="autostart-command">—</code></details>
+  </section>
 </dialog>
 <dialog id="payment-dialog" class="payment-dialog" aria-labelledby="payment-title">
-  <div class="login-heading"><div><h2 id="payment-title">Đăng ký gói</h2><p id="payment-subtitle">Thanh toán mẫu để test giao diện.</p></div><button id="payment-close" type="button" aria-label="Đóng thanh toán">×</button></div>
-  <div class="payment-plans" id="payment-plans" role="radiogroup" aria-label="Chọn gói đăng ký">
-    <article class="plan-card active" data-plan="Plus" data-price="299.000đ"><h3>Plus</h3><strong>299.000đ</strong><p>Cho nhu cầu tải hóa đơn cơ bản.</p><button type="button" role="radio" aria-checked="true">Chọn gói này</button></article>
-    <article class="plan-card" data-plan="Pro" data-price="599.000đ"><h3>Pro</h3><strong>599.000đ</strong><p>Nhiều khách hàng hơn.</p><button type="button" role="radio" aria-checked="false">Chọn gói này</button></article>
-    <article class="plan-card" data-plan="Doanh nghiệp" data-price="1.499.000đ"><h3>Doanh nghiệp</h3><strong>1.499.000đ</strong><p>Cho đội vận hành doanh nghiệp.</p><button type="button" role="radio" aria-checked="false">Chọn gói này</button></article>
+  <div class="login-heading"><div><h2 id="payment-title">Dự án đang phát triển</h2><p id="payment-subtitle">Đang phát hành miễn phí cho người dùng.</p></div><button id="payment-close" type="button" aria-label="Đóng đăng ký">×</button></div>
+  <div class="payment-free"><strong class="payment-free-badge">Miễn phí</strong><p>Dự án đang trong giai đoạn phát triển và <b>phát hành miễn phí</b> cho người dùng. Bạn <b>không cần thanh toán</b> — chỉ cần điền thông tin bên dưới để bộ phận hỗ trợ liên hệ và cấp License Key cho đúng máy này.</p></div>
+  <div class="payment-plans" id="payment-plans" role="radiogroup" aria-label="Chọn nhóm tính năng">
+    <article class="plan-card active" data-plan="Plus"><h3>Plus</h3><p>Cho nhu cầu tải hóa đơn cơ bản.</p><button type="button" role="radio" aria-checked="true">Chọn nhóm này</button></article>
+    <article class="plan-card" data-plan="Pro"><h3>Pro</h3><p>Nhiều khách hàng hơn.</p><button type="button" role="radio" aria-checked="false">Chọn nhóm này</button></article>
+    <article class="plan-card" data-plan="Doanh nghiệp"><h3>Doanh nghiệp</h3><p>Cho đội vận hành doanh nghiệp.</p><button type="button" role="radio" aria-checked="false">Chọn nhóm này</button></article>
   </div>
-  <div class="payment-body"><div class="qr-sample" aria-label="Mã QR thanh toán mẫu"></div><p>Chụp màn hình chuyển khoản gửi Zalo <strong>039.599.5035</strong> để nhận License Key.</p></div>
+  <div class="payment-support"><strong>Hỗ trợ trực tiếp từ người phát triển</strong><ul><li><b>Nguyễn Đạt</b> — người phát triển CN Tax Tools</li><li>Zalo: <a href="https://zalo.me/0395995035" target="_blank" rel="noopener">039.599.5035</a> — nhắn tin ngay khi cần trợ giúp</li></ul></div>
   <div class="payment-info-heading"><strong>Thông tin đăng ký</strong><span>Điền Họ tên và SĐT để bộ phận hỗ trợ liên hệ và cấp key cho đúng máy này.</span></div>
   <form id="payment-info-form" class="payment-form">
     <label>Họ tên<input id="payment-name" maxlength="80" autocomplete="name" placeholder="VD: Nguyễn Văn A"></label>
@@ -320,6 +327,7 @@
     <header class="support-header"><div><strong><span class="support-label">Hỗ trợ</span> <span class="brand-mark"><b>CN</b> Tax Tools</span></strong><small id="support-mode">Kết nối máy chủ/ Ngắt kết nối máy chủ</small></div><button id="support-close" type="button" aria-label="Đóng hỗ trợ">×</button></header>
     <div class="support-context"><span id="support-room"></span><span id="support-license"></span></div>
     <div id="support-messages" class="support-messages" aria-live="polite"></div>
+    <div class="support-quick" role="group" aria-label="Lệnh nhanh" hidden><!-- Tạm ẩn: bỏ thuộc tính hidden để bật lại nút /check --><button id="support-check" type="button">/check — Xem thông tin bản quyền của máy này</button></div>
     <form id="support-form" class="support-compose"><input id="support-input" maxlength="2000" autocomplete="off" placeholder="Nhập tin nhắn hỗ trợ…"><button id="support-send" class="primary" type="submit">Gửi</button></form>
     <details class="support-license"><summary>Nhập License Key</summary><form id="support-license-form"><input id="support-key" maxlength="160" autocomplete="off" placeholder="XXXX-XXXX-XXXX"><button type="submit">Kích hoạt</button></form></details>
     <p id="support-error" class="support-error" role="status"></p>

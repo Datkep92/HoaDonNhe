@@ -32,6 +32,7 @@ const { AppLockStore } = require('./app-lock');
 const VERSION = require('./version');
 const { checkUpdate } = require('./update-check');
 const { Updater, applySelfUpdate, cleanupUpdateTemp } = require('./updater');
+const autostart = require('./autostart');
 
 // ---------------------------------------------------------------------------
 // SELF-UPDATE: bản MỚI được khởi động với `--apply-update` để thay chính file đang chạy
@@ -103,10 +104,75 @@ process.on('uncaughtException', error => {
   reportFatal(error && error.message ? error.message : String(error));
   setTimeout(() => process.exit(1), 1500); // chờ hộp thoại kịp hiện
 });
-// register() trả Promise khi đã cấu hình Gateway, nhưng trả object ngay khi chạy local mock
-// (chưa có du_lieu/support-gateway.json — xem SUPPORT_SETUP.md mục 4). Bọc Promise.resolve để
-// không chết ở bước khởi động như bản v12.
-Promise.resolve(support.register()).catch(() => {}).then(() => ensureSupportStream());
+// Mở app: MỘT lần gọi /v1/sync lấy về bản quyền + thông báo + token phiên.
+// Trước đây là register() rồi notice() thành hai chuyến vào Apps Script.
+// sync() trả Promise nên bọc Promise.resolve để không chết ở bước khởi động.
+Promise.resolve(support.sync('mo-app')).catch(error => { log('Không đồng bộ được lúc mở app: ' + (error && error.message ? error.message : String(error))); })
+  .then(() => { ensureSupportStream(); startSupportChecks(); });
+
+// ---- KIỂM TRA ĐỊNH KỲ KHI APP CHẠY NỀN ----------------------------------
+// KHÔNG polling theo đồng hồ cứng. Mỗi nhịp (4 giờ, có chênh lệch riêng cho từng
+// máy) app tự hỏi xem có DẤU HIỆU nào cần hỏi máy chủ không (needsServerCheck):
+// key sắp hết hạn, chưa hỏi bao giờ, hoặc mã máy bị lệch. Không có dấu hiệu thì
+// không gọi mạng. Có thì hỏi nhẹ qua /v1/ping — chỉ đọc Firebase, không tốn
+// quota Google Apps Script. Nhịp được rải theo mã máy để không dồn 1 lúc.
+let supportCheckTimer = null;
+let presenceTimer = null;
+function nextSupportCheckDelay() {
+  const base = 4 * 60 * 60 * 1000;
+  const seed = crypto.createHash('sha256').update(String(support.data.device.machineId || '')).digest();
+  return base - 30 * 60 * 1000 + (seed.readUInt32BE(0) % (60 * 60 * 1000));
+}
+
+// ---- NHỊP SỐNG: GIỮ "ĐANG MỞ APP" ĐÚNH TRONG TELEGRAM -----------------------
+//
+// Vì sao TÁCH khỏi nhịp kiểm tra bản quyền: nhịp 4 giờ chỉ gọi /v1/ping khi
+// needsServerCheck() có lý do. Key còn hạn + mã máy khớp ⇒ 4 giờ không gọi gì cả.
+// Gateway đọc mốc lastSeen, hết 15 phút là báo khách offline — trong khi app đang
+// chạy. Đó là lý do "chạy nền vẫn phải tính là online" bị sai.
+//
+// Nhịp này luôn gửi, không điều kiện: /v1/ping chỉ đọc/ghi Firebase, KHÔNG gọi Apps
+// Script nên không tốn quota. 10 phút nhịp với cửa sổ 15 phút ⇒ hệ số an toàn 1,5,
+// đủ để một nhịp trễ (máy ngủ, mạng chập chờn) không khiến khách bị báo offline.
+//
+// Rải pha theo mã máy để nhiều máy không cùng gửi đúng một giây.
+function nextPresenceDelay() {
+  const base = 10 * 60 * 1000;
+  const seed = crypto.createHash('sha256').update('presence|' + String(support.data.device.machineId || '')).digest();
+  return base - 60 * 1000 + (seed.readUInt32BE(0) % (2 * 60 * 1000));
+}
+function startPresenceHeartbeat() {
+  if (presenceTimer) return;
+  const run = async () => {
+    try { await support.ping('nhip-song'); }
+    catch (error) { log('Gửi nhịp sống lỗi: ' + (error && error.message ? error.message : String(error))); }
+    presenceTimer = setTimeout(run, nextPresenceDelay());
+    if (presenceTimer.unref) presenceTimer.unref();
+  };
+  presenceTimer = setTimeout(run, nextPresenceDelay());
+  if (presenceTimer.unref) presenceTimer.unref();
+}
+
+function startSupportChecks() {
+  if (supportCheckTimer) return;
+  const run = async () => {
+    try {
+      const reason = support.needsServerCheck();
+      if (reason) {
+        await support.ping(reason);
+        const license = support.publicLicense();
+        log('Kiểm tra nền (' + reason + '): ' + license.status + (license.expiryAt ? ' — hạn ' + license.expiryAt : ''));
+      }
+    } catch (error) {
+      log('Kiểm tra nền lỗi: ' + (error && error.message ? error.message : String(error)));
+    }
+    supportCheckTimer = setTimeout(run, nextSupportCheckDelay());
+    if (supportCheckTimer.unref) supportCheckTimer.unref();
+  };
+  supportCheckTimer = setTimeout(run, nextSupportCheckDelay());
+  if (supportCheckTimer.unref) supportCheckTimer.unref();
+  startPresenceHeartbeat();
+}
 // Bộ cập nhật: kiểm tra bản mới khi mở app (một lần), tải + xác minh SHA-256 + chạy bộ cài
 // CHỈ khi người dùng bấm xác nhận. Không bao giờ tự cài.
 const updater = new Updater({
@@ -404,15 +470,149 @@ async function autoImportAfterDownload(label) {
 // MST nào KHÔNG có phiên sẵn (phải đăng nhập lại / mất cookie) thì BỎ QUA ngay: chỉ đọc token đã
 // lưu trên máy, KHÔNG mở Chrome ẩn để thử khôi phục — mở Chrome cho từng MST lúc khởi động rất chậm
 // và dễ làm cổng thuế khó chịu. Người dùng bấm vào MST đó thì app mới mở form đăng nhập.
+// ---- TỰ ĐĂNG NHẬP NỀN ------------------------------------------------------
+//
+// Mục tiêu: khi phiên một MST chết, tự đăng nhập lại bằng mật khẩu đã lưu mà
+// KHÔNG mở hộp thoại và KHÔNG khoá giao diện. Người dùng vẫn chủ động bấm MST khi
+// cần nhập tay.
+//
+// Vì sao phải tách `foregroundAuth` khỏi `authBusy`:
+//   • authBusy = "đang đăng nhập MST này" → dùng CHẶN chạy trùng (server-side).
+//   • foregroundAuth = "người dùng đang chờ kết quả lượt này" → dùng KHOÁ UI.
+// Trước đây appState().authBusy lấy thẳng từ authBusy, nên một lần đăng nhập nền
+// sẽ tắt luôn nút Tra cứu/Tải/resume — đúng cái người dùng không muốn.
+//
+// Vì sao có hạn số lần và thời gian chờ: mỗi lượt đăng nhập là một lần gọi cổng
+// thuế. Sai mật khẩu mà cứ thử là dội cổng và có thể khiến tài khoản bị khoá.
+// Hết lượt thì BỎ QUA hẳn và chờ người dùng đăng nhập tay.
+const BACKGROUND_AUTH_COOLDOWN_MS = 60000;   // giữa hai lượt thử lỗi
+const BACKGROUND_AUTH_MAX_ATTEMPTS = 3;      // hết số này thì thôi thử tự động
+const backgroundAuth = new Set();            // MST đang tự đăng nhập nền
+const backgroundAuthFails = new Map();       // mst -> { count, lastAt, reason }
+const backgroundAuthTasks = new Map();       // mst -> promise lượt đang chạy (để request chờ được)
+
+// Chờ lượt tự đăng nhập nền đang chạy cho MST này, có trần thời gian.
+// Vì sao cần: nút Tra cứu/Tải KHÔNG bị khoá khi đăng nhập nền (đó là điều kiện để
+// tính năng này không đóng băng giao diện). Nếu endpoint ném lỗi "đang tự đăng nhập"
+// thì người dùng bấm nút hoạt động rồi nhận lỗi — tệ hơn cả lúc khoá nút.
+async function waitBackgroundAuth(mst) {
+  const task = backgroundAuthTasks.get(mst);
+  if (!task) return;
+  // Trần 90s: đăng nhập tự động có thật sự bị treo thì không kéo dài vô hạn, và
+  // người dùng vẫn nhận được thông báo rõ thay vì treo chờ.
+  await Promise.race([task.catch(() => {}), new Promise(resolve => setTimeout(resolve, 90000))]);
+}
+
+function canAutoRelogin(mst) {
+  if (testServer) return false;
+  if (!mst || mst !== selected) return false;          // CHỈ MST đang chọn
+  if (!safeMst(mst) || !accountFor(mst)) return false;
+  if (authBusy.has(mst) || foregroundAuth.has(mst) || backgroundAuth.has(mst)) return false;
+  if (engineFor(mst)?.busy) return false;              // đang tra cứu, xen vào sẽ hỏng lượt
+  if (!isRemembered(mst)) return false;                // không có mật khẩu thì không thể tự động
+  const fails = backgroundAuthFails.get(mst);
+  if (fails && fails.count >= BACKGROUND_AUTH_MAX_ATTEMPTS) return false;
+  if (fails && Date.now() - fails.lastAt < BACKGROUND_AUTH_COOLDOWN_MS) return false;
+  return true;
+}
+
+function noteBackgroundAuthFail(mst, reason) {
+  const previous = backgroundAuthFails.get(mst) || { count: 0, lastAt: 0, reason: '' };
+  const count = previous.count + 1;
+  backgroundAuthFails.set(mst, { count, lastAt: Date.now(), reason: String(reason || '') });
+  log(`Tự đăng nhập nền MST ${mst} không thành công (lần ${count}/${BACKGROUND_AUTH_MAX_ATTEMPTS}): ${reason}`
+    + (count >= BACKGROUND_AUTH_MAX_ATTEMPTS ? ' — tạm dừng thử tự động, bấm MST để đăng nhập tay.' : ''));
+}
+
+// Chạy đăng nhập nền. KHÔNG await và KHÔNG ném lỗi ra ngoài: đây là việc phụ,
+// người dùng đang bấm bấm cần phản hồi ngay.
+// `loginChallenge` là trạng thái TOÀN CỤC mà autoLoginAccount() ghi khi cần CAPTCHA;
+// đăng nhập nền không được để lại trạng thái đó, không thì giao diện tưởng đang chờ
+// nhập CAPTCHA ở một modal nào đó không tồn tại.
+function maybeAutoRelogin(mst, reason) {
+  if (!canAutoRelogin(mst)) return null;
+  const before = loginChallenge;
+  backgroundAuth.add(mst);
+  authBusy.add(mst);
+  log(`Tự đăng nhập nền MST ${mst} (${reason}).`);
+  // Giữ lại promise: endpoint Tra cứu/Tải phải CHỜ lượt này thay vì báo lỗi cho
+  // người dùng. Nút không bị khoá (đó là điều kiện để đăng nhập nền không đóng băng
+  // giao diện) nên bấm vào là phải chạy được, không phải để người dùng tự đoán.
+  const task = autoLoginAccount({ mst, remember: true })
+    .then(result => {
+      if (result && result.authenticated) {
+        backgroundAuthFails.delete(mst);
+        log(`Tự đăng nhập nền MST ${mst} thành công (${reason}) sau ${result.attempts || 1} lần thử.`);
+      } else {
+        // autoLoginAccount trả challenge thay vì ném lỗi ⇒ cần người dùng nhập tay.
+        noteBackgroundAuthFail(mst, 'cần nhập CAPTCHA thủ công');
+      }
+    })
+    .catch(error => noteBackgroundAuthFail(mst, (error && error.message) || String(error)))
+    .finally(() => {
+      backgroundAuth.delete(mst);
+      authBusy.delete(mst);
+      backgroundAuthTasks.delete(mst);
+      loginChallenge = before;
+    });
+  backgroundAuthTasks.set(mst, task);
+  return task;
+  return true;
+}
+
+// ---- CỔNG KIỂM TRA PHIÊN LÚC KHỞI ĐỘNG ------------------------------------
+//
+// Vì sao cần: kiểm tra phiên đọc token/cookie của mọi MST, tốn vài giây. Trước đây
+// nó chạy ở giây thứ 3 và giao diện hiện "Đang kiểm tra phiên đăng nhập… Vui lòng
+// chờ trong giây lát" cho tới khi xong — người dùng ngồi nhìn màn hình trắng dù dữ
+// liệu của họ đã có sẵn trên máy.
+//
+// Nay: giao diện vào thẳng bằng dữ liệu cục bộ, kiểm tra phiên chạy NỀN sau
+// SESSION_CHECK_DELAY_MS. Nơi thật sự cần phiên sống (bấm Tra cứu) thì chờ đúng
+// lần đang chạy qua ensureSessionCheck() ⇒ không bao giờ phải đăng nhập lại chỉ vì
+// người dùng bấm nhanh.
+const SESSION_CHECK_DELAY_MS = 10000;
+let sessionCheckPromise = null;
+let sessionCheckFinished = false;
+
+// Idempotent: gọi lại trong lúc đang chạy trả về ĐÚNG promise cũ, không dựng
+// lần thứ hai (hai lần kiểm tra cùng lúc sẽ đè lên nhau trên engine).
+function ensureSessionCheck() {
+  if (testServer) return Promise.resolve(null);
+  if (!sessionCheckPromise) {
+    sessionCheckPromise = startupSessionCheck()
+      .catch(error => ({ error: error && error.message ? error.message : String(error) }))
+      .then(result => { sessionCheckFinished = true; return result; });
+  }
+  return sessionCheckPromise;
+}
+
 async function startupSessionCheck() {
   const summary = { checked: [], session: null, started: 0, skipped: 0, error: '' };
   const original = selected;
   try {
     const queue = activeAccounts().slice().sort((a, b) => (Number(b.lastUsedAt || b.lastVerifiedAt || 0) - Number(a.lastUsedAt || a.lastVerifiedAt || 0)));
+    // Đọc token/cookie/MẬT KHẨU của MỌI MST trong MỘT lần giải mã. Đọc tuần tự sẽ spawn
+    // PowerShell 2×N lần (mỗi lần ~500ms và chặn cứng event loop của cả server),
+    // nên 7 MST là ~7 giây đứng hình — đúng lúc giao diện đang mở.
+    //
+    // Vì sao MẬT KHẨU nằm trong cùng lô: isRemembered() đọc riêng blob 'password' và
+    // spawn PowerShell đồng bộ ~500ms. Nó được gọi từ canAutoRelogin(), tức nằm trong
+    // selectAccount() — lần đầu bấm MST sẽ đứng thêm nửa giây. Nạp sẵn ở đây thì lô
+    // này không tốn thêm request (cùng một tiến trình PowerShell) và lần bấm đầu tiên
+    // không còn độ trễ nào.
+    let stored = new Map();
+    try { stored = secrets.readMany(queue.map(item => item.mst), ['token', 'cookies', 'password']); }
+    catch (error) { log('Giải mã phiên hàng loạt lỗi, chuyển sang đọc từng MST: ' + (error && error.message ? error.message : error)); }
+    // Nạp sẵn cờ "đã nhớ mật khẩu" để isRemembered() không phải đọc lại từ đĩa.
+    for (const [mst, value] of stored) if (!remembered.has(mst)) remembered.set(mst, !!value.password);
     for (const item of queue) {
       const mst = item.mst;
       let restored = false;
-      try { restored = restoreSession(mst); } catch { restored = false; }
+      try {
+        const cached = stored.get(mst);
+        restored = cached ? restoreSession(mst, cached) : restoreSession(mst);
+      } catch { restored = false; }
       const row = { mst, ok: restored, reason: restored ? 'token đã lưu còn hiệu lực' : 'chưa có phiên — cần đăng nhập' };
       if (restored) { summary.started += 1; summary.session = summary.session || row; }
       else { summary.skipped += 1; }
@@ -420,6 +620,9 @@ async function startupSessionCheck() {
       log(`Kiểm tra phiên MST ${mst}: ${row.reason}`);
     }
     log(`Kiểm tra phiên lúc khởi động: ${summary.started}/${summary.checked.length} MST có phiên sẵn.`);
+    // MST đang mở mà phiên chết sẵn thì tự đăng nhập nền ngay — người dùng vừa mở
+    // app đã có app dùng được, không phải chờ họ bấm.
+    if (selected && !directTokens.has(selected)) maybeAutoRelogin(selected, 'phiên hết hạn lúc khởi động');
   } catch (error) {
     summary.error = error && error.message ? error.message : String(error);
     log('Kiểm tra phiên lúc khởi động lỗi: ' + summary.error);
@@ -465,6 +668,10 @@ let trayStopped = false;
 let trayFailCount = 0;
 let trayNextTry = 0;
 const authBusy = new Set();
+// authBusy = "đang có lượt đăng nhập chạy cho MST này" → CHẶN chạy trùng (phía server).
+// foregroundAuth = "người dùng đang CHỜ kết quả lượt này" → mới được phép khoá UI.
+// Tách hai cái ra là để đăng nhập NỀN không khoá giao diện. Xem maybeAutoRelogin().
+const foregroundAuth = new Set();
 // Các tác vụ DÀI đang chạy nền (fire-and-forget có sổ sách): app tắt ⇒ tạm dừng đúng lượt.
 const detachedTasks = [];
 let loginChallenge = null;
@@ -637,9 +844,10 @@ function isRemembered(mst) {
   if (!remembered.has(mst)) remembered.set(mst, !!secrets.read(mst, ['password']).password);
   return remembered.get(mst);
 }
-function restoreSession(mst) {
+function restoreSession(mst, preloaded) {
   if (directTokens.has(mst)) return true;
-  const stored = secrets.read(mst, ['token', 'cookies']);
+  // `preloaded` là dữ liệu đã giải mã sẵn từ readMany() — dùng để khỏi giải mã lại.
+  const stored = preloaded || secrets.read(mst, ['token', 'cookies']);
   if (stored.cookies) tct.setCookies(stored.cookies, mst);
   const account = jwtAccount(stored.token);
   if (!account) { if (stored.token) secrets.clear(mst, ['token']); return false; }
@@ -754,7 +962,7 @@ function syncSummary(mst) {
 }
 function publicAccount(account) {
   const mst = account.mst;
-  return { mst, identifiers: cleanIdentifiers(account.identifiers), name: account.name || '', label: account.label || '', lastVerifiedAt: account.lastVerifiedAt || 0, lastUsedAt: account.lastUsedAt || 0, session: directTokens.has(mst) ? 'live' : (hasSavedSession(mst) ? 'saved' : 'none'), remembered: isRemembered(mst), job: jobSummary(mst), sync: syncSummary(mst), catchup: catchupFor(mst) };
+  return { mst, identifiers: cleanIdentifiers(account.identifiers), name: account.name || '', label: account.label || '', lastVerifiedAt: account.lastVerifiedAt || 0, lastUsedAt: account.lastUsedAt || 0, session: directTokens.has(mst) ? 'live' : (hasSavedSession(mst) ? 'saved' : 'none'), remembered: isRemembered(mst), autoLoginBlocked: (backgroundAuthFails.get(mst)?.count || 0) >= BACKGROUND_AUTH_MAX_ATTEMPTS, job: jobSummary(mst), sync: syncSummary(mst), catchup: catchupFor(mst) };
 }
 // ẢNH CHỤP DANH SÁCH MST CHO KHUNG HÌNH ĐẦU — "tô sáng MST phiên gần nhất ngay lập tức".
 // Vì sao cần ĐƯỜNG RIÊNG chứ không chỉ localStorage: server mở cổng NGẪU NHIÊN mỗi lần chạy
@@ -1079,7 +1287,7 @@ function appState() {
   const snapshot = engine ? engine.snapshot() : { state: 'idle', busy: false, items: [], total: 0, done: 0, failed: 0, message: 'Chọn hoặc thêm MST để bắt đầu.' };
   snapshot.jobId = engine?.job?.id || '';
   const { items, ...rest } = snapshot; // eslint-disable-line no-unused-vars
-  return { ...rest, itemsRevision: engine ? engine.jobRevision : 0, accounts: activeAccounts().map(publicAccount), selected, output, defaultOutput: defaultOutputFolder(), companyName: companyNameFor(selected) || companyNameFromItems(engine && engine.job ? engine.job.items : null, selected), remembered: !!selected && isRemembered(selected), browserReady: !!browser.client, browserVisible: !!browser.visible, authenticated: !!selected && !!(authAccount || directTokens.has(selected)), authBusy: authBusy.has(selected), update: updater.status(), pool: syncPool.status() };
+  return { ...rest, itemsRevision: engine ? engine.jobRevision : 0, accounts: activeAccounts().map(publicAccount), selected, output, defaultOutput: defaultOutputFolder(), companyName: companyNameFor(selected) || companyNameFromItems(engine && engine.job ? engine.job.items : null, selected), remembered: !!selected && isRemembered(selected), browserReady: !!browser.client, browserVisible: !!browser.visible, authenticated: !!selected && !!(authAccount || directTokens.has(selected)), authBusy: foregroundAuth.has(selected), backgroundAuth: backgroundAuth.has(selected), autoLoginBlocked: (backgroundAuthFails.get(selected)?.count || 0) >= BACKGROUND_AUTH_MAX_ATTEMPTS, sessionChecked: sessionCheckFinished, update: updater.status(), pool: syncPool.status() };
 }
 // Chỉ kiểm tra engine của ĐÚNG MST đích. Trước đây có nhánh dự phòng `|| engine`: MST đích chưa
 // từng dùng thì engineFor() = null, nó rơi vào engine của MST ĐANG CHỌN ⇒ tác vụ của MST A chặn
@@ -1093,7 +1301,11 @@ async function authOperation(fn, mst) {
   const key = mst || selected;
   if (authBusy.has(key)) throw new Error('Đang xử lý phiên đăng nhập cho MST này. Vui lòng chờ.');
   authBusy.add(key);
-  try { return await fn(); } finally { authBusy.delete(key); }
+  // Đây là luồng người dùng CHỜ kết quả (form đăng nhập, đăng nhập tay) ⇒ được khoá UI.
+  // Ghi cả hai cờ và xoá CẢ HAI trong finally: nếu chỉ xoá authBusy thì MST kẹt trong
+  // foregroundAuth mãi mãi và giao diện bị khoá vĩnh viễn, không mở lại được.
+  foregroundAuth.add(key);
+  try { return await fn(); } finally { authBusy.delete(key); foregroundAuth.delete(key); }
 }
 // Chọn MST là thao tác NHẸ (đặt MST đang xem + kiểm tra còn phiên). KHÔNG bật `authBusy` như một
 // lượt đăng nhập thật: khoá đó làm giao diện khoá cả thanh công cụ và chặn mọi request khác trong
@@ -1116,12 +1328,16 @@ function challengeResponse(value) {
 async function selectAccount(mst) {
   if (!safeMst(mst) || !accountFor(mst)) throw new Error('MST chưa có trong danh sách.');
   loginChallenge = null; authAccount = null;
-  restoreSession(mst);
+  const restored = restoreSession(mst);
   selected = mst;
   const record = accountFor(mst); if (record) record.lastUsedAt = Date.now();
   accounts.selected = mst; saveAccounts(); createEngine(mst);
   const account = await checkLogin();
-  return { mst, authenticated: !!account, account, name: accountFor(mst)?.name || '' };
+  // Người dùng bấm vào MST mà phiên đã chết ⇒ tự đăng nhập lại bằng mật khẩu đã lưu,
+  // chạy nền, không mở hộp thoại. Đây là kịch bản chính: "vào trang thấy MST hết
+  // phiên thì tự đăng nhập lại". `restored` = token còn dùng được ⇒ không cần.
+  if (!restored && !account) maybeAutoRelogin(mst, 'bạn vừa chọn MST này');
+  return { mst, authenticated: !!account || !!directTokens.get(mst), account, name: accountFor(mst)?.name || '' };
 }
 async function addOrLogin(mst) {
   if (!safeMst(mst)) throw new Error(mstFormat.MST_HINT);
@@ -2526,6 +2742,25 @@ async function endpoint(req, res, url) {
     setTimeout(() => { stop().catch(() => process.exit(0)); }, 200);
     return;
   }
+  // ---- Tự khởi động cùng Windows ----
+  // GET để đọc trạng thái, POST {enabled} để bật/tắt. Chỉ cần thi hành registry —
+  // phần "khởi động mà không mở cửa sổ" xử lý bằng cờ --start-hidden lúc chạy.
+  if (req.method === 'GET' && url.pathname === '/api/autostart') {
+    return reply(res, 200, { ok: true, value: await autostart.status(dataDir) });
+  }
+  if (req.method === 'POST' && url.pathname === '/api/autostart') {
+    const input = await readBody(req);
+    try {
+      const value = await autostart.setEnabled(dataDir, input.enabled);
+      log(value.enabled
+        ? 'Đã bật khởi động cùng Windows: ' + value.command
+        : 'Đã tắt khởi động cùng Windows.');
+      if (value.error) log('Cảnh báo autostart: ' + value.error);
+      return reply(res, 200, { ok: true, value });
+    } catch (error) {
+      return reply(res, 400, { ok: false, error: error.message });
+    }
+  }
   if (url.pathname === '/api/update') return reply(res, 200, { ok: true, value: { ...updater.status(), url: updater.status().releaseUrl } });
   // ---- Self update: mỗi thao tác do người dùng chủ động gọi ----
   if (url.pathname === '/api/update/check') return reply(res, 200, { ok: true, value: await updater.check(true) });
@@ -2545,12 +2780,14 @@ async function endpoint(req, res, url) {
     if (req.method === 'POST' && url.pathname === '/api/support/info') { const input = await readBody(req); return reply(res, 200, { ok: true, value: await support.updateInfo(input.phone, input.name, input.plan) }); }
     if (req.method === 'POST' && url.pathname === '/api/support/activate') { const input = await readBody(req); return reply(res, 200, { ok: true, value: await support.activate(input.key) }); }
     if (req.method === 'POST' && url.pathname === '/api/support/message') { const input = await readBody(req); return reply(res, 200, { ok: true, value: await support.addMessage('user', input.text) }); }
+    // Khách bấm nút /check trong khung hỗ trợ → lấy thông tin bản quyền của máy này.
+    if (req.method === 'POST' && url.pathname === '/api/support/check') { const input = await readBody(req); return reply(res, 200, { ok: true, value: await support.check(input.command) }); }
     if (req.method === 'POST' && url.pathname === '/api/account/login') { const input = await readBody(req); return reply(res, 200, { ok: true, value: await authOperation(() => addOrLogin(input.mst), input.mst) }); }
     if (req.method === 'POST' && url.pathname === '/api/account/submit') { const input = await readBody(req); return reply(res, 200, { ok: true, value: await authOperation(() => submitLogin(input), input.mst || selected) }); }
     if (req.method === 'POST' && url.pathname === '/api/account/captcha') return reply(res, 200, { ok: true, value: await authOperation(async () => { if (!selected) throw new Error('Chọn MST trước.'); const value = await browser.loginAction({ mode: 'refresh' }); if (value.authenticated) return { ...value, account: await checkLogin() }; return challengeResponse(value); }, selected) });
     // Auto login hoàn toàn: solver JS (ddddocr) tự giải CAPTCHA rồi authenticate — không cần gõ tay.
     // Không dùng authOperation toàn cục: auto-login chạy per-MST, không chặn MST khác.
-    if (req.method === 'POST' && url.pathname === '/api/account/auto-login') { const input = await readBody(req); const mst = String(input.mst || selected || ''); if (authBusy.has(mst)) throw new Error('Đang tự động đăng nhập cho MST này. Vui lòng chờ.'); authBusy.add(mst); try { return reply(res, 200, { ok: true, value: await autoLoginAccount(input) }); } finally { authBusy.delete(mst); } }
+    if (req.method === 'POST' && url.pathname === '/api/account/auto-login') { const input = await readBody(req); const mst = String(input.mst || selected || ''); if (authBusy.has(mst)) throw new Error('Đang tự động đăng nhập cho MST này. Vui lòng chờ.'); authBusy.add(mst); foregroundAuth.add(mst); try { return reply(res, 200, { ok: true, value: await autoLoginAccount(input) }); } finally { authBusy.delete(mst); foregroundAuth.delete(mst); } }
     if (req.method === 'POST' && url.pathname === '/api/account/show') {
       const input = await readBody(req); const mst = input.mst || selected;
       ensureIdle(); if (!safeMst(mst)) throw new Error('Nhập MST hợp lệ trước khi mở trang thuế.');
@@ -2619,6 +2856,10 @@ async function endpoint(req, res, url) {
     }
     if (req.method === 'POST' && url.pathname === '/api/search') {
       await ensureLicenseAllowed();
+      // Người dùng có thể bấm ngay lúc vừa mở app, trước lúc lượt kiểm tra phiên
+      // nền kịp chạy. Chờ đúng lần đang chạy thay vì báo "chưa đăng nhập" — rồi
+      // người dùng phải đăng nhập lại phiên vốn đã còn.
+      await ensureSessionCheck();
       const input = await readBody(req);
       // Chạy đúng luồng của MST được yêu cầu ⇒ MST A đang tra cứu vẫn bấm sang MST B làm việc được.
       const target = engineOf(String(input.mst || '').trim());
@@ -2626,6 +2867,8 @@ async function endpoint(req, res, url) {
       // Đang chạy tác vụ thì nút Tra cứu đóng vai nút Tạm dừng (tránh trường hợp giao diện chưa kịp
       // cập nhật trạng thái mà người dùng bấm lần nữa).
       if (target.busy) { target.pause(); return reply(res, 200, { ok: true, value: target.snapshot() }); }
+      // Đang tự đăng nhập nền thì CHỠ lượt đang chạy rối mới chạy tiếp. Nót Tra cứu không bị khoá (nếu khoá, tính năng nèy sự đóng băng giao diện) nên bấm vào phải chổ đếi, không phải nêm lỗi cho người dùng.
+      if (authBusy.has(target.mst)) { await waitBackgroundAuth(target.mst); }
       const folder = String(input.output ?? output ?? '').trim();
       await ensureFolder(folder); // báo lỗi rõ nếu là ổ gốc / ổ chỉ đọc / không có quyền ghi
       output = folder; accounts.output = output; saveAccounts();
@@ -2633,15 +2876,23 @@ async function endpoint(req, res, url) {
       runDetached(target, target.job?.id || '', `Tra cứu MST ${target.mst}`, async () => {
         await target.search(input, output);
         await closeBrowserWhenIdle('tra cứu xong');
+      }).then(() => {
+        // Lượt dừng vì hết phiên ⇒ đăng lại ngay để lượt sau (nút Tiếp tục) chạy được.
+        if (target.job?.state === 'auth_required') maybeAutoRelogin(target.mst, 'phiên hết hạn khi tra cứu');
       });
       return reply(res, 200, { ok: true, value: target.snapshot() });
     }
     if (req.method === 'POST' && url.pathname === '/api/stream') {
       await ensureLicenseAllowed();
+      await ensureSessionCheck();
       const input = await readBody(req);
       const target = engineOf(String(input.mst || '').trim());
       if (!target) throw new Error('Chọn MST và kiểm tra phiên trước.');
       if (target.busy) { target.pause(); return reply(res, 200, { ok: true, value: target.snapshot() }); }
+      // Đang tự đăng nhập nền thì chưa dùng được: báo rõ là đang đăng nhập, KHÔNG báo
+      // "chưa đăng nhập" (sai — mật khẩu có, chỉ là chưa xong) và không cho chạy lượt
+      // với phiên nửa vời.
+      if (authBusy.has(target.mst)) { await waitBackgroundAuth(target.mst); }
       const folder = String(input.output ?? output ?? '').trim();
       await ensureFolder(folder);
       output = folder; accounts.output = output; saveAccounts();
@@ -3189,9 +3440,26 @@ server.listen(0, '127.0.0.1', async () => {
     // Một instance duy nhất: bản mở sau chỉ nhờ bản cũ mở lại cửa sổ rồi thoát.
     claimSingleInstance(port).then(keepAlive => {
       if (!keepAlive) { server.close(() => process.exit(0)); return; }
-      try { launchUi(port); ensureTray(); } catch (error) { reportFatal(error.message); stop(); return; }
-      // Sau khi cửa sổ đã mở: CHỈ kiểm tra phiên của MST dùng gần nhất. KHÔNG tự tra cứu/tải.
-      setTimeout(() => { startupSessionCheck(); }, 3000);
+      // --start-hidden: đây là lúc Windows mở app cùng lúc khởi động máy. Không
+      // mở cửa sổ Chrome — chỉ hiện icon khay, người dùng bấm vào mới mở. Không có
+      // cờ này thì hành vi cũ: mở cửa sổ luôn.
+      const hidden = process.argv.includes(autostart.START_FLAG);
+      try {
+        if (hidden) log('Khởi động ẩn (do Windows gọi) — chỉ hiện icon khay, bấm icon để mở ứng dụng.');
+        else launchUi(port);
+        ensureTray();
+      } catch (error) { reportFatal(error.message); stop(); return; }
+      // Đồng bộ khoá Run theo lựa chọn của người dùng. Làm ở đây (không chặn
+      // khởi động) vì nó đụng reg.exe; lần chạy đầu sẽ ghi khoá Run, các lần sau
+      // chỉ đọc để tự sửa khi đường dẫn EXE đổi.
+      autostart.sync(dataDir).then(result => {
+        if (result.error) log('Không đồng bộ được khởi động cùng Windows: ' + result.error);
+        else if (result.changed) log('Đã đồng bộ khởi động cùng Windows theo cài đặt.');
+      }).catch(() => { /* im lặng: không có autostart vẫn dùng app được */ });
+      // Kiểm tra phiên chạy NỀN, cố ý trễ ~10 giây: tới lúc đó giao diện đã hiện
+      // xong dữ liệu cục bộ, người dùng thấy app dùng được ngay. Bấm Tra cứu sớm
+      // hơn thì endpoint tự chờ lần đang chạy (ensureSessionCheck).
+      setTimeout(() => { ensureSessionCheck(); }, SESSION_CHECK_DELAY_MS);
       // Đối soát trước khi bật lịch: nếu không, một dòng kẹt `running` sẽ khiến lịch tưởng MST đó bận.
       setTimeout(() => {
         reconcileInterruptedSync();

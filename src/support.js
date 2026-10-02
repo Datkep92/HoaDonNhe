@@ -7,6 +7,7 @@ const http = require('node:http');
 const https = require('node:https');
 const { atomicWrite } = require('./core');
 const secrets = require('./secrets');
+const machine = require('./machine-id');
 
 const MAX_MESSAGES = 500;
 // Bước 2: dùng thử ngầm TRIAL_DAYS ngày, tính từ lần cài đặt đầu tiên trên máy này.
@@ -16,6 +17,14 @@ const MAX_MESSAGES = 500;
 // sớm hơn CRM (người dùng thấy "hết hạn" trong khi Sheet vẫn còn hạn).
 const TRIAL_DAYS = 30;
 const TRIAL_MS = TRIAL_DAYS * 24 * 60 * 60 * 1000;
+// App chạy nền: chỉ hỏi máy chủ khi CÓ DẤU HIỆU cần hỏi (xem needsServerCheck),
+// và tối đa một lần mỗi 4 giờ. Hỏi nhẹ qua /v1/ping nên không tốn quota Apps Script.
+// Mỗi máy rải nhịp riêng trong khoảng 3,5–4,5 giờ để không dồn 1 lúc.
+const STALE_CHECK_MS = 4 * 60 * 60 * 1000;
+const CHECK_JITTER_MS = 30 * 60 * 1000;
+const EXPIRY_SOON_MS = 14 * 24 * 60 * 60 * 1000;   // key còn dưới 14 ngày thì hỏi
+const VERSION = (() => { try { return require('./version').version || ''; } catch { return ''; } })();
+const appVersion = () => String(VERSION || '').slice(0, 32);
 const DEVICE_LIMIT_MESSAGE = 'Key này đã đạt giới hạn số thiết bị sử dụng tối đa. Vui lòng liên hệ Admin để mua thêm slot.';
 const TRIAL_OVER_MESSAGE = `Đã hết ${TRIAL_DAYS} ngày dùng thử. Vui lòng nhập License Key để tiếp tục sử dụng.`;
 // Mất mạng tạm thời: cho chạy tiếp trong OFFLINE_GRACE_DAYS ngày kể từ lần kiểm tra
@@ -32,6 +41,9 @@ const now = () => Date.now();
 const id = () => crypto.randomUUID ? crypto.randomUUID() : crypto.randomBytes(16).toString('hex');
 
 // Dấu vân tay phần cứng (chỉ để CRM đối chiếu khi mã cục bộ đổi, không dùng làm khoá).
+// LƯU Ý: đây là dấu CŨ, băm từ tên máy + tài khoản + card mạng nên khách đổi được.
+// Giữ nguyên để dữ liệu đang chạy không bị đội giá trị. Mã máy ổn định mới nằm ở
+// machine.deviceId() — xem src/machine-id.js.
 function hardwareHash() {
   return crypto.createHash('sha256').update(String(secrets.machineIdentity() || '')).digest('hex').toUpperCase();
 }
@@ -137,39 +149,92 @@ function sortedMessages(state, limit = 100) {
 }
 
 class SupportStore {
-  constructor(dataDir) {
+  // machineIdOverride chỉ dùng cho test và công cụ CLI cần giả lập "máy khác".
+  // Không có nó thì mã máy lấy từ phần cứng thật.
+  constructor(dataDir, options = {}) {
     this.file = path.join(dataDir, 'support.json');
     this.gatewayFile = path.join(dataDir, 'support-gateway.json');
+    this.machineIdOverride = String(options.machineId || '');
     this.data = read(this.file, null) || this.create();
     this.normalize();
     this.save();
   }
 
+  // MÁY MỚI — hai định danh tách bạch, mỗi đứng một nhiệm vụ:
+  //
+  //   machineId      = băm từ phần cứng. ỔN ĐỊNH: cài lại app, bật VPN, đổi tên
+  //                    máy thì vẫn y hệt. Đây là khoá tra cứu MỚI trên Sheet.
+  //   installationId = UUID NGẪU NHIÊN mỗi lần cài. Giữ nguyên hình dạng cũ vì
+  //                    Apps Script BẢN CŨ còn đang chạy và nó chỉ chấp nhận UUID;
+  //                    gửi DEV_... vào ô đó là khách mới không đăng ký được.
+  //                    Apps Script bản mới tra theo machineId TRƯỚC nên vẫn ra
+  //                    đúng dòng cũ sau khi cài lại.
+  //   chatRoomId     = suy ra từ machineId, nên một máy chỉ có đúng một phòng.
+  //
+  // Nhờ tách vậy, deploy Worker trước hay Apps Script trước đều được — không có
+  // khoảnh khắc nào khách mới bị từ chối.
   create() {
-    const installationId = id();
+    const machineId = this.machineId() || machine.deviceId();
     return {
       version: 1,
-      device: { installationId, chatRoomId: `ROOM_WIN_${id().replace(/-/g, '').slice(0, 12).toUpperCase()}`, hardwareHash: hardwareHash(), firstInstallAt: now(), registeredAt: 0, phone: '', name: '', plan: '' },
+      device: {
+        machineId,
+        installationId: id(),
+        chatRoomId: machine.roomFor(machineId) || `ROOM_WIN_${id().replace(/-/g, '').slice(0, 12).toUpperCase()}`,
+        hardwareHash: hardwareHash(),
+        firstInstallAt: now(),
+        registeredAt: 0,
+        phone: '', name: '', plan: ''
+      },
       license: { status: 'unactivated', key: '', updatedAt: 0 },
       messages: []
     };
   }
 
+  // Nguồn định danh máy: ưu tiên giá trị ép từ ngoài, không thì đọc phần cứng.
+  // Ghi kèm nguồn đã dùng để sau này biết mã đang bám vào fingerprint yếu hay vững.
+  machineId() {
+    if (this.machineIdOverride) return this.machineIdOverride;
+    return machine.deviceId();
+  }
+
+  // KHÔNG BAO GIỜ `this.data = this.create()` ở đây nữa.
+  // Trước đây thiếu chatRoomId là gán lại toàn bộ dữ liệu, kéo theo mất luôn
+  // license đã kích hoạt và toàn bộ lịch sử chat — chỉ vì file hỏng nhẹ.
+  // Giờ chỉ bổ sung Ô THIẾU, không đụng vào ô đang có.
   normalize() {
-    if (!this.data.device?.installationId || !this.data.device?.chatRoomId) this.data = this.create();
-    if (!this.data.device.phone) this.data.device.phone = '';
-    if (!this.data.device.name) this.data.device.name = '';
-    if (!this.data.device.plan) this.data.device.plan = '';
-    if (!this.data.device.hardwareHash) this.data.device.hardwareHash = hardwareHash();
-    if (!this.data.license) this.data.license = { status: 'unactivated', key: '', updatedAt: 0 };
+    if (!this.data || typeof this.data !== 'object') this.data = this.create();
+    if (!this.data.device || typeof this.data.device !== 'object') this.data.device = {};
+    const device = this.data.device;
+    const fresh = this.create();
+
+    // Mã máy ổn định: luôn có mặt, kể cả với bản cài cũ chưa từng lưu.
+    // KHÔNG đụng installationId/chatRoomId đang có — khách cũ phải giữ nguyên
+    // mã cũ để còn ra đúng dòng Sheets, còn đúng key.
+    if (!device.machineId) device.machineId = this.machineId() || fresh.device.machineId;
+    if (!device.installationId) device.installationId = fresh.device.installationId;
+    // Nếu phòng đang lưu không đúng định dạng thì suy lại từ mã máy.
+    if (!device.chatRoomId) device.chatRoomId = fresh.device.chatRoomId;
+    if (!/^ROOM_WIN_[A-Z0-9]{8,40}$/.test(String(device.chatRoomId || ''))) {
+      const derived = machine.roomFor(device.machineId || device.installationId);
+      if (derived) device.chatRoomId = derived;
+    }
+
+    if (!device.hardwareHash) device.hardwareHash = hardwareHash();
+    if (!device.firstInstallAt) device.firstInstallAt = now();
+    device.registeredAt = Number(device.registeredAt) || 0;
+    if (!device.phone) device.phone = '';
+    if (!device.name) device.name = '';
+    if (!device.plan) device.plan = '';
+    if (!this.data.license || typeof this.data.license !== 'object') this.data.license = { status: 'unactivated', key: '', updatedAt: 0 };
     if (!Array.isArray(this.data.messages)) this.data.messages = [];
   }
 
   save() { atomicWrite(this.file, JSON.stringify(this.data, null, 2)); }
 
   publicDevice() {
-    const { installationId, chatRoomId, firstInstallAt, registeredAt, phone, name, plan, hardwareHash: hash } = this.data.device;
-    return { installationId, hardwareId: installationId, chatRoomId, hardwareHash: hash || '', firstInstallAt, registeredAt, phone, name, plan: plan || '', mode: 'local-mock' };
+    const { machineId, installationId, chatRoomId, firstInstallAt, registeredAt, phone, name, plan, hardwareHash: hash } = this.data.device;
+    return { machineId: machineId || '', installationId, hardwareId: installationId, chatRoomId, hardwareHash: hash || '', firstInstallAt, registeredAt, phone, name, plan: plan || '', mode: 'local-mock' };
   }
 
   gatewayUrl() {
@@ -199,12 +264,18 @@ class SupportStore {
   }
 
   saveLicense(value) {
+    value = value || {};
     this.data.license.status = value.status || this.data.license.status;
     this.data.license.packageType = value.packageType || value.package || this.data.license.packageType || '';
     this.data.license.keyName = value.keyName || value.licenseKey || value.key || this.data.license.keyName || this.data.license.key || '';
     this.data.license.key = this.data.license.keyName || this.data.license.key || '';
-    if (value.expiryAt !== undefined) {
-      this.data.license.expiryAt = formatExpiry(value.expiryAt);
+    // KHÔNG xoá hạn đã biết bằng giá trị rỗng.
+    // Đường này là chốt chặn cuối: nếu Gateway (bản cũ, hoặc lúc hỏng) trả
+    // expiryAt rỗng, app vẫn giữ hạn cũ thay vì báo "đã hết hạn". Chỉ ghi đè khi
+    // máy chủ đưa ra một NGÀY khác — đó mới là thay đổi thật (gia hạn, /lock…).
+    if (value.expiryAt !== undefined && value.expiryAt !== null) {
+      const incoming = formatExpiry(value.expiryAt);
+      if (incoming || !this.data.license.expiryAt) this.data.license.expiryAt = incoming;
     }
     // Chỉ nhận đúng định dạng mã phòng của app: sheet cũ từng trả về id Topic Telegram.
     if (value.chatRoomId && /^ROOM_WIN_[A-Z0-9]{8,40}$/.test(String(value.chatRoomId).trim())) {
@@ -496,6 +567,77 @@ class SupportStore {
     this.data.license = { status: 'pending_verification', key, keyName: key, expiryAt: '', updatedAt: now() };
     this.save();
     return { status: this.data.license.status, mode: 'local-mock' };
+  }
+
+  // ---- ĐỒNG BỘ LÚC MỞ APP ------------------------------------------------
+  // Một chuyến duy nhất lấy về bản quyền + thông báo + token phiên.
+  // Trước đây app phải gọi /devices/register rồi /notices/current thành hai chuyến
+  // (hai lần vào Apps Script); gộp lại thì một lần, ít chỗ hỏng hơn.
+  async sync(reason = 'mo-app') {
+    const remote = this.gateway('/v1/sync', { ...this.publicDevice(), appVersion: appVersion(), reason: String(reason || '').slice(0, 40) });
+    if (!remote) { this.register(); return { device: this.snapshot().device, license: this.publicLicense(), mode: 'local-mock' }; }
+    const value = await remote;
+    this.data.device.registeredAt = this.data.device.registeredAt || now();
+    this.data.license.sessionToken = value.sessionToken || this.data.license.sessionToken || '';
+    this.saveLicense(value);
+    // Máy chủ nhận ra mình ở dòng Sheet KHÁC với mã máy đang lưu -> cần báo cho
+    // người dùng biết, vì đó là dấu hiệu dữ liệu cục bộ bị can thiệp/sai lệch.
+    this.data.device.syncMismatch = !!(value.machineId && this.data.device.machineId && value.machineId !== this.data.device.machineId);
+    this.save();
+    if (value.notice) this.data.notice = { text: String(value.notice.text || '').slice(0, 2000), updatedAt: Number(value.notice.updatedAt) || now() };
+    return { device: { ...this.publicDevice(), mode: 'gateway' }, license: this.publicLicense(), notice: this.data.notice || null, mode: 'gateway' };
+  }
+
+  // ---- HỎI NHẸ (app chạy nền) ---------------------------------------------
+  // Chỉ đọc bản ghi nhớ trên Firebase, KHÔNG đụng Apps Script nên không tốn quota.
+  // Có bản ghi nhớ -> áp dụng; không có -> tự động hỏi đường đầy đủ.
+  async ping(reason = 'nen') {
+    const remote = this.gateway('/v1/ping', { ...this.publicDevice(), appVersion: appVersion() });
+    if (!remote) return { checked: false, reason: 'khong-co-gateway' };
+    const value = await remote;
+    this.data.presence = { lastPingAt: now(), reason: String(reason || '') };
+    if (!value.licenseCacheHit || !value.license) {
+      this.save();
+      await this.sync(reason);            // chưa có bản ghi nhớ thì hỏi đầy đủ một lần
+      return { checked: true, deep: true, reason };
+    }
+    this.saveLicense(value.license);
+    this.save();
+    return { checked: true, deep: false, reason, license: this.publicLicense() };
+  }
+
+  // ---- KHÁCH TỰ /CHECK -----------------------------------------------------
+  // Gửi lệnh xem thông tin bản quyền của chính máy này. Gateway gọi thẳng
+  // CRM (không vòng qua Telegram) rồi đẩy kết quả vào phòng chat, nên khách
+  // thấy ngay trong khung hỗ trợ. Chỉ /check|/info được phép — lệnh đổi trạng
+  // thái phải để admin gõ trên Telegram.
+  check(command = '/check') {
+    const remote = this.gateway('/v1/chats/check', { ...this.publicDevice(), command: String(command) }, true);
+    if (!remote) return Promise.resolve({ ok: false, reason: 'khong-co-gateway' });
+    return remote.then(value => ({ ok: true, detail: String(value && value.detail || '') }));
+  }
+
+  // ---- CÓ CẦN HỎI MÁY CHỦ KHÔNG? ----------------------------------------
+  // Mục tiêu: app chạy nền KHÔNG gọi mạng vô nghĩa. Chỉ hỏi khi thấy dấu hiệu
+  // cần hỏi. Trả về chuỗi lý do, rỗng nghĩa là không cần gọi.
+  needsServerCheck() {
+    if (!this.gatewayUrl()) return '';
+    if (this.data.device.syncMismatch) return 'may-id-lech';
+    const license = this.publicLicense();
+    // 1. Key sắp hết hạn -> hỏi để biết có được gia hạn không.
+    if (license.status === 'Active' && license.expiryAt) {
+      const end = parseDate(license.expiryAt);
+      if (end && (end.getTime() - Date.now()) <= EXPIRY_SOON_MS) return 'key-sap-het-han';
+    }
+    // 2. Chưa từng hỏi thành công lần nào -> hỏi để lấy trạng thái thật.
+    // CHỈ dùng checkedAt, KHÔNG dùng updatedAt: updatedAt còn bị ghi khi thao tác
+    // cục bộ (kích hoạt ở chế độ local-mock), nên nó không chứng minh được là đã
+    // liên lạc với máy chủ — dùng nó sẽ khiến máy offline im lặng mãi.
+    const last = Number(this.data.license.checkedAt || 0);
+    if (!last) return 'chua-hoi-lan-nao';
+    // 3. Đã hỏi khá lâu -> hỏi nhẹ một lần (không tốn quota).
+    if (Date.now() - last >= STALE_CHECK_MS) return 'da-lau-chua-hoi';
+    return '';
   }
 
   notice() {

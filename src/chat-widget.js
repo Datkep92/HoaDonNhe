@@ -121,6 +121,19 @@
     catch (error) { $('support-error').textContent = error.message; }
     finally { restore(); }
   };
+  // Lệnh nhanh /check: khách tự xem thông tin bản quyền của chính máy mình.
+  // Kết quả được Gateway đẩy vào phòng chat nên hiện ngay trong khung này.
+  $('support-check').onclick = async () => {
+    const restore = busyButton($('support-check'), 'Đang kiểm tra…');
+    $('support-error').textContent = '';
+    try {
+      await call('/api/support/check', { command: '/check' });
+      await loadMessages();
+      $('support-messages').scrollTop = $('support-messages').scrollHeight;
+    }
+    catch (error) { $('support-error').textContent = error.message; }
+    finally { restore(); }
+  };
   $('support-license-form').onsubmit = async event => {
     event.preventDefault(); const key = $('support-key').value.trim(); if (!key) return;
     const restore = busyButton($('support-license-form').querySelector('button'), 'Đang kích hoạt…');

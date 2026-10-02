@@ -72,7 +72,8 @@ tbody tr.clickable td:last-child::after{content:' ↗';color:#8a97a7}
 #notice .notice-close{margin-left:auto;border:0;background:transparent;color:#973d20;font-size:14px;line-height:1;padding:4px 8px;border-radius:6px;cursor:pointer}
 #notice .notice-close:hover{background:#ffe6da}
 /* ---- Hỗ trợ nổi: local adapter, giữ nguyên UI khi nối Gateway ---- */
-.support-widget{position:fixed;right:26px;bottom:24px;z-index:20}.support-toggle{background:#087f70;border-color:#087f70;color:#fff;box-shadow:0 8px 24px #0b645344;font-size:12px}.support-panel{position:absolute;right:0;bottom:48px;width:min(360px,calc(100vw - 32px));background:#fff;border:1px solid #dce6ee;border-radius:13px;box-shadow:0 16px 45px #102b3540;overflow:hidden}.support-header{padding:14px 15px;background:#14283f;color:#fff;margin:0;display:flex;align-items:center;justify-content:space-between}.support-header strong,.support-header small{display:block}.support-header strong{font-size:13px}.support-header small{font-size:10px;color:#adbfce;margin-top:3px}.support-header button{padding:2px 8px;border:0;background:transparent;color:#fff;font-size:21px}.support-context{padding:8px 14px;display:flex;justify-content:space-between;gap:8px;color:#728398;font-size:10px;border-bottom:1px solid #eef2f5}.support-context span:last-child{color:#b67932}.support-messages{height:250px;overflow:auto;padding:12px;background:#f8fafc;display:flex;flex-direction:column;gap:8px}.support-empty{font-size:11px;color:#8291a2;text-align:center;line-height:1.6;margin:auto 12px}.support-message{max-width:82%;padding:8px 10px;border-radius:10px;background:#fff;border:1px solid #e4eaf0;font-size:12px;line-height:1.45;align-self:flex-end}.support-message.admin{align-self:flex-start;background:#e9f7f3;border-color:#cfede4}.support-message small{display:block;font-size:9px;color:#8493a2;margin-top:4px}.support-compose{display:flex;gap:7px;padding:10px;border-top:1px solid #edf1f4}.support-compose input{margin:0;padding:9px}.support-compose button{padding:8px 11px}.support-license{padding:0 12px 8px;color:#60738a;font-size:11px}.support-license summary{cursor:pointer;padding:5px 0}.support-license form{display:flex;gap:6px}.support-license input{margin:0;padding:7px}.support-license button{padding:7px 10px}.support-error{min-height:15px;margin:0 12px 9px;font-size:10px;color:#a44e35}
+.support-widget{position:fixed;right:26px;bottom:24px;z-index:20}.support-toggle{background:#087f70;border-color:#087f70;color:#fff;box-shadow:0 8px 24px #0b645344;font-size:12px}.support-panel{position:absolute;right:0;bottom:48px;width:min(360px,calc(100vw - 32px));background:#fff;border:1px solid #dce6ee;border-radius:13px;box-shadow:0 16px 45px #102b3540;overflow:hidden}.support-header{padding:14px 15px;background:#14283f;color:#fff;margin:0;display:flex;align-items:center;justify-content:space-between}.support-header strong,.support-header small{display:block}.support-header strong{font-size:13px}.support-header small{font-size:10px;color:#adbfce;margin-top:3px}.support-header button{padding:2px 8px;border:0;background:transparent;color:#fff;font-size:21px}.support-context{padding:8px 14px;display:flex;justify-content:space-between;gap:8px;color:#728398;font-size:10px;border-bottom:1px solid #eef2f5}.support-context span:last-child{color:#b67932}.support-messages{height:250px;overflow:auto;padding:12px;background:#f8fafc;display:flex;flex-direction:column;gap:8px}.support-empty{font-size:11px;color:#8291a2;text-align:center;line-height:1.6;margin:auto 12px}.support-message{max-width:82%;padding:8px 10px;border-radius:10px;background:#fff;border:1px solid #e4eaf0;font-size:12px;line-height:1.45;align-self:flex-end}.support-message.admin{align-self:flex-start;background:#e9f7f3;border-color:#cfede4}.support-message small{display:block;font-size:9px;color:#8493a2;margin-top:4px}.support-quick{padding:0 10px 9px}.support-quick button{width:100%;padding:7px 10px;font-size:11px;color:#0a6f63;background:#f2fbf8;border-color:#cfeae2}.support-quick button:hover{background:#e6f7f1}
+.support-compose{display:flex;gap:7px;padding:10px;border-top:1px solid #edf1f4}.support-compose input{margin:0;padding:9px}.support-compose button{padding:8px 11px}.support-license{padding:0 12px 8px;color:#60738a;font-size:11px}.support-license summary{cursor:pointer;padding:5px 0}.support-license form{display:flex;gap:6px}.support-license input{margin:0;padding:7px}.support-license button{padding:7px 10px}.support-error{min-height:15px;margin:0 12px 9px;font-size:10px;color:#a44e35}
 /* ---- Settings: license/subscription + app lock ---- */
 .license-badge{display:inline-flex;align-items:center;vertical-align:middle;margin-left:9px;padding:4px 8px;border-radius:6px;background:#e8f5f2;color:#087f70;font-size:11px;font-weight:700}
 .settings-dialog,.payment-dialog{width:min(700px,calc(100vw - 36px));border:0;border-radius:12px;padding:0;box-shadow:0 22px 70px #102b3550;color:#20324a}
@@ -81,19 +82,34 @@ tbody tr.clickable td:last-child::after{content:' ↗';color:#8a97a7}
 .settings-tabs button{padding:7px 10px}
 .settings-tabs button.active{background:#e8f5f2;border-color:#9bd8cc;color:#087f70}
 .settings-pane{padding:14px 18px 16px}
+/* Công tắc khởi động: nhãn bấm được toàn bộ (click chỗ chữ cũng đổi trạng thái),
+   giống cách đổi trên điện thoại — tránh trường hợp người dùng chỉ bấm vào ô vuông
+   nhỏ xíu mà không trúng. */
+.autostart-row{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:12px 13px;border:1px solid #e2e9f0;border-radius:10px;background:#fbfdfe;cursor:pointer}
+.autostart-row:hover{background:#f4f9f8;border-color:#cfe3de}
+.autostart-row>span{display:flex;flex-direction:column;gap:3px;min-width:0}
+.autostart-row strong{font-size:13px;color:#1d3247}
+.autostart-row small{font-size:11px;line-height:1.45;color:#6c8098}
+.autostart-row input[type=checkbox]{width:42px;height:23px;flex:0 0 auto;margin:0;appearance:none;-webkit-appearance:none;background:#c9d4de;border-radius:12px;position:relative;cursor:pointer;transition:background .18s}
+.autostart-row input[type=checkbox]::after{content:"";position:absolute;top:2px;left:2px;width:19px;height:19px;border-radius:50%;background:#fff;box-shadow:0 1px 3px #102b3540;transition:transform .18s}
+.autostart-row input[type=checkbox]:checked{background:#087f70}
+.autostart-row input[type=checkbox]:checked::after{transform:translateX(19px)}
+.autostart-row input[type=checkbox]:disabled{opacity:.55;cursor:not-allowed}
+.autostart-detail{margin-top:12px;font-size:11px;color:#6c8098}
+.autostart-detail summary{cursor:pointer;padding:4px 0}
+.autostart-detail code{display:block;margin-top:6px;padding:8px 10px;background:#f4f7fa;border:1px solid #e6ecf2;border-radius:8px;word-break:break-all;font-size:10px;line-height:1.5;color:#4a5f77}
 .license-summary{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:12px}
 .license-summary>div{border:1px solid #e0e7ef;border-radius:8px;padding:8px 9px;background:#fafcfe}
 .license-summary span{display:block;font-size:9px;letter-spacing:.6px;text-transform:uppercase;color:#8392a4;font-weight:700;margin-bottom:3px}
 .license-summary strong,.license-summary code{font-size:11.5px;color:#2c425a;overflow-wrap:anywhere}
 .license-summary .wide-info{grid-column:1/-1}
 .plan-card{border:1px solid #dfe7ef;border-radius:9px;padding:11px 12px;background:#fff}
-.plan-card h3{margin:0 0 4px;font-size:13px}.plan-card strong{font-size:16px;color:#087f70}.plan-card p{color:#728398;font-size:10.5px;line-height:1.45;margin:6px 0}.plan-card button{width:100%;padding:8px 10px}
+.plan-card h3{margin:0 0 4px;font-size:13px}.plan-card p{color:#728398;font-size:10.5px;line-height:1.45;margin:6px 0}.plan-card button{width:100%;padding:8px 10px}
 .settings-form{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;align-items:end;margin-top:14px}
 .settings-form label{font-size:11px;color:#6c7d91;font-weight:600}.settings-form button{height:38px}
 .settings-message{min-height:16px;font-size:11px;color:#9a4f35;margin:10px 0 0}
 .lock-status{display:flex;justify-content:space-between;gap:16px;border:1px solid #e0e7ef;background:#fafcfe;border-radius:9px;padding:12px;margin-bottom:12px}
 .lock-status strong{font-size:13px}.lock-status span{font-size:11px;color:#728398}
-.payment-body{display:grid;grid-template-columns:120px minmax(0,1fr);gap:14px;align-items:center;padding:14px 18px}.payment-body p{font-size:12px;line-height:1.55;color:#52677e;margin:0}
 .payment-form{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr) auto;gap:8px;align-items:end;padding:0 18px 2px}
 .payment-form label{font-size:10px;color:#6c7d91;font-weight:600}.payment-form button{height:34px}
 .payment-note{padding:0 18px 12px}
@@ -103,7 +119,16 @@ tbody tr.clickable td:last-child::after{content:' ↗';color:#8a97a7}
 .payment-info-heading strong{font-size:11px;text-transform:uppercase;letter-spacing:.4px;color:#14283f}
 .payment-info-heading span{font-size:10.5px;color:#728398}
 .settings-message.ok{color:#087f70}
-.qr-sample{width:120px;height:120px;border:8px solid #fff;background:#fff;box-shadow:0 0 0 1px #dfe7ef;border-radius:8px;background-image:linear-gradient(90deg,#14283f 9px,transparent 9px),linear-gradient(#14283f 9px,transparent 9px),linear-gradient(90deg,transparent 21px,#14283f 21px,#14283f 30px,transparent 30px),linear-gradient(transparent 39px,#14283f 39px,#14283f 48px,transparent 48px);background-size:24px 24px,24px 24px,57px 57px,69px 69px;background-position:0 0,0 0,17px 11px,33px 27px}
+/* Dự án đang phát triển: không có giá, chỉ nói rõ là miễn phí. */
+.payment-free{display:flex;gap:10px;align-items:flex-start;margin:12px 18px 0;padding:11px 12px;border:1px solid #bfe6dd;border-radius:9px;background:#f2fbf8}
+.payment-free p{margin:0;font-size:11.5px;line-height:1.55;color:#3c5b6b}
+.payment-free-badge{flex:0 0 auto;padding:3px 9px;border-radius:999px;background:#087f70;color:#fff;font-size:10.5px;letter-spacing:.3px;text-transform:uppercase}
+/* Khối liên hệ người phát triển — thay cho khối QR thanh toán đã bỏ. */
+.payment-support{margin:12px 18px 0;padding:11px 12px;border:1px solid #e0e7ef;border-radius:9px;background:#fafcfe}
+.payment-support strong{display:block;font-size:11px;text-transform:uppercase;letter-spacing:.4px;color:#14283f}
+.payment-support ul{margin:6px 0 0;padding-left:17px}
+.payment-support li{font-size:11.5px;line-height:1.6;color:#52677e}
+.payment-support a{color:#087f70}
 .lock-floating{position:fixed;right:26px;bottom:78px;z-index:19;width:42px;height:42px;padding:0;border-radius:50%;background:#14283f;color:#fff;border-color:#14283f;box-shadow:0 8px 24px #102b3540}
 /* ============================================================================
    BỘ LỌC KỲ CHUNG — gộp chung hàng với MST, ngay dưới header.
@@ -158,7 +183,8 @@ tbody tr.clickable td:last-child::after{content:' ↗';color:#8a97a7}
 @keyframes lockCardIn{from{opacity:0;transform:translateY(12px) scale(.98)}to{opacity:1;transform:none}}
 @keyframes lockCardOut{from{opacity:1;transform:none}to{opacity:0;transform:translateY(-6px) scale(.99)}}
 @media(prefers-reduced-motion:reduce){.lock-screen,.lock-screen.is-leaving,.lock-screen.is-leaving .unlock-card,.unlock-card{animation:none!important}}
-@media(max-width:900px){.license-summary,.payment-plans,.payment-body,.payment-form{grid-template-columns:1fr}.settings-form{grid-template-columns:1fr}.lock-status{display:block}.lock-status span{display:block;margin-top:6px}}
+@media(max-width:900px){.license-summary,.payment-plans,.payment-form{grid-template-columns:1fr}.settings-form{grid-template-columns:1fr}.lock-status{display:block}.lock-status span{display:block;margin-top:6px}}
+@media(max-width:560px){.payment-free{flex-direction:column;gap:8px}}
 /* ---- Tin nhắn hỗ trợ: badge số tin chưa đọc trên nút 💬 Hỗ trợ ---- */
 .support-toggle{position:relative}
 .support-badge{position:absolute;top:-7px;right:-7px;min-width:18px;height:18px;padding:0 4px;border-radius:9px;background:#d64533;color:#fff;font-size:10px;font-weight:700;line-height:18px;letter-spacing:0;text-align:center;box-shadow:0 0 0 2px #fff;animation:support-pulse 1.4s ease-in-out infinite}

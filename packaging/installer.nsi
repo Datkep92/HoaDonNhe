@@ -314,6 +314,10 @@ Section "Uninstall"
   Delete "$INSTDIR\Uninstall.exe"
   DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_NAME}"
   DeleteRegKey HKCU "Software\${PRODUCT_NAME}"
+  ; Dọn luôn khoá tự khởi động. Bỏ sót thì Windows vẫn cố chạy file EXE vừa bị xoá
+  ; mỗi lần bật máy — người dùng thấy lỗi không hiểu vì sao. Xoá cả khi không có:
+  ; DeleteRegValue không lỗi khi giá trị không tồn tại.
+  DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "${PRODUCT_NAME}"
 
   MessageBox MB_YESNO|MB_ICONQUESTION "Xóa luôn dữ liệu người dùng trong thư mục 'du_lieu' (danh sách MST, phiên đăng nhập đã lưu, hóa đơn đã tải)?$\r$\n$\r$\nChọn Không để giữ lại dữ liệu." IDNO keep_data
     RMDir /r "$INSTDIR\du_lieu"

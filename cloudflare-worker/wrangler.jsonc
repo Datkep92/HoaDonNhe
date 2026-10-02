@@ -12,7 +12,7 @@
     "traces": { "enabled": true }
   },
   "vars": {
-    "GAS_URL": "https://script.google.com/macros/s/AKfycbx9hnceqeUpYMN1QbTsw2EKhwnEXnUM2n9GE95njYK45oQ4EHi6Os3mYjm9mTSeZW0A/exec",
+    "GAS_URL": "https://script.google.com/macros/s/AKfycbyjNfQQw1pxyZ5PNJ4T5u8Q3Yg6J0KC4sBZLsJ8gyeaTKcUsa8YHB4dTdAb7bAnTW6s/exec",
     "FIREBASE_DATABASE_URL": "https://hddt-49af7-default-rtdb.firebaseio.com",
     "TELEGRAM_CHAT_ID": "-1004449774852"
   }

@@ -1,0 +1,42 @@
+name: Deploy landing page lên GitHub Pages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'landing-v4/**'
+      - '.github/workflows/pages.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Kiểm tra cấu trúc bắt buộc
+        run: |
+          test -f landing-v4/index.html   || { echo 'Thiếu landing-v4/index.html'; exit 1; }
+          test -f landing-v4/.nojekyll     || { echo 'Thiếu landing-v4/.nojekyll';   exit 1; }
+          test -f landing-v4/assets/css/style.css || { echo 'Thiếu CSS'; exit 1; }
+          test -f landing-v4/assets/js/main.js    || { echo 'Thiếu JS';  exit 1; }
+
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: landing-v4
+
+      - id: deployment
+        uses: actions/deploy-pages@v4

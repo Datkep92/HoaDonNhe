@@ -19,15 +19,231 @@
  * Apps Script CHỈ quản lý thiết bị + bản quyền trên Google Sheet: không tạo Topic, không
  * gửi tin, không nhận webhook Telegram. Toàn bộ Telegram (Topic, webhook, định tuyến chat)
  * do Gateway đảm nhiệm — xem SUPPORT_SETUP.md §6. Ba định danh tách biệt:
- *   installationId    = UUID của máy (khoá dòng trong sheet Devices)
- *   chatRoomId        = ROOM_WIN_... phòng chat của app, do EXE gửi lên và giữ nguyên
- *   telegramThreadId  = id Topic Telegram, chỉ tồn tại ở Firebase/Gateway
+ *   machineId         = mã máy ỔN ĐỊNH băm từ phần cứng (DEV_...), KHÔNG random.
+ *                      Khách cài lại app / bật VPN / đổi tên máy thì vẫn y hệt.
+ *                      Đây là khoá dòng MỚI trong sheet Devices.
+ *   installationId    = khoá dòng CŨ (UUID ngẫu nhiên). App bản cũ vẫn gửi giá trị này,
+ *                      app bản mới gửi machineId. Cả hai đều được chấp nhận.
+ *   chatRoomId        = ROOM_WIN_... phòng chat của app, SUY RA TỪ machineId nên một máy
+ *                      chỉ có đúng một phòng.
+ *   telegramThreadId  = id Topic Telegram, chỉ tồn tại ở Firebase/Gateway.
  */
 const DEVICE_SHEET = 'Devices';
 const LICENSE_SHEET = 'Licenses';
 const BINDING_SHEET = 'Bindings';
 const SETTINGS_SHEET = 'Settings';
 const TRIAL_DAYS = 30;
+
+// Máy coi như đang online nếu lần ghi nhận diện gần nhất nằm trong cửa sổ này.
+// App ghi presence lúc mở và mỗi ~4h khi chạy nền, nên 15 phút là đủ bắt được
+// máy đang mở mà vẫn không tốn nhiều request. Worker có hằng trùng tên — sửa thì
+// sửa cả hai để /online không lệch với Sheet.
+const ONLINE_WINDOW_MS = 15 * 60 * 1000;
+
+// Mã máy mới (DEV_ + 16 hex) HOẶC UUID cũ. Chấp nhận cả hai để app đang chạy
+// ngoài hiện trường không bị từ chối trong lúc chuyển đổi.
+const ID_PATTERN = /^(?:DEV_[A-F0-9]{12,32}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i;
+const ROOM_PATTERN = /^ROOM_WIN_[A-Z0-9]{8,40}$/;
+
+// Cột tự sinh nếu chưa có, để không phải tự thêm cột bằng tay trên Sheet.
+const DEVICE_OPTIONAL_COLUMNS = ['Phone', 'Name', 'Plan', 'Hardware Hash', 'Machine ID', 'Telegram Topic ID', 'First Install Time', 'Last Seen Time', 'License Key', 'Chat Room ID'];
+
+
+// Số slot của một key: tối đa bao nhiêu máy, và đã gán mấy máy.
+// Nguồn: cột "Max Devices" ở tab Licenses (thiếu = 1); số máy đã gán đếm từ
+// tab Bindings, không có tab thì lấy ô "Hardware ID" đã gán ngay trong dòng
+// Licenses (cách ghi liên kết một máy kiểu cũ). Trả null khi không có key.
+function slots_(key) {
+  const clean = String(key || '').trim();
+  // Không có key thì không có "số máy" để báo — trả null để nơi gọi bỏ qua,
+  // chứ không trả {max:1} rồi hiện ra "0/1" làm khách tưởng còn 1 slot.
+  if (!clean) return null;
+  const sheet = licenseSheet_();
+  const data = rows_(sheet);
+  const index = find_(data.values, cell_(data.header, 'License Key'), clean);
+  if (index < 0) return null;
+  const row = data.values[index];
+  const max = maxDevices_(row, data.header);
+  const boundCol = cell_(data.header, 'Hardware ID');
+  const bindings = boundDevices_(clean);
+  const used = bindings
+    ? bindings.values.filter(item => String(item[cell_(bindings.header, 'Hardware ID')] || '').trim()).length
+    : (String(row[boundCol] || '').trim() ? 1 : 0);
+  return { max: max, used: used };
+}
+
+// Chuẩn hoá số điện thoại về một dạng để so sánh: chỉ giữ chữ số, bỏ mã
+// quốc gia 84 và số 0 ở đầu. Nhờ vậy "0987 654 321", "+84 987.654.321" và
+// "987654321" đều ra cùng một khoá — khách gõ SĐT kiểu nào cũng tìm thấy.
+// Rỗng thì trả '' để nơi gọi tự báo "không nhập số".
+function phoneKey_(value) {
+  let digits = String(value == null ? '' : value).replace(/\D+/g, '');
+  if (digits.length > 10 && digits.indexOf('84') === 0) digits = digits.slice(2);
+  while (digits.length > 9 && digits.charAt(0) === '0') digits = digits.slice(1);
+  return digits;
+}
+
+// ==========================================
+// TRA CỨU THEO SỐ ĐIỆN THOẠI (/check_SDT)
+// ==========================================
+// Admin gõ /check_0987654321 trong Telegram. Trả về TOÀN BỘ máy đăng ký với số
+// điện thoại đó và TOÀN BỘ key đã cấp cho các máy ấy — vì /new mỗi lần tạo một
+// key mới, một khách có thể đang giữ nhiều key cùng lúc (gia hạn bằng /new, mua
+// thêm máy...). Chỉ nhìn "key hiện tại" sẽ bỏ sót key cũ còn hiệu lực.
+// Liên kết key ↔ máy qua "Chat Room ID" vì phòng chat suy ra từ machineId nên
+// một máy luôn có đúng một phòng, không đổi khi khách cài lại app.
+// Chỉ gọi từ Worker (đã qua khoá gatewaySecret), không gọi từ app.
+function findByPhone_(input) {
+  const want = phoneKey_(input.phone);
+  if (!want) return { found: false, query: String(input.phone || '').trim(), devices: [], licenses: [] };
+
+  const now = Number(input.now || Date.now());
+  const sheet = deviceSheet_();
+  ensureColumns_(sheet, DEVICE_OPTIONAL_COLUMNS);
+  const data = rows_(sheet);
+  const header = data.header;
+  const phoneCol = optional_(header, 'Phone');
+  const hardwareCol = cell_(header, 'Hardware ID');
+  const machineCol = optional_(header, 'Machine ID');
+  const roomCol = optional_(header, 'Chat Room ID');
+  const nameCol = optional_(header, 'Name');
+  const planCol = optional_(header, 'Plan');
+  const seenCol = optional_(header, 'Last Seen Time');
+  const pick = (row, index) => (index < 0 ? '' : String(row[index] || '').trim());
+
+  const devices = [];
+  const rooms = {};          // ROOM_WIN_... -> true, để lọc key của các máy này
+  const machineIds = {};     // DEV_... -> true
+  for (const row of data.values) {
+    if (phoneCol < 0) break;
+    if (phoneKey_(row[phoneCol]) !== want) continue;
+    const result = deviceResult_(row, header);
+    const room = pick(row, roomCol);
+    const machine = pick(row, machineCol);
+    const hardware = pick(row, hardwareCol);
+    if (room) rooms[room.toUpperCase()] = true;
+    if (machine) machineIds[machine.toUpperCase()] = true;
+    const lastSeen = seenCol >= 0 && row[seenCol] ? new Date(row[seenCol]).getTime() : 0;
+    devices.push({
+      chatRoomId: room,
+      machineId: machine,
+      hardwareId: hardware,
+      name: pick(row, nameCol),
+      phone: pick(row, phoneCol),
+      plan: pick(row, planCol),
+      status: result.status,
+      keyName: result.keyName,
+      expiryAt: result.expiryAt,
+      lastSeen: Number.isFinite(lastSeen) ? lastSeen : 0,
+      online: Number.isFinite(lastSeen) && lastSeen > 0 && (now - lastSeen) <= ONLINE_WINDOW_MS,
+    });
+  }
+
+  // Key của các máy vừa tìm ra. Dòng Licenses khớp nếu Chat Room ID trùng, HOẶC
+  // Hardware ID trùng một trong các mã máy (sheet cũ ghi mã theo kiểu cũ).
+  const licenses = [];
+  const licenseData = rows_(licenseSheet_());
+  const lh = licenseData.header;
+  const lKey = cell_(lh, 'License Key');
+  const lStatus = optional_(lh, 'Status');
+  const lExpiry = optional_(lh, 'Expiry Date');
+  const lRoom = optional_(lh, 'Chat Room ID');
+  const lHardware = optional_(lh, 'Hardware ID');
+  const lActivated = optional_(lh, 'Activated At');
+  const ids = Object.keys(machineIds);
+  for (const row of licenseData.values) {
+    const room = (lRoom >= 0 ? String(row[lRoom] || '').trim() : '').toUpperCase();
+    const hardware = (lHardware >= 0 ? String(row[lHardware] || '').trim() : '').toUpperCase();
+    if (!rooms[room] && !machineIds[hardware] && ids.indexOf(hardware) < 0) continue;
+    const keyName = String(row[lKey] || '').trim();
+    const slot = slots_(keyName);
+    const rawStatus = (lStatus >= 0 ? String(row[lStatus] || '').trim() : '');
+    const expiry = lExpiry >= 0 ? row[lExpiry] : '';
+    const expiryAt = expiry ? new Date(expiry).getTime() : 0;
+    // Trạng thái hiển thị phải giống hệt logic của /check, không thì admin thấy
+    // "Active" cho một key đã hết hạn.
+    const status = rawStatus.toLowerCase() === 'active' && Number.isFinite(expiryAt) && expiryAt < now ? 'Expired' : (rawStatus || 'Active');
+    const bindings = boundDevices_(keyName);
+    const boundDevices = [];
+    if (bindings) {
+      const bRoom = optional_(bindings.header, 'Chat Room ID');
+      const bAt = optional_(bindings.header, 'Activated At');
+      for (const item of bindings.values) {
+        if (!String(item[cell_(bindings.header, 'Hardware ID')] || '').trim()) continue;
+        boundDevices.push({
+          hardwareId: String(item[cell_(bindings.header, 'Hardware ID')] || '').trim(),
+          chatRoomId: bRoom >= 0 ? String(item[bRoom] || '').trim() : '',
+          activatedAt: bAt >= 0 ? item[bAt] : '',
+        });
+      }
+    }
+    licenses.push({
+      keyName: keyName,
+      status: status,
+      expiryAt: expiry || '',
+      activatedAt: lActivated >= 0 ? row[lActivated] : '',
+      chatRoomId: lRoom >= 0 ? String(row[lRoom] || '').trim() : '',
+      maxDevices: slot ? slot.max : maxDevices_(row, lh),
+      usedSlots: slot ? slot.used : 0,
+      boundDevices: boundDevices,
+    });
+  }
+
+  return {
+    found: devices.length > 0 || licenses.length > 0,
+    query: String(input.phone || '').trim(),
+    phone: want,
+    now: now,
+    onlineWindowMs: ONLINE_WINDOW_MS,
+    devices: devices,
+    licenses: licenses,
+  };
+}
+
+// ==========================================
+// DANH SÁCH THIẾT BỊ (cho lệnh /online của admin)
+// ==========================================
+// lastSeen là mốc Gateway ghi vào Firebase lần gần nhất, đưa vào đây để admin
+// biết máy nào đang chạy app. Trả về mỗi máy: phòng chat, mã máy, tên, SĐT,
+// trạng thái, hạn, và lastSeen (0 nếu máy chưa từng mở app bản có phần này).
+// Chỉ gọi từ Worker (đã qua khoá gatewaySecret), không gọi từ app.
+function listDevices_(input) {
+  const sheet = deviceSheet_();
+  ensureColumns_(sheet, DEVICE_OPTIONAL_COLUMNS);
+  const data = rows_(sheet);
+  const header = data.header;
+  const hardwareCol = cell_(header, 'Hardware ID');
+  const machineCol = optional_(header, 'Machine ID');
+  const roomCol = optional_(header, 'Chat Room ID');
+  const phoneCol = optional_(header, 'Phone');
+  const nameCol = optional_(header, 'Name');
+  const planCol = optional_(header, 'Plan');
+  const seenCol = optional_(header, 'Last Seen Time');
+  const pick = (row, index) => (index < 0 ? '' : String(row[index] || '').trim());
+  const now = Number(input.now || Date.now());
+  const devices = [];
+  for (const row of data.values) {
+    const room = pick(row, roomCol);
+    const hardware = pick(row, hardwareCol);
+    if (!room && !hardware) continue;
+    const result = deviceResult_(row, header);
+    const lastSeen = seenCol >= 0 && row[seenCol] ? new Date(row[seenCol]).getTime() : 0;
+    devices.push({
+      chatRoomId: room,
+      machineId: machineCol >= 0 ? pick(row, machineCol) : '',
+      hardwareId: hardware,
+      name: pick(row, nameCol),
+      phone: pick(row, phoneCol),
+      plan: pick(row, planCol),
+      status: result.status,
+      keyName: result.keyName,
+      expiryAt: result.expiryAt,
+      lastSeen: Number.isFinite(lastSeen) ? lastSeen : 0,
+      online: Number.isFinite(lastSeen) && lastSeen > 0 && (now - lastSeen) <= ONLINE_WINDOW_MS,
+    });
+  }
+  return { now: now, count: devices.length, onlineWindowMs: ONLINE_WINDOW_MS, devices: devices };
+}
 
 function doPost(e) {
   try {
@@ -39,6 +255,10 @@ function doPost(e) {
       throw new Error('Unauthorized gateway.');
     }
 
+    // Sheet mới tạo chưa có tab nào -> tạo trước rồi mới xử lý. Đây cũng là bước
+    // tự phục hồi: đã có đủ tab thì không động vào gì.
+    ensureTabs_();
+
     const action = String(input.action || '');
     const chatRoomId = String(input.chatRoomId || '');
     const installId = String(input.installationId || '');
@@ -46,11 +266,31 @@ function doPost(e) {
     // Lệnh quản trị do Gateway chuyển tiếp (lấy từ Topic Telegram) chỉ cần biết phòng chat;
     // Apps Script không tự nói chuyện với Telegram, Gateway lo phần gửi/nhận.
     if (action === 'admin_command') {
-      if (!/^ROOM_WIN_[A-Z0-9]{8,40}$/.test(chatRoomId)) throw new Error('Invalid device identity.');
+      if (!ROOM_PATTERN.test(chatRoomId)) throw new Error('Invalid device identity.');
       return reply_({ ok: true, value: adminCommand_(input) });
     }
 
-    if (!/^[0-9a-f-]{36}$/i.test(installId) || !/^ROOM_WIN_[A-Z0-9]{8,40}$/.test(chatRoomId)) {
+    // list_devices là lệnh TOÀN CỤC của admin (xem /online): không gắn với máy
+    // nào nên không được đòi mã máy, giống admin_command ở trên.
+    if (action === 'list_devices') {
+      return reply_({ ok: true, value: listDevices_(input) });
+    }
+
+    // find_by_phone cũng là lệnh toàn cục (/check_SDT trong Telegram): tìm theo
+    // SĐT nên không gắn với mã máy nào.
+    if (action === 'find_by_phone') {
+      return reply_({ ok: true, value: findByPhone_(input) });
+    }
+
+    // App bản mới gửi machineId; app bản cũ chỉ gửi installationId (UUID).
+    // Chỉ cần một trong hai là nhận diện được, nhưng phòng chat thì luôn bắt buộc.
+    const machineId = String(input.machineId || '').trim();
+    const identityOk = ID_PATTERN.test(installId) || ID_PATTERN.test(machineId);
+    // machineId sai dạng thì từ chối hẳn, không cho "lọt qua bằng installationId":
+    // nếu lọt, giá trị rác sẽ được ghi vào cột Machine ID và biến thành khoá tra
+    // cứu không bao giờ trúng — dữ liệu bị bẩn mà rất khó phát hiện.
+    const machineValid = !machineId || ID_PATTERN.test(machineId);
+    if (!identityOk || !machineValid || !ROOM_PATTERN.test(chatRoomId)) {
       throw new Error('Invalid device identity.');
     }
 
@@ -103,6 +343,51 @@ function find_(values, column, value) {
   return values.findIndex(row => String(row[column]).trim() === String(value).trim());
 }
 
+// Tự thêm các cột còn thiếu vào hàng tiêu đề để không phải tự thêm cột bằng
+// tay trên Google Sheet. Sheet hoàn toàn trống thì viết luôn hàng tiêu đề.
+// Thiếu quyền ghi thì bỏ qua — các cột này đều tuỳ chọn nên Sheet cũ vẫn chạy
+// được bằng đường cũ.
+function ensureColumns_(sheet, names) {
+  const values = sheet.getDataRange().getValues();
+  if (!values.length) return [];
+  const header = values[0].map(value => String(value || '').trim());
+  const added = [];
+  for (const name of names) {
+    if (header.indexOf(name) >= 0) continue;
+    header.push(name);
+    added.push(name);
+  }
+  if (added.length) {
+    try { sheet.getRange(1, 1, 1, header.length).setValues([header]); }
+    catch (error) { return []; }
+  }
+  return added;
+}
+
+// TÌM DÒNG THIẾT BỊ — thứ tự ưu tiên, dừng ở lần khớp đầu tiên:
+//   1. Machine ID   mã máy ổn định băm từ phần cứng (đường chuẩn)
+//   2. Hardware ID  UUID cũ của app bản cũ
+//
+// KHÔNG CÒN khớp theo Hardware Hash. Hash cũ băm từ (tên máy | tài khoản |
+// card mạng) nên không đổi theo bản cài — nó là khoá lỏng dùng chung cho mọi
+// lần cài trên một máy, và ai biết hash đó cũng dùng được. Sự cố đã xảy ra:
+// client gửi UUID lạ kèm hash của máy khác đã khớp đúng dòng thiết bị đó và
+// nhận luôn license của người kia. Có Machine ID ổn định thì bỏ hẳn.
+// Đánh đổi: khách dùng app bản cũ mà mất file cục bộ phải kích hoạt lại.
+function findDevice_(data, input) {
+  const header = data.header;
+  const machineId = String(input.machineId || '').trim();
+  const installId = String(input.installationId || '').trim();
+
+  if (machineId) {
+    const byMachine = find_(data.values, optional_(header, 'Machine ID'), machineId);
+    if (byMachine >= 0) return { index: byMachine, via: 'machineId' };
+  }
+  const byInstall = find_(data.values, optional_(header, 'Hardware ID'), installId);
+  if (byInstall >= 0) return { index: byInstall, via: 'installationId' };
+  return { index: -1, via: '' };
+}
+
 function sheet_(name) {
   return SpreadsheetApp.getActive().getSheetByName(name);
 }
@@ -118,6 +403,68 @@ function licenseSheet_() {
 // Bảng Bindings là tuỳ chọn; không có thì dùng liên kết đơn ở cột Licenses!Hardware ID.
 function bindingsSheet_() {
   return sheet_(BINDING_SHEET);
+}
+
+// ---------------------------------------------------------------------------
+// TỰ TẠO CẤU TRÚC SHEET KHI THIẾU
+//
+// Lý do: dựng CRM mới (Google Sheet trống + script) thì không có tab nào. Nếu
+// bắt người tạo tay 4 tab và 25 tiêu đề cột thì dễ sai tên, sai thứ tự — mà
+// hỏng lúc đó rất khó hiểu vì lỗi chỉ hiện ra khi khách đăng ký.
+//
+// Hàm này CHỈ hành động khi thiếu: đã có tab thì không đụng gì, nên CRM đang
+// chạy không bị ảnh hưởng. Nó cũng tự chữa được sau khi ai đó lỡ xoá nhầm tab.
+//
+// Danh sách cột phải KHỚP DEVICE_OPTIONAL_COLUMNS và các hằng số tab ở trên.
+const SHEET_SPECS = [
+  {
+    name: DEVICE_SHEET,
+    headers: ['Hardware ID', 'Machine ID', 'Chat Room ID', 'License Key', 'Status', 'Expiry Date',
+      'First Install Time', 'Last Seen Time', 'Hardware Hash', 'Phone', 'Name', 'Plan', 'Telegram Topic ID']
+  },
+  {
+    name: LICENSE_SHEET,
+    headers: ['License Key', 'Status', 'Expiry Date', 'Hardware ID', 'Chat Room ID', 'Activated At', 'Max Devices']
+  },
+  {
+    name: BINDING_SHEET,
+    headers: ['License Key', 'Hardware ID', 'Chat Room ID', 'Activated At']
+  },
+  {
+    name: SETTINGS_SHEET,
+    headers: ['Key', 'Value', 'Updated At']
+  },
+];
+
+function ensureTabs_() {
+  const parent = SpreadsheetApp.getActive();
+  if (!parent) {
+    throw new Error('Script chưa gắn với Google Sheet nào. Trong Apps Script: File → Project settings → chọn Sheet, hoặc tạo script từ trong Google Sheet (Extensions → Apps Script).');
+  }
+  const report = [];
+  for (const spec of SHEET_SPECS) {
+    let sheet = parent.getSheetByName(spec.name);
+    const existed = !!sheet;
+    if (!sheet) sheet = parent.insertSheet(spec.name);
+    const added = ensureColumns_(sheet, spec.headers);
+    report.push({ tab: spec.name, existed, columnsAdded: added.length });
+  }
+  // Sheet mới tạo có sẵn một tab "Sheet1" / "Trang tính 1" không dùng đến. Dọn
+  // cho gọn, nhưng CHỈ khi: đúng một tab thừa, tab đó rỗng, và tên đúng là tên
+  // mặc định. Không đoán mò — xoá nhầm là mất dữ liệu thật.
+  try {
+    const all = parent.getSheets();
+    const extras = all.filter(s => SHEET_SPECS.every(spec => spec.name !== s.getName()));
+    const DEFAULT_NAMES = /^(Sheet1|Trang tính 1|Trang tính1|工作表 1|Sheet01)$/;
+    if (extras.length === 1 && all.length > 1 && extras[0].getLastRow() === 0 && DEFAULT_NAMES.test(extras[0].getName())) {
+      parent.deleteSheet(extras[0]);
+    }
+  } catch (error) {
+    // Không xoá được tab rác không sao — chỉ là cosmetic.
+  }
+  // Trả về tóm tắt để `clasp run ensureTabs_` in ra được, và để chẩn đoán
+  // khi cấu trúc Sheet lệch. doPost không dùng giá trị này.
+  return report;
 }
 
 function appendMapped_(sheet, values) {
@@ -163,6 +510,7 @@ function deviceResult_(row, header) {
     expiryAt: expiry,
     trial: false,
     hardwareId: String(row[hardwareCol] || ''),
+    machineId: optional_(header, 'Machine ID') >= 0 ? String(row[optional_(header, 'Machine ID')] || '') : '',
     keyName: keyCol >= 0 ? String(row[keyCol] || '') : '',
     chatRoomId: roomCol >= 0 ? String(row[roomCol] || '') : '',
     hardwareHash: hashCol >= 0 ? String(row[hashCol] || '') : ''
@@ -184,37 +532,43 @@ function deviceResult_(row, header) {
 // ==========================================
 function registerDevice_(input) {
   const sheet = deviceSheet_();
+  ensureColumns_(sheet, DEVICE_OPTIONAL_COLUMNS);
   const data = rows_(sheet);
   const header = data.header;
   const hardwareCol = cell_(header, 'Hardware ID');
+  const machineCol = optional_(header, 'Machine ID');
   const installId = String(input.installationId || '');
+  const machineId = String(input.machineId || '').trim();
   const roomId = String(input.chatRoomId || '');
   const phone = String(input.phone || '').trim();
   const name = String(input.name || '').trim();
   const plan = String(input.plan || '').trim();
   const hash = String(input.hardwareHash || '').trim();
-  const hashCol = optional_(header, 'Hardware Hash');
 
-  let found = find_(data.values, hardwareCol, installId);
+  const match = findDevice_(data, input);
+  let found = match.index;
 
-  // Cùng một bộ máy nhưng mã cục bộ đã đổi (cài lại / xoá cấu hình): nối tiếp
-  // dòng cũ để giữ nguyên First Install Time và liên kết bản quyền.
-  if (found < 0 && hash && hashCol >= 0) {
-    const byHash = find_(data.values, hashCol, hash);
-    if (byHash >= 0) {
-      const previous = String(data.values[byHash][hardwareCol] || '').trim();
-      sheet.getRange(byHash + 2, hardwareCol + 1).setValue(installId);
-      data.values[byHash][hardwareCol] = installId;
-      if (previous && previous !== installId) rebindDevice_(previous, installId, roomId);
-      found = byHash;
+  // Khớp được mà cột Machine ID còn trống (khách lên từ bản cũ): ghi mã máy ổn
+  // định vào đó. Từ lần sau, kể cả khi khách cài lại app và mất hết dữ liệu cục bộ,
+  // bước 1 của findDevice_() vẫn ra đúng dòng này — không mất key, không reset thử.
+  if (found >= 0 && machineId && machineCol >= 0) {
+    const current = String(data.values[found][machineCol] || '').trim();
+    if (current !== machineId) {
+      sheet.getRange(found + 2, machineCol + 1).setValue(machineId);
+      data.values[found][machineCol] = machineId;
     }
   }
+
+  // KHÔNG ghi lại cột Hardware ID khi đã khớp dòng. Khớp theo Machine ID nghĩa
+  // là cùng một máy: giữ nguyên UUID cũ trong cột đó, vì Machine ID mới là
+  // định danh thật. Ghi đè chỉ tạo nhiễu và từng làm hỏng liên kết bản quyền.
 
   if (found < 0) {
     // Máy mới kết nối lần đầu: tạo record, dùng thử bắt đầu tính từ First Install Time.
     // chatRoomId giữ đúng giá trị EXE gửi lên; Telegram không đi qua Apps Script.
     const row = appendMapped_(sheet, {
       'Hardware ID': installId,
+      'Machine ID': machineId,
       'Chat Room ID': roomId,
       'License Key': '',
       'Status': 'Unactivated',
@@ -244,6 +598,7 @@ function registerDevice_(input) {
   };
 
   update('Last Seen Time', new Date());
+  if (machineId) update('Machine ID', machineId);
   if (hash) update('Hardware Hash', hash);
   if (phone) update('Phone', phone);
   if (name) update('Name', name);
@@ -252,30 +607,10 @@ function registerDevice_(input) {
   return { ...deviceResult_(row, header), registered: false };
 }
 
-// Đổi chủ liên kết khi mã máy cục bộ thay đổi nhưng vẫn là máy cũ.
-function rebindDevice_(previousId, installId, roomId) {
-  const licenses = licenseSheet_();
-  const data = rows_(licenses);
-  const hardwareCol = cell_(data.header, 'Hardware ID');
-  const index = find_(data.values, hardwareCol, previousId);
-  if (index >= 0) licenses.getRange(index + 2, hardwareCol + 1).setValue(installId);
-  const bindings = bindingsSheet_();
-  if (!bindings) return;
-  const bindingData = rows_(bindings);
-  const bindingHardwareCol = cell_(bindingData.header, 'Hardware ID');
-  const bindingIndex = find_(bindingData.values, bindingHardwareCol, previousId);
-  if (bindingIndex >= 0) {
-    bindings.getRange(bindingIndex + 2, bindingHardwareCol + 1).setValue(installId);
-    // Phòng chat chỉ ghi khi dòng liên kết còn trống — cùng quy tắc với verifyKey_.
-    // Trước đây chỗ này dùng biến `roomId` không tồn tại trong hàm, nên khi Sheet có
-    // tab Bindings thì rebind ném ReferenceError và register_device thất bại âm thầm.
-    const bindingRoomCol = optional_(bindingData.header, 'Chat Room ID');
-    const currentRoom = bindingRoomCol >= 0 ? String(bindingData.values[bindingIndex][bindingRoomCol] || '').trim() : '';
-    if (roomId && bindingRoomCol >= 0 && !currentRoom) {
-      bindings.getRange(bindingIndex + 2, bindingRoomCol + 1).setValue(roomId);
-    }
-  }
-}
+// rebindDevice_() đã bị GỠ. Nó tồn tại để "chuyển chủ liên kết" khi khớp dòng
+// bằng Hardware Hash; nay đã bỏ đường khớp đó (xem findDevice_). Giữ lại hàm
+// không dùng chỉ để tránh tái phát: nó từng ném ReferenceError vì dùng biến
+// `roomId` không tồn tại trong phạm vi, làm register_device chết âm thầm.
 
 // ==========================================
 // KÍCH HOẠT KEY (Bước 5, hỗ trợ giới hạn số máy)
@@ -315,10 +650,10 @@ function verifyKey_(input) {
 
   // Kiểm tra thiết bị trước khi ghi bất cứ thứ gì, tránh buộc key vào máy chưa đăng ký.
   const devices = deviceSheet_();
+  ensureColumns_(devices, DEVICE_OPTIONAL_COLUMNS);
   const deviceData = rows_(devices);
-  const deviceHardwareCol = cell_(deviceData.header, 'Hardware ID');
   const deviceStatusCol = cell_(deviceData.header, 'Status');
-  const deviceRow = find_(deviceData.values, deviceHardwareCol, input.installationId);
+  const deviceRow = findDevice_(deviceData, input).index;
   if (deviceRow < 0) throw new Error('Device must be registered before activation.');
 
   const device = deviceData.values[deviceRow];
@@ -360,13 +695,23 @@ function verifyKey_(input) {
   devices.getRange(deviceRow + 2, deviceStatusCol + 1).setValue('Active');
   devices.getRange(deviceRow + 2, cell_(deviceData.header, 'Expiry Date') + 1).setValue(license[expiryCol] || '');
 
-  return { status: 'Active', expiryAt: license[expiryCol] || '', keyName: key, hardwareId: input.installationId, chatRoomId: input.chatRoomId };
+  const machineCol = optional_(deviceData.header, 'Machine ID');
+  const deviceMachineId = machineCol >= 0 ? String(device[machineCol] || '').trim() : '';
+  return {
+    status: 'Active',
+    expiryAt: license[expiryCol] || '',
+    keyName: key,
+    hardwareId: input.installationId,
+    machineId: deviceMachineId || String(input.machineId || '').trim(),
+    chatRoomId: input.chatRoomId
+  };
 }
 
 function licenseStatus_(input) {
-  const data = rows_(deviceSheet_());
-  const hardwareCol = cell_(data.header, 'Hardware ID');
-  const found = find_(data.values, hardwareCol, input.installationId);
+  const sheet = deviceSheet_();
+  ensureColumns_(sheet, DEVICE_OPTIONAL_COLUMNS);
+  const data = rows_(sheet);
+  const found = findDevice_(data, input).index;
   if (found < 0) return { status: 'Unactivated' };
   return deviceResult_(data.values[found], data.header);
 }
@@ -469,7 +814,12 @@ function adminCommand_(input) {
   // Bỏ hậu tố @BotName mà Telegram thêm vào lệnh trong group.
   const command = (parts[0] || '/check').toLowerCase().replace(/@[\w_]+$/, '');
   const installationId = String(row[hardwareCol] || '');
-  const result = { found: true, installationId, chatRoomId: room };
+  // Kèm luôn trạng thái hiện tại: Gateway nhận lệnh từ Telegram rồi cập nhật bản
+  // ghi nhớ phía Firebase để app hỏi nhẹ (/v1/ping) thấy ngay /lock, /unlock,
+  // /reset mà không phải đụng vào Apps Script. Không có hai trường này thì
+  // lệnh quản trị chỉ đổi được Sheet mà app không nhận ra.
+  const snapshot = deviceResult_(row, header);
+  const result = { found: true, installationId, chatRoomId: room, status: snapshot.status, expiryAt: snapshot.expiryAt, trial: snapshot.trial };
 
   // /check — thông tin bản quyền
   if (command === '/check' || command === '/info') {
@@ -490,7 +840,11 @@ function adminCommand_(input) {
     ];
     if (customer || phone) lines.push('👤 Khách: ' + (customer || '—') + ' · 📞 ' + (phone || '—'));
     if (plan) lines.push('📦 Gói: ' + plan);
-    return { ...result, reply: lines.join('\n') };
+    // Số máy: chỉ hiện khi máy này đã gắn key — máy đang dùng thử thì chưa có key
+    // nên "số máy" không có ý nghĩa, hiện ra chỉ gây nhiễu.
+    const slot = slots_(info.keyName);
+    if (slot) lines.push('💻 Số máy: ' + slot.used + '/' + slot.max + (slot.max > 1 ? ' (còn ' + Math.max(0, slot.max - slot.used) + ' slot)' : ''));
+    return { ...result, maxDevices: slot ? slot.max : 0, usedSlots: slot ? slot.used : 0, reply: lines.join('\n') };
   }
 
   // /new [thang|nam] [số_máy]
@@ -515,7 +869,7 @@ function adminCommand_(input) {
     sheet.getRange(rowNumber, cell_(header, 'Status') + 1).setValue('Active');
     sheet.getRange(rowNumber, cell_(header, 'Expiry Date') + 1).setValue(expiry);
 
-    return { ...result, keyName: newKey, reply: ['🎉 CẤP KEY THÀNH CÔNG!', '🔑 Key: ' + newKey, '⏳ Hạn: ' + adminDate_(expiry), '💻 Số máy: ' + maxDevices].join('\n') };
+    return { ...result, keyName: newKey, maxDevices: maxDevices, usedSlots: 0, reply: ['🎉 CẤP KEY THÀNH CÔNG!', '🔑 Key: ' + newKey, '⏳ Hạn: ' + adminDate_(expiry), '💻 Số máy: 0/' + maxDevices + ' slot' + (maxDevices > 1 ? ' (chưa gán máy nào)' : '')].join('\n') };
   }
 
   // /extend [số_ngày]
@@ -535,10 +889,14 @@ function adminCommand_(input) {
   if (command === '/reset') {
     const keyCol = optional_(header, 'License Key');
     const key = keyCol >= 0 ? String(row[keyCol] || '').trim() : '';
-    sheet.getRange(rowNumber, hardwareCol + 1).setValue('');
+    // KHÔNG xoá Hardware ID / Machine ID.
+    // Trước đây lệnh này xoá Hardware ID — mà đó chính là khoá để tìm dòng máy,
+    // nên khách bấm kích hoạt lại sẽ báo "Device must be registered" và phải tắt
+    // app rồi mở lại mới được, dù bot đã báo "khách có thể kích hoạt lại".
+    // /reset chỉ cần trả lại suất máy của key và tắt bản quyền trên máy này.
     sheet.getRange(rowNumber, cell_(header, 'Status') + 1).setValue('Unactivated');
     releaseBinding_(key, installationId);
-    return { ...result, reply: '🔄 Đã reset liên kết máy thành công. Khách có thể kích hoạt lại trên máy này hoặc máy mới.' };
+    return { ...result, reply: '🔄 Đã reset liên kết máy thành công. Khách có thể kích hoạt lại ngay trên máy này, hoặc trên máy khác.' };
   }
 
   // /lock | /unlock

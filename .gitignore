@@ -33,6 +33,8 @@ DANH SÁCH HÓA ĐƠN - 2026-09-19T140856.168.xlsx
 # Secrets - real credentials, never commit
 code.txt
 support-gateway/README.md
+# Thông tin CRM vừa dựng + shared secret (tools/provision-crm.cjs ghi ra)
+.crm-new.json
 
 # Tool runtime state (not source)
 .codewhale/

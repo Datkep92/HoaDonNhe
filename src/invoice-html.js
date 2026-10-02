@@ -111,6 +111,11 @@ function withXmlFields(detail, xml) {
 /**
  * Builds a properly formatted invoice HTML from JSON detail data.
  * Used for both HTML and PDF (print-ready) output files.
+ *
+ * LƯU Ý — khối @media print trong HTML này KHÔNG được thêm "background:none" cho .main-page.
+ * Chrome khi in áp dụng print media, nên nền .main-page (hình mờ của cổng thuế) sẽ biến mất:
+ * PDF ra trắng trơn trong khi bản .html mở bằng trình duyệt vẫn thấy nền. Kiểm bằng cách tìm
+ * ảnh 1280x1280 (viewinvoice-bg.jpg) trong PDF; thiếu ảnh đó là đã bị lại lỗi này.
  */
 function buildInvoiceHtml(inv, detail, assets) {
   const d = detail || {};
@@ -344,7 +349,7 @@ body{width:100%;min-height:100%;margin:0 auto;padding:0;font-size:13pt;font-fami
 .data-item .di-label{min-height:25px;height:auto;border-bottom:1px dashed transparent;display:flex;align-items:flex-start}
 .data-item .di-value{box-sizing:border-box;flex:1;min-height:25px;height:auto;border-bottom:1px dashed #e8e8e8;display:flex;align-items:flex-start;padding-left:10px;justify-content:flex-start}
 @page{size:A4;margin:0!important}
-@media print{*{-webkit-print-color-adjust:exact;print-color-adjust:exact}body{width:auto;height:auto;margin:0 auto}table,tr,td{page-break-inside:avoid}table thead{display:table-row-group!important}.table-horizontal-wrapper{page-break-inside:avoid;padding-top:5px}.main-page{margin:0;width:initial;min-height:296mm;background:none;border:none}.ft-sign{page-break-inside:avoid!important;page-break-after:auto}.fd-end{padding-top:0!important}.sign-box{line-height:1.2!important}}
+@media print{*{-webkit-print-color-adjust:exact;print-color-adjust:exact}body{width:auto;height:auto;margin:0 auto}table,tr,td{page-break-inside:avoid}table thead{display:table-row-group!important}.table-horizontal-wrapper{page-break-inside:avoid;padding-top:5px}.main-page{margin:0;width:initial;min-height:296mm;border:none}.ft-sign{page-break-inside:avoid!important;page-break-after:auto}.fd-end{padding-top:0!important}.sign-box{line-height:1.2!important}}
 </style>
 </head>
 <body>

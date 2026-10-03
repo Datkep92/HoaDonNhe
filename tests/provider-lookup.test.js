@@ -78,8 +78,12 @@ test('URL trong khoá Extra1 chỉ được lấy khi đúng là URL (14/17 giá
   // dính dấu `;` nên URI không mở được, và không khớp kiểm tra `.vn$` khi mở cổng.
   assert.strictEqual(record.lookupUrl, 'https://dmcmd-tt78admin.vnpt-invoice.com.vn');
   assert.strictEqual((record.lookupUrl || '').includes(';'), false, 'không được giữ dấu ;');
-  // Mã tra cứu bóc ra từ chính URL kiểu VNPT (;817501;).
-  assert.strictEqual(record.lookupCode, '817501');
+  // KHÔNG được bịa mã tra cứu từ số cổng trong URL. `;817501;` là CỔNG, không phải mã:
+  // dữ liệu thật của khách cho thấy ba hóa đơn liên tiếp 11922/11923/11924 có "mã"
+  // 817501/817502/817503 (tức là số cổng), còn mã VNPT thật dài như
+  // `pc5P7639265106584137312289813`. Bịa ở đây làm app tưởng đã đủ điều kiện tải PDF rồi
+  // hỏi người dùng một thứ họ không có.
+  assert.strictEqual(record.lookupCode, null, 'không có khoá mã trong XML thì không được bịa mã');
 });
 
 test('cổng thanh toán payoo.vn bị loại, không lọt vào cột tra cứu', () => {
@@ -257,3 +261,4 @@ test('Excel: cột cổng tra cứu + hyperlink bấm được; KHÔNG còn shee
     assert.ok(linked.length, 'ô cổng tra cứu phải bấm được');
   } finally { db.close(); fs.rmSync(dir, { recursive: true, force: true }); }
 });
+

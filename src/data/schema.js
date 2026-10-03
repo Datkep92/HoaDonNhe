@@ -26,7 +26,7 @@
 //   TM/CK nên không tự phân loại được — mục 3 của yêu cầu).
 // ---------------------------------------------------------------------------
 
-const SCHEMA_VERSION = 13;
+const SCHEMA_VERSION = 14;
 
 const TABLES = [
   `CREATE TABLE IF NOT EXISTS invoices (
@@ -318,3 +318,4 @@ const FTS5 = [
 const DDL = [...TABLES, ...INDEXES, ...FTS5];
 
 module.exports = { SCHEMA_VERSION, TABLES, INDEXES, FTS5, DDL };
+

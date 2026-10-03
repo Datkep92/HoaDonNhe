@@ -125,10 +125,22 @@ function isLookupUrl(value) {
   return Boolean(host) && !NON_LOOKUP_HOST.test(host);
 }
 
-// Mã tra cứu kiểu VNPT nằm ngay trong URL: https://…vnpt-invoice.com.vn;817501; ⇒ 817501
-function codeFromUrl(url) {
-  const match = String(url || '').match(/;(\d{4,});/);
-  return match ? match[1] : '';
+// KHÔNG BỊA MÃ TRA CỨU TỪ SỐ CỔNG TRONG URL.
+//
+// Bản đầu lấy `;817501;` trong `https://…vnpt-invoice.com.vn;817501;` rồi coi `817501` là
+// mã tra cứu. Dữ liệu thật của khách bác bỏ điều đó: ba hoá đơn liên tiếp 11922/11923/11924
+// có "mã" 817501/817502/817503 — đó là CỔNG, không phải mã. Mã tra cứu thật của VNPT trông
+// như `pc5P7639265106584137312289813`, dài và không liên quan đến cổng.
+//
+// Bịa dữ liệu ở đây nguy hiểm hơn vẻ ngoài: có mã thì app tưởng đã đủ điều kiện tải PDF,
+// bấm nút sẽ hỏi đúng cái mà người dùng không có, và cột "Tra cứu NCC" báo vàng cho một
+// hoá đơn thực ra chưa có gì để tra.
+//
+// Nên: không có khoá mã trong <TTKhac> thì coi như KHÔNG có mã. Người dùng tự nhập —
+// đúng như bản tham chiếu 1.4.20_0 cũng hỏi, và vì mã nằm trên hoá đơn giấy nên không
+// có cách nào suy ra.
+function codeFromUrl() {
+  return '';
 }
 
 // Mọi cặp <TTruong> → <DLieu> trong <TTKhac>. Một khoá có thể lặp (nhiều khối
@@ -280,4 +292,5 @@ function buildImportRecord(xml, { currentMst, fileXml } = {}) {
 }
 
 module.exports = { parseInvoiceXml, buildImportRecord, detectDirection, unknownParties, normalizeIdentifiers, toVietnamDate, readTTKhac, extractLookup, isLookupUrl };
+
 

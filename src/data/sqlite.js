@@ -128,6 +128,17 @@ function applySchema(db) {
     if (current < 13) {
       ensureColumn(db, 'invoices', 'original_pdf', 'TEXT');
     }
+    // v14: XOÁ MÃ TRA CỨU BỊA. Bản cũ lấy số cổng `;817501;` trong URL làm mã tra cứu,
+    // nên kho của khách có mã sai. Chỉ xoá khi mã ĐÚNG BẰNG đoạn cổng trong URL — mã tra
+    // cứu thật (kiểu `pc5P7639…`) không bao giờ trùng với cổng nên giữ nguyên.
+    // Chỉ UPDATE, không xoá dòng hóa đơn.
+    if (current < 14) {
+      db.exec(`
+        UPDATE invoices SET lookup_code = NULL
+        WHERE COALESCE(lookup_code, '') <> ''
+          AND COALESCE(lookup_url, '') LIKE '%;' || lookup_code || ';%'
+      `);
+    }
     for (const sql of INDEXES) db.exec(sql);
     for (const sql of FTS5) db.exec(sql);
     // Backfill FTS cho DB tạo trước v3 (câu lệnh này chạy sau khi trigger đã tạo).
@@ -194,3 +205,5 @@ function dateRange(range, { alias = '', column = 'ngay_lap' } = {}) {
 }
 
 module.exports = { openDatabase, closeDatabase, withTransaction, applySchema, backupBeforeMigration, dateRange, schemaVersion, tableNames, tableColumns, ensureColumn, backfillFts, SCHEMA_VERSION };
+
+

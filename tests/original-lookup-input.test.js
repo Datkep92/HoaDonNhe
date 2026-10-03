@@ -128,4 +128,71 @@ test('sau khi lưu, cột PDF gốc dùng ngay giá trị MÁY CHỦ trả về'
   assert.ok(/result\.value\.value/.test(ui), 'phải dùng giá trị server trả về (URL đã sạch)');
   // Hủy ở hộp nhập thì không mở tiếp hộp chọn file (tránh 2 modal chồng nhau).
   assert.ok(/if \(!ready\) return;/.test(ui), 'bấm Hủy thì phải dừng luồng');
+  assert.ok(/if \(!ready\) return;/.test(ui), 'bấm Hủy thì phải dừng luồng');
 });
+test('KHÔNG bịa mã tra cứu từ số cổng trong URL (số cổng không phải mã)', () => {
+  // Dữ liệu thật của khách bác bỏ giả thuyết cũ: ba hóa đơn liên tiếp 11922/11923/11924
+  // có "mã" 817501/817502/817503 — đó là CỔNG. Mã tra cứu VNPT thật dài hơn nhiều, kiểu
+  // `pc5P7639265106584137312289813`. Bịa mã ở đây làm app tưởng đã đủ điều kiện tải PDF rồi
+  // hỏi người dùng một thứ họ không có.
+  const parser = require(path.join(REPO, 'src', 'data', 'xml-parser'));
+  const xml = '<HDon><TTChung><NS><Cty>1</Cty></NS><TTKhac>'
+    + '<TTin><TTruong>PortalLink</TTruong><KDLieu>text</KDLieu>'
+    + '<DLieu>https://dmcmd-tt78admin.vnpt-invoice.com.vn;817501;</DLieu></TTin>'
+    + '</TTKhac></TTChung><NBan><MST>0101452595</MST></NBan><NMua><MST>058183000994</MST></NMua></HDon>';
+  const record = parser.parseInvoiceXml(xml).record;
+  assert.strictEqual(record.lookupUrl, 'https://dmcmd-tt78admin.vnpt-invoice.com.vn', 'URL vẫn phải làm sạch');
+  assert.ok(!record.lookupCode, `không được bịa mã từ cổng, thấy ${record.lookupCode}`);
+
+  // Còn khoá mã THẬT trong TTKhac thì vẫn phải lấy.
+  const withCode = '<HDon><TTChung><NS><Cty>1</Cty></NS><TTKhac>'
+    + '<TTin><TTruong>PortalLink</TTruong><KDLieu>text</KDLieu>'
+    + '<DLieu>https://hoadondientu.ezrx.com.vn</DLieu></TTin>'
+    + '<TTin><TTruong>MaTraCuu</TTruong><KDLieu>text</KDLieu>'
+    + '<DLieu>pc5P7639265106584137312289813</DLieu></TTin>'
+    + '</TTKhac></TTChung><NBan><MST>0101452595</MST></NBan><NMua><MST>058183000994</MST></NMua></HDon>';
+  assert.strictEqual(parser.parseInvoiceXml(withCode).record.lookupCode, 'pc5P7639265106584137312289813');
+});
+
+test('migration v14 xoá mã bịa trong kho cũ, KHÔNG mất hóa đơn và không đụng mã thật', () => {
+  const os2 = require('node:os');
+  const sqlite = require(path.join(REPO, 'src', 'data', 'sqlite'));
+  const repository = require(path.join(REPO, 'src', 'data', 'repository'));
+  const dir = fs.mkdtempSync(path.join(os2.tmpdir(), 'mig14-'));
+  try {
+    const db = sqlite.openDatabase(path.join(dir, 'data.db'));
+    sqlite.applySchema(db);
+    const insert = (soHd, url, code) => repository.insertInvoice(db, {
+      direction: 'BUY', mstBan: '0101452595', mstMua: '058183000994', tenBan: 'N', tenMua: 'B',
+      ngayLap: '2026-05-05', khmsHd: '1', khhHd: 'C26T', soHd,
+      loaiHoaDon: 'HĐ', tthai: '1', fileXml: path.join(dir, `${soHd}.xml`),
+      tienTruocThue: 100, tienThue: 8, tongTien: 108,
+      lookupCode: code || null, lookupUrl: url || null,
+      items: [{ stt: 1, maHang: 'H', tenHang: 'Hàng', donVi: 'Cái', soLuong: 1, donGia: 100, chietKhau: 0, thanhTien: 100, thueSuat: '8%', tienThue: null }],
+    });
+    // Mã bịa: bằng đúng đoạn cổng trong URL. Mã thật: không trùng cổng nào.
+    insert('A1', 'https://x.vn;817501;', '817501');
+    insert('A2', 'https://y.vn;817502;', '817502');
+    insert('B1', 'https://hoadondientu.ezrx.com.vn', 'pc5P7639265106584137312289813');
+    insert('C1', 'https://z.vn;900001;', null);
+
+    // Hạ schema xuống 13 để chạy lại đúng bước migrate.
+    db.exec('PRAGMA user_version = 13');
+    const result = sqlite.applySchema(db);
+    assert.strictEqual(result.version, 14);
+
+    const rows = db.prepare('SELECT so_hd, lookup_code, lookup_url FROM invoices ORDER BY so_hd').all();
+    assert.strictEqual(rows.length, 4, 'KHÔNG được mất hóa đơn');
+    const byKey = Object.fromEntries(rows.map(r => [r.so_hd, r.lookup_code]));
+    assert.strictEqual(byKey.A1, null, 'mã bằng cổng phải bị xoá');
+    assert.strictEqual(byKey.A2, null, 'mã bằng cổng phải bị xoá');
+    assert.strictEqual(byKey.B1, 'pc5P7639265106584137312289813', 'mã thật phải giữ nguyên');
+    assert.strictEqual(byKey.C1, null);
+    // URL phải giữ nguyên — migration chỉ sửa cột mã.
+    assert.strictEqual(rows.find(r => r.so_hd === 'A1').lookup_url, 'https://x.vn;817501;');
+    // Chạy lại phải idempotent.
+    assert.strictEqual(sqlite.applySchema(db).changed, false);
+    db.close();
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+

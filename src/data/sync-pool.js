@@ -39,8 +39,13 @@ function createSyncPool(options = {}) {
       concurrency: limit,
       active: [...active.entries()].map(([mst, info]) => ({ mst, startedAt: info.startedAt })),
       queued: queue.map(item => item.mst),
-      done: finished.filter(x => x.ok && !x.skipped).map(x => x.mst),
-      skipped: finished.filter(x => x.ok && x.skipped).map(x => x.mst),
+      // `stopped` (bị dừng theo yêu cầu) KHÔNG tính là `done` — bỏ ra khỏi cả hai danh sách,
+      // nằm ở mục riêng. `failed` vẫn chỉ gồm lỗi thật.
+      done: finished.filter(x => x.ok && !x.skipped && !x.stopped).map(x => x.mst),
+      skipped: finished.filter(x => x.ok && x.skipped && !x.stopped).map(x => x.mst),
+      // Dừng THEO YÊU CẦU tách riêng khỏi `failed`: người dùng bấm "Ngưng" thì đó là kết thúc
+      // bình thường, để vào `failed` sẽ khiến banner báo "N MST lỗi" dù chẳng có lỗi nào.
+      stopped: finished.filter(x => x.stopped).map(x => x.mst),
       failed: finished.filter(x => !x.ok).map(x => ({ mst: x.mst, error: x.error })),
       startedAt: startedAt || '',
       finishedAt: finishedAt || '',
@@ -58,10 +63,17 @@ function createSyncPool(options = {}) {
       let entry;
       try {
         const value = await runOne(next.mst, next);
-        entry = { mst: next.mst, ok: true, skipped: !!(value && value.skipped) };
+        entry = { mst: next.mst, ok: true, skipped: !!(value && value.skipped), stopped: !!(value && value.stopped) };
       } catch (error) {
-        entry = { mst: next.mst, ok: false, error: error && error.message ? error.message : String(error) };
-        log(`Bể: MST ${next.mst} lỗi — ${entry.error}`);
+        // Dừng theo yêu cầu (người dùng bấm Ngưng, hoặc bộ điều phối nhường vì có việc ưu tiên
+        // hơn) là kết thúc BÌNH THƯỜNG. Engine đánh dấu bằng cờ `paused`; thêm cả dạng thông
+        // điệp vì runAutoSyncDirection bọc lại thành Error thường cho thông điệp dễ đọc.
+        const message = error && error.message ? error.message : String(error);
+        const stopped = !!(error && error.paused) || /ngưng theo yêu cầu|đã ngưng/i.test(message);
+        entry = stopped
+          ? { mst: next.mst, ok: true, stopped: true }
+          : { mst: next.mst, ok: false, error: message };
+        if (!stopped) log(`Bể: MST ${next.mst} lỗi — ${entry.error}`);
       } finally {
         active.delete(next.mst);
       }
@@ -82,10 +94,14 @@ function createSyncPool(options = {}) {
     startedAt = new Date(now()).toISOString();
     const lanes = Math.min(limit, queue.length);
     log(`Bể: bắt đầu ${queue.length} MST với ${lanes} luồng song song.`);
+    if (shouldStop()) { running = false; return { started: false, reason: 'có việc ưu tiên hơn đang chạy', done: Promise.resolve() }; }
     const done = Promise.all(Array.from({ length: lanes }, () => worker())).then(() => {
       running = false;
       finishedAt = new Date(now()).toISOString();
-      log(`Bể: xong — ${finished.filter(x => x.ok && !x.skipped).length} MST đồng bộ, ${finished.filter(x => !x.ok).length} lỗi.`);
+      const stoppedCount = finished.filter(x => x.stopped).length;
+      log(`Bể: xong — ${finished.filter(x => x.ok && !x.skipped && !x.stopped).length} MST đồng bộ`
+        + (stoppedCount ? `, ${stoppedCount} bị dừng` : '')
+        + `, ${finished.filter(x => !x.ok).length} lỗi.`);
       return status();
     });
     return { started: true, queued: queue.length, concurrency: lanes, done };

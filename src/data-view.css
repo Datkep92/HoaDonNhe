@@ -491,6 +491,55 @@ button.overview-kpi:hover { transform:translateY(-2px); border-color:#c9ddd8; bo
 .data-subbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; flex-wrap: wrap; }
 .data-subbar-right { display: flex; align-items: center; gap: 12px; }
 
+/* ---- Tổng hợp quý (Mục 4.2) ----
+   Bảng kê kê khai thuế: tiền CỐ ĐỊNH và dễ so, nên cột số phải thẳng hàng — dùng
+   font chữ số (tabular) để các hàng dài về cùng bề rộng. */
+.data-vat { margin-top: 14px; }
+.vat-deduction-input { width: 130px; }
+
+/* ---- Cột PDF GỐC (Mục 3) ----
+   Màu nói đúng trạng thái: xanh = đã có bản gốc của NCC, vàng = có cổng tra cứu để mở,
+   xám = chỉ có bản app dựng lại. Nút phải đủ bề rộng để chữ không bị cắt. */
+.orig-badge { display: inline-block; padding: 2px 9px; border-radius: 999px; border: 1px solid transparent;
+  font-size: 12px; font-weight: 700; line-height: 1.5; white-space: nowrap; cursor: pointer; }
+.orig-badge:hover { filter: brightness(.96); }
+.orig-have { background: #ecfdf5; border-color: #86efac; color: #146c43; }
+.orig-lookup { background: #fffbeb; border-color: #fcd34d; color: #92400e; }
+.orig-none { background: #f1f5f4; border-color: #d7dedb; color: #5b6b66; }
+
+/* ---- Hộp thoại BỔ SUNG NGUỒN PDF GỐC (mục 3) ----
+   Cùng bộ khung với hộp xem trước A4. Nhãn nhỏ trên tiêu đề để người dùng biết đang
+   ở bước nào; lỗi nhập hiện ngay dưới ô chứ không báo qua toast (toast bị che khi đang
+   có modal). */
+.orig-input-eyebrow { margin: 0 0 2px; font-size: 11px; font-weight: 800; letter-spacing: .07em;
+  text-transform: uppercase; color: #8a6d1f; }
+.orig-input-help { margin: 0 0 12px; color: #4d5f6b; line-height: 1.5; }
+.orig-input-field { display: block; margin-bottom: 10px; font-weight: 600; color: #243b53; }
+.orig-input-field > span { display: block; margin-bottom: 5px; font-size: 12px; }
+.orig-input-field input { width: 100%; padding: 9px 11px; border: 1px solid #c3cedb; border-radius: 8px;
+  font: inherit; font-weight: 600; background: #fff; color: #10222c; }
+.orig-input-field input:focus { outline: 2px solid #0f8a7e; outline-offset: 1px; border-color: #0f8a7e; }
+.orig-input-error { margin: 0 0 10px; padding: 8px 10px; border-radius: 8px;
+  background: #fef2f2; border: 1px solid #fecaca; color: #b42318; font-size: 13px; }
+.orig-input-error[hidden] { display: none; }
+.vat-grid { display: grid; gap: 14px; grid-template-columns: minmax(320px, 1fr) minmax(320px, 1fr); align-items: start; }
+.vat-block { min-width: 0; }
+.vat-block h4 { margin: 0 0 6px; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: #5b6b66; }
+.vat-table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+.vat-table th, .vat-table td { padding: 6px 8px; border-bottom: 1px solid #e3e8e6; text-align: left; }
+.vat-table th[scope="row"] { font-weight: 500; color: #24302c; }
+.vat-table td.num, .vat-table th.num { text-align: right; white-space: nowrap; }
+.vat-table .vat-total th, .vat-table .vat-total td { border-top: 2px solid #b9c6c1; border-bottom: none; font-weight: 700; }
+.vat-table .vat-strong { font-weight: 700; }
+.vat-table .vat-payable { color: #0f766e; font-weight: 800; }
+.vat-note-cell { color: #5b6b66; font-size: 12px; }
+.vat-notes { margin-bottom: 10px; }
+.vat-warn { margin: 0 0 5px; padding: 7px 10px; border-left: 3px solid #b45309; background: #fffbeb;
+  color: #78350f; font-size: 13px; border-radius: 0 4px 4px 0; }
+.vat-flag { display: inline-block; margin-left: 6px; padding: 1px 7px; border-radius: 999px;
+  background: #fef3c7; color: #92400e; font-size: 11px; font-weight: 700; }
+@media (max-width: 980px) { .vat-grid { grid-template-columns: 1fr; } }
+
 /* Nút chuyển chiều (Tất cả / Mua vào / Bán ra): các nút TÁCH RỜI, cách nhau 6px.
    Trước đây chúng nằm trong một khung liền kề nhau nên trông dính và khó bấm. */
 .data-seg { display: inline-flex; flex-wrap: wrap; gap: 6px; }

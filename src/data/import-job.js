@@ -32,10 +32,11 @@ function status() {
     skipped: current.skipped, errors: current.errors, inactive: current.inactive || 0, itemsTotal: current.itemsTotal,
     current: current.current, recent: current.recent.slice(-8),
     startedAt: current.startedAt, finishedAt: current.finishedAt, ok: current.ok, error: current.error,
+    ownCode: current.ownCode || null, secondPassError: current.secondPassError || '',
   };
 }
 
-async function start({ output, mst, identifiers } = {}) {
+async function start({ output, mst, identifiers, profileNames } = {}) {
   if (current.running) throw new Error('Đang nhập dữ liệu. Chờ lượt hiện tại chạy xong.');
   const { dir, db } = ensureMst({ output, mst });
   current = {
@@ -46,7 +47,7 @@ async function start({ output, mst, identifiers } = {}) {
   let failure = null;
   try {
     const scan = await scanXmlFolder({
-      db, mst, identifiers, mstDir: dir,
+      db, mst, identifiers, mstDir: dir, profileNames,
       onFile: summary => {
         current.scanned = summary.scanned;
         current.imported = summary.imported;
@@ -64,7 +65,11 @@ async function start({ output, mst, identifiers } = {}) {
       },
     });
     current.ok = scan.errors === 0;
-    current.summary = { imported: scan.imported, updated: scan.updated || 0, duplicates: scan.duplicates, skipped: scan.skipped, errors: scan.errors, inactive: scan.inactive || 0, items: scan.items };
+    // ownCode = mã lạ đã được nhận diện là mã của hồ sơ (một chủ nhiều mã) và nhập lại ngay.
+    // Đưa vào summary + nhật ký để người dùng THẤY lý do, không phải tự gán tay mà không biết.
+    current.ownCode = scan.ownCode || null;
+    current.secondPassError = scan.secondPassError || '';
+    current.summary = { imported: scan.imported, updated: scan.updated || 0, duplicates: scan.duplicates, skipped: scan.skipped, errors: scan.errors, inactive: scan.inactive || 0, items: scan.items, ownCode: scan.ownCode || null };
   } catch (error) {
     failure = error;
     current.ok = false;

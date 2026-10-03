@@ -70,6 +70,54 @@ test('có endpoint chạy theo MST và endpoint ngưng; MỖI MST LÀ MỘT LU�
   assert.ok(stopBlock.includes('one.job.account.mst === target'), 'chỉ pause engine của ĐÚNG MST bị bấm ngưng');
 });
 
+// ---------------------------------------------------------------------------
+// HAI CHỐT CHỐNG TRANH CHẤP giữa Auto Sync và các lớp nền khác.
+//
+// Lỗi thật đã gặp: `dueMsts()` chỉ bỏ qua MST đang chạy trong BỂ, quên MST đang chạy Auto Sync
+// bấm tay. Người dùng bấm ▶ rồi đóng cửa sổ ⇒ sau 10 giây "cửa sổ im" thì lịch khung giờ tưởng
+// máy rảnh, gọi autoSyncFor(mst).run() và nhận "Auto Sync đang chạy." Mỗi nhịp 20 giây một lần,
+// suốt tới khi lượt tay xong — bộ lập lịch báo lỗi giả, banner MST nhảy chữ Lỗi đỏ.
+// `catchupEligible()` đã có đúng chốt này từ trước, nên hai nơi đã lệch nhau.
+// ---------------------------------------------------------------------------
+test('dueMsts() bỏ qua MST đang chạy Auto Sync bấm tay (không chỉ bể)', () => {
+  const server = serverSource;
+  const start = server.indexOf('function dueMsts()');
+  assert.ok(start > -1, 'không tìm thấy dueMsts()');
+  const body = server.slice(start, server.indexOf('\n}', start));
+  assert.ok(body.includes('syncPool.isActive(mst)'), 'phải bỏ qua MST đang trong bể');
+  assert.ok(/autoSyncByMst\.get\(mst\)/.test(body), 'phải hỏi bộ điều phối của MST');
+  assert.ok(/instance && instance\.running/.test(body), 'phải bỏ qua MST đang chạy Auto Sync bấm tay');
+  // Chốt phải nằm TRƯỚC chỗ đọc sync.json để không tốn công đọc cho MST đang chạy.
+  assert.ok(body.indexOf('instance.running') < body.indexOf('readSyncState'), 'chốt phải nằm trước khi đọc sync.json');
+});
+
+test('pauseBackgroundFor nhường BỘ ĐIỀU PHỐI chứ không chỉ pause engine', () => {
+  // Lỗ hổng thật: giữa hai hướng (Mua vào xong, Bán ra chưa bắt đầu) thì `autoSyncEngines` đã
+  // TRỐNG nên pause() không tìm thấy engine nào ⇒ lượt vẫn chạy tiếp Bán ra dù cổng đã đóng.
+  const server = serverSource;
+  const start = server.indexOf('function pauseBackgroundFor(');
+  assert.ok(start > -1, 'không tìm thấy pauseBackgroundFor');
+  const body = server.slice(start, server.indexOf('\n}', start));
+  assert.ok(/autoSyncByMst\.get\(mst\)/.test(body), 'phải tìm bộ điều phối của đúng MST');
+  assert.ok(/instance\.yieldNow\(/.test(body), 'phải gọi yieldNow() để hướng chưa chạy không chạy nữa');
+  assert.ok(body.includes('.pause()'), 'vẫn phải pause engine đang bay');
+  // yieldNow phải chạy TRƯỚC khi pause engine: cờ đặt trước thì hướng sau không kịp bắt đầu.
+  assert.ok(body.indexOf('yieldNow(') < body.indexOf('.pause()'), 'đặt cờ nhường trước khi pause engine');
+});
+
+test('bể "Đồng bộ tất cả" nhường việc ưu tiên cao hơn (quét bù, khoá thư mục lưu)', () => {
+  // `shouldStop: () => false` cứng khiến bể vẫn mở luồng khi quét bù đang chạy và khi bản app
+  // khác đang giữ khoá thư mục lưu — hai nơi đều ghi vào cùng data.db mà khoá chỉ chặn đường nền.
+  const server = serverSource;
+  const start = server.indexOf('const syncPool = createSyncPool(');
+  assert.ok(start > -1, 'không tìm thấy cấu hình bể');
+  const body = server.slice(start, server.indexOf('});', start));
+  assert.ok(/shouldStop:\s*\(\)\s*=>/.test(body), 'bể phải có shouldStop');
+  assert.ok(!/shouldStop:\s*\(\)\s*=>\s*false/.test(body), 'không được để shouldStop cứng false');
+  assert.ok(/catchupJob\.running/.test(body), 'phải nhường khi quét bù đang chạy');
+  assert.ok(/outputBusy\(\)/.test(body), 'phải nhường khi bản app khác giữ khoá thư mục lưu');
+});
+
 test('job của hai hướng tách file để chạy song song không ghi chung một file tiến độ', () => {
   assert.ok(serverSource.includes('autosync-job-${direction === \'BUY\' ? \'buy\' : \'sell\'}.json'), 'job phải tách theo hướng');
   assert.ok(!serverSource.includes("path.join(dir, 'autosync-job.json')"), 'không còn dùng chung một file job');

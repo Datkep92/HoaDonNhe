@@ -17,6 +17,7 @@
 // ---------------------------------------------------------------------------
 
 const { buildInvoiceKey } = require('./invoice-key');
+const providerRegistry = require('./provider-registry');
 const { normalizePaymentMethod } = require('./payment-method');
 const vnDate = require('../vn-date');
 
@@ -93,6 +94,76 @@ const ITEM_FIELDS = [
   ['stt', 'STT'], ['maHang', 'MHHDVu'], ['tenHang', 'THHDVu'], ['donVi', 'DVTinh'],
 ];
 
+// ---------------------------------------------------------------------------
+// MÃ TRA CỨU + CỔNG TRA CỨU CỦA NHÀ CUNG CẤP (Mục 2)
+//
+// <TTChung> chứa <TTKhac>, trong đó mỗi <TTin> là bộ ba <TTruong>/<KDLieu>/<DLieu>.
+// Đây là nơi nhà cung cấp giấy mã tra cứu để người mua tải PDF GỐC (bản có chữ ký số
+// của NCC) từ cổng của họ — thứ mà bản in từ dữ liệu cổng thuế không có.
+//
+// Đặc điểm đo được trên 86 XML thật: khối này có ~120 khoá khác nhau, phần lớn là dữ liệu
+// nghiệp vụ (Amount, TotalAmountInWordsVN, RefID…). Vì vậy KHÔNG tin tên khoá:
+//   - `PortalLink` (4/86) là cổng tra cứu thật;
+//   - `Extra1` (17/86) CHỈ 3 giá trị là URL, 14 giá trị còn lại là chuỗi thường;
+//   - `ZUEQRURL` (3/86) trỏ payoo.vn — cổng THANH TOÁN, không phải cổng tra cứu.
+// Do đó: lấy mọi cặp khoá/giá trị, rồi CHỈ nhận giá trị là URL http(s) hợp lệ và loại
+// host không phải cổng tra cứu. Không tìm được thì trả null — không dựng, không đoán.
+// ---------------------------------------------------------------------------
+
+// Host KHÔNG phải cổng tra cứu hóa đơn: cổng thanh toán, không gian tên XML,
+// hạ tầng ký số. Có thật trong dữ liệu thật (payoo.vn, w3.org).
+const NON_LOOKUP_HOST = /(^|\.)(payoo\.vn|w3\.org|schema\.org|xmlsoap\.org|verisign\.com)$/i;
+
+// Khoá chứa mã tra cứu, xếp theo độ tin cậy. Đều có thật trong kho người dùng.
+const LOOKUP_CODE_KEYS = ['MaTraCuu', 'Fkey', 'SearchKey'];
+
+function isLookupUrl(value) {
+  const text = String(value == null ? '' : value).trim();
+  if (!/^https?:\/\//i.test(text)) return false;
+  let host;
+  try { host = new URL(text).hostname; } catch { return false; }
+  return Boolean(host) && !NON_LOOKUP_HOST.test(host);
+}
+
+// Mã tra cứu kiểu VNPT nằm ngay trong URL: https://…vnpt-invoice.com.vn;817501; ⇒ 817501
+function codeFromUrl(url) {
+  const match = String(url || '').match(/;(\d{4,});/);
+  return match ? match[1] : '';
+}
+
+// Mọi cặp <TTruong> → <DLieu> trong <TTKhac>. Một khoá có thể lặp (nhiều khối
+// TTTKhac trong một tờ) nên giữ mảng giá trị theo thứ tự xuất hiện.
+function readTTKhac(ttchung) {
+  const pairs = [];
+  const source = String(ttchung || '');
+  for (const block of source.matchAll(/<TTKhac>([\s\S]*?)<\/TTKhac>/g)) {
+    for (const item of block[1].matchAll(/<TTruong>([\s\S]*?)<\/TTruong>\s*<KDLieu>[^<]*<\/KDLieu>\s*<DLieu>([\s\S]*?)<\/DLieu>/g)) {
+      const key = decodeEntities(item[1]).trim();
+      if (key) pairs.push([key, decodeEntities(item[2]).trim()]);
+    }
+  }
+  return pairs;
+}
+
+// Trả { url, code, hasUrl } — hasUrl cho biết XML CÓ cổng tra cứu thật hay không, để
+// phân biệt "chưa biết" với "biết rồi nhưng không có URL".
+function extractLookup(ttchung) {
+  const pairs = readTTKhac(ttchung);
+  let url = '';
+  for (const [, value] of pairs) {
+    if (isLookupUrl(value)) { url = value; break; }
+  }
+  let code = '';
+  for (const key of LOOKUP_CODE_KEYS) {
+    for (const [k, value] of pairs) {
+      if (k.toLowerCase() === key.toLowerCase() && value) { code = value; break; }
+    }
+    if (code) break;
+  }
+  if (!code) code = codeFromUrl(url);
+  return { url, code, hasUrl: Boolean(url) };
+}
+
 // Đọc XML → bản ghi khớp cột của data.db (mục 8, 9, 16).
 function parseInvoiceXml(xml) {
   const source = String(xml ?? '');
@@ -125,8 +196,24 @@ function parseInvoiceXml(xml) {
   });
 
   const ngayLapRaw = textIn(ttchung, 'NLap');
+  const lookup = extractLookup(ttchung);
+  const solution = providerRegistry.resolve(textIn(ttchung, 'MSTTCGP'));
+  // Tách ra trước vì lookupUrl cần MST người bán (cổng VNPT là tenant riêng theo
+  // từng người bán) mà bản ghi chưa dựng xong.
+  const mstBan = textIn(nban, 'MST') || null;
+  // LÀM SẠCH URL ngay tại nguồn. XML của VNPT ghi cổng dạng `https://host;817501;` — dấu
+  // `;…` dính vào TÊN MIỀN nên URI đó không mở được, và nó cũng không khớp kiểm tra
+  // tên miền `.vn$`. Nếu lưu nguyên xi thì cột "Cổng tra cứu NCC" trong Excel và mọi
+  // kiểm tra tên miền về sau đều dính rác. cleanPortalUrl() trả '' nếu URL không dùng
+  // được ⇒ lưu null, thành "chưa biết" còn hơn lưu một URL bị hỏng.
+  const rawLookupUrl = lookup.url
+    || providerRegistry.sellerPortal(mstBan)
+    || (solution ? solution.portalUrl : '')
+    || '';
+  const cleaned = require('./original-pdf').cleanPortalUrl(rawLookupUrl);
+  const lookupUrl = cleaned || null;
   const record = {
-    mstBan: textIn(nban, 'MST') || null,
+    mstBan,
     tenBan: textIn(nban, 'Ten') || null,
     // NMua của hoá đơn bán cho người tiêu dùng chỉ có HVTNMHang và không có MST.
     mstMua: textIn(nmua, 'MST') || null,
@@ -152,6 +239,16 @@ function parseInvoiceXml(xml) {
     dvtTe: textIn(ttchung, 'DVTTe') || null,
     tgIa: textIn(ttchung, 'TGia') || null,
     msttcgp: textIn(ttchung, 'MSTTCGP') || null,
+    // Mã tra cứu / cổng tra cứu của NCC (Mục 2). Ưu tiên URL học từ XML; XML không có
+    // thì mới dùng cổng mặc định theo nhà cung cấp — và CHỈ khi nhà cung cấp đó thật sự
+    // có một cổng dùng chung (VNPT/Viettel mỗi khách một tenant nên cố tình để trống).
+    lookupCode: lookup.code || null,
+    // Thứ tự ưu tiên: URL thật trong XML → cổng riêng của người bán (VNPT mỗi khách
+    // một tenant) → cổng chung của nhà cung cấp. Cả ba đều không có thì để null.
+    lookupUrl,
+    providerId: solution ? solution.id : null,
+    providerName: solution ? solution.name : null,
+    providerLevel: solution ? solution.level : null,
     mccqt: textIn(source, 'MCCQT') || null,
     ngayLap: toVietnamDate(ngayLapRaw),
     khmsHd: textIn(ttchung, 'KHMSHDon') || null,
@@ -182,4 +279,5 @@ function buildImportRecord(xml, { currentMst, fileXml } = {}) {
   return { record: { ...record, direction, invoiceKey, fileXml }, warnings, direction };
 }
 
-module.exports = { parseInvoiceXml, buildImportRecord, detectDirection, unknownParties, normalizeIdentifiers, toVietnamDate };
+module.exports = { parseInvoiceXml, buildImportRecord, detectDirection, unknownParties, normalizeIdentifiers, toVietnamDate, readTTKhac, extractLookup, isLookupUrl };
+

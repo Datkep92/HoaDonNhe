@@ -1,7 +1,7 @@
 'use strict';
 const $ = id => document.getElementById(id);
 const optional = id => document.getElementById(id);
-const labels = { idle: 'Sẵn sàng', searching: 'Đang tra cứu', downloading: 'Đang tải', paused: 'Tạm dừng', auth_required: 'Cần đăng nhập', ready: 'Sẵn sàng tải', completed: 'Hoàn tất', failed: 'Có lỗi', partial: 'Còn hóa đơn lỗi', queued: 'Chờ tải', running: 'Đang xử lý', skipped: 'Đã có sẵn – bỏ qua', done: 'Đã tải' };
+const labels = { idle: 'Sẵn sàng', searching: 'Đang tra cứu', downloading: 'Đang tải', paused: 'Tạm dừng', auth_required: 'Cần đăng nhập', ready: 'Sẵn sàng tải', completed: 'Hoàn tất', failed: 'Có lỗi', partial: 'Còn hóa đơn lỗi', queued: 'Chờ tải', running: 'Đang xử lý', skipped: 'Đã có sẵn – bỏ qua', done: 'Đã tải', retrying: 'Đang thử lại' };
 // mst-format.js nạp bằng <script> TRƯỚC file này. Nếu vì lý do gì đó nó không nạp được thì dùng bản
 // dự phòng ngay tại đây — nếu không sẽ ném "Cannot read properties of undefined" tại chỗ nhập MST.
 const MstFormat = window.MstFormat || (() => {
@@ -772,7 +772,7 @@ $('account-hint').textContent = isSelectingNew
   if (initialLoading && !state.selected) {
     const emptyEl = $('empty');
     if (emptyEl && !emptyEl.hidden) {
-      emptyEl.innerHTML = '<h3>Chưa có kết quả</h3><p>Bấm “▶ Tra cứu” để bắt đầu tải hoá đơn. Dữ liệu đã tải trước đó vẫn còn nguyên.</p>';
+      emptyEl.innerHTML = '<h3>Chưa có kết quả</h3><p>Bấm “Tải hóa đơn” để bắt đầu. Dữ liệu đã tải trước đó vẫn còn nguyên.</p>';
     }
   }
   const busy = state.busy || state.authBusy || pending;
@@ -799,27 +799,29 @@ $('account-hint').textContent = isSelectingNew
     syncAll.className = pool.running ? 'danger' : 'secondary';
     syncAll.disabled = pending || !(state.accounts || []).length;
   }
-  const searching = !!state.busy && state.mode !== 'stream' && state.state === 'searching';
-  const downloading = !!state.busy && (state.mode === 'stream' || state.state === 'downloading');
-  $('search').textContent = searching ? 'Ngưng tra cứu' : 'Tra cứu';
-  $('search').classList.toggle('btn-loading', searching);
-  // Nút của tác vụ ĐANG chạy luôn phải BẤM ĐƯỢC để dừng: `pending` = true suốt thời gian request
+  reportPoolOutcome();
+  // NÚT TẢI HÓA ĐƠN — nhãn, kiểu, và công thức khoá đều lấy từ downloadButtonState(): một nguồn
+  // sự thật, nơi vẽ và nơi xử lý cú bấm không thể lệch nhau.
+  const downloadButton = $('download-btn');
+  const downloadView = downloadButtonState(state);
+  downloadButton.textContent = downloadView.label;
+  downloadButton.classList.toggle('btn-loading', downloadView.loading);
+  // Nút của tác vụ ĐANG CHẠY luôn phải BẤM ĐƯỢC để dừng: `pending` = true suốt thời gian request
   // dài đang chờ (server trả lời khi tác vụ kết thúc), nên không được dùng `pending` trần để khoá.
   // Công thức ghim trong test (tests/ui-wiring.test.js): `state.authBusy || (!!state.busy && !<đang-chạy>) || (pending && !<đang-chạy>)`.
-  $('search').disabled = state.authBusy || (!!state.busy && !searching) || (pending && !searching);
-  $('stream-download').textContent = downloading ? 'Ngưng tải' : 'Tải ngay';
-  $('stream-download').classList.toggle('btn-loading', downloading);
-  $('stream-download').disabled = state.authBusy || (!!state.busy && !downloading) || (pending && !downloading);
+  const downloadRunning = downloadView.action === 'pause';
+  // Mọi khoá (đang đăng nhập / đang bận / request dài đang chờ) đều BỎ QUAA khi nút đang ở trạng
+  // thái "Ngưng": đang tải mà đăng nhập nền MST khác bật thì người dùng vẫn phải dừng được.
+  downloadButton.disabled = (state.authBusy || !!state.busy || pending) && !downloadRunning;
   // Nút "Xuất Excel theo mẫu MISA" chỉ bật khi đã có kết quả tra cứu; dòng thống kê đọc từ kết quả xử lý.
   $('export-excel').disabled = busy || !state.total || !state.selected;
   const stats = state.stats;
-  $('stats').textContent = stats ? `Tổng ${stats.total} · đã có sẵn ${stats.existed} · đưa vào hàng tải ${stats.queued} · đã tải ${stats.downloaded} · bỏ qua ${stats.skipped} · lỗi ${stats.failed}` : '';
+  $('stats').textContent = stats ? `Tổng ${stats.total} · đã có sẵn ${stats.existed} · đưa vào hàng tải ${stats.queued} · đã tải ${stats.downloaded} · bỏ qua ${stats.skipped} · lỗi ${stats.failed}${stats.retrying ? ` · đang thử lại ${stats.retrying}` : ''}` : '';
   // Lượt tra cứu chưa vào giai đoạn tải thì máy chủ chưa có state.stats (core.js chỉ tạo j.stats khi
   // bắt đầu tải) — lúc đó lấy tạm tổng/lỗi của state; "đã tải" và "đã có sẵn" chắc chắn = 0.
   paintStatBreakdown(stats || { total: state.total || 0, downloaded: 0, existed: 0, failed: state.failed || 0 });
   if (browserToggle) browserToggle.disabled = busy || state.authBusy || !state.selected;
   document.querySelectorAll('.filters input:not([readonly]), .filters select').forEach(x => { x.disabled = busy; });
-  $('resume').disabled = busy || !state.authenticated || !['paused', 'failed', 'partial', 'auth_required'].includes(state.state);
 }
 // Dựng bảng kết quả từ state.items — bảng nằm ở endpoint RIÊNG /api/state/items (fetch trong
 // loadItemsIfChanged khi revision đổi) nên render() KHÔNG dựng lại bảng theo nhịp poll nữa.
@@ -1152,6 +1154,8 @@ if (optional('sync-all')) optional('sync-all').onclick = async () => {
     // Đang chạy: bấm là NGƯNG — nếu bấm đúp thì request thứ hai cũng vô hại (server idempotent).
     await work('/api/db/autosync/run-all/stop', {});
     notice('Đã ngưng đồng bộ tất cả.');
+    // Cờ kết quả được xoá để dòng tổng kết báo lại lần này (lượt sau không bị nhận là đã báo).
+    lastPoolReport = '';
     return;
   }
   // Chưa chạy: khoá nút NGAY để cú bấm thứ hai không gửi lệnh chạy thêm lần nữa.
@@ -1161,9 +1165,36 @@ if (optional('sync-all')) optional('sync-all').onclick = async () => {
   finally { restore(); }
   if (!result) return;
   if (!result.started) { notice(result.message || 'Không có MST nào để chạy.'); return; }
+  resetPoolReport();
   const skipped = (result.skipped || []).map(x => `${x.mst} (${x.reason})`);
   notice(`Đang đồng bộ ${result.queued} MST · ${result.concurrency} luồng song song, xong cái nào rút cái kế tiếp.${skipped.length ? ` Bỏ qua: ${skipped.join(', ')}.` : ''}`);
 };
+
+// Tổng kết bể "Đồng bộ tất cả" khi nó không còn chạy nữa. Trước đây không có dòng này: sau khi bể
+// xong, người dùng không biết MST nào đồng bộ, MST nào lỗi — phải tự click từng dòng MST.
+// Người dùng BẤM NGƯNG thì đó là kết thúc bình thường, nên `stopped` tách riêng khỏi `failed`
+// (xem sync-pool.js) — không thì báo "lỗi" cho một việc chính họ yêu cầu.
+let lastPoolReport = '';
+// Báo lại từ 0 khi bể được khởi động lại, không thì lượt sau có kết quả y hệt lượt trước thì
+// bị nhận là "đã báo rồi" và im lặng.
+function resetPoolReport() { lastPoolReport = ''; }
+function reportPoolOutcome() {
+  const pool = (current && current.pool) || null;
+  if (!pool || pool.running) return;
+  const done = pool.done || [], failed = pool.failed || [], stopped = pool.stopped || [];
+  if (!done.length && !failed.length && !stopped.length) return;
+  // Khoá theo nội dung: chỉ báo đúng một lần cho mỗi kết quả, không lặp mỗi nhịp poll.
+  const signature = `${done.join(',')}|${stopped.join(',')}|${failed.map(x => x.mst + x.error).join(',')}`;
+  if (signature === lastPoolReport) return;
+  lastPoolReport = signature;
+  const parts = [];
+  if (done.length) parts.push(`${done.length} MST xong`);
+  if (stopped.length) parts.push(`${stopped.length} MST đã dừng (${stopped.join(', ')})`);
+  if (failed.length) parts.push(`${failed.length} MST lỗi (${failed.map(x => x.mst).join(', ')})`);
+  if (!parts.length) return;
+  const detail = failed.length ? [{ label: 'Xem MST bị lỗi', url: '/api/account/select', body: { mst: failed[0].mst } }] : [];
+  notice(`Đồng bộ tất cả: ${parts.join(' · ')}.`, detail, failed.length ? 'error' : undefined);
+}
 if (optional('mst-login')) optional('mst-login').onclick = () => { if (current.selected) openLogin(current.selected); else notice('Chọn một MST trong danh sách trước.'); };
 if (optional('account-login')) optional('account-login').onclick = () => { if (current.selected) openLogin(current.selected); else notice('Chọn một MST trong danh sách trước.'); };
 // Ô tìm MST: gõ liên tục chỉ lọc MỘT lần sau 150ms im — không dựng lại danh sách từng ký tự.
@@ -1349,15 +1380,55 @@ $('output').onchange = async () => {
     $('output').value = folder; current.output = folder; notice(`Đã đặt thư mục lưu: ${folder}`); await refresh();
   } catch (error) { noticeFail(error.message); $('output').value = current.output || ''; }
 };
+// ---------------------------------------------------------------------------
+// NÚT "Tải hóa đơn" — MỘT NÚT DUY NHẤT, tự đổi nhãn theo trạng thái (2026-10)
+// ---------------------------------------------------------------------------
+// Trước đây có 3 nút (#search "Tra cứu", #stream-download "Tải ngay", #resume "Tải tiếp").
+// Người dùng phải tự nhớ: muốn xem danh sách thì bấm nút nào, muốn tải file thì bấm nút nào,
+// lỗi rồi thì bấm nút thứ ba. Nay gộp còn MỘT nút với 3 trạng thái:
+//   · rảnh / đã xong   → "Tải hóa đơn"  → quét + tải TOÀN BỄ khoảng ngày đang chọn
+//   · đang chạy        → "Ngưng"        → dừng, giữ nguyên tiến độ
+//   · lượt còn dở      → "Tải tiếp"     → chạy tiếp đúng chỗ dừng (lỗi tạm thời đã tự thử lại)
+// Server đoán trạng thái từ job (isResumableJob trong core.js) nên giao diện KHÔNG cần chọn
+// "chỉ tra cứu" hay "tải luôn" — hai việc đó giờ là một.
+//
+// DANH SÁCH TRẠNG THÁI "còn dở" KHÔNG khai báo ở đây: server gửi sẵn `resumable` trong
+// /api/state (đúng isResumableJob của core.js). Trước đây renderer chép lại một mảng trạng
+// thái riêng rồi còn thêm hai điều kiện lọc (state.authenticated, state.total > 0) mà server
+// không có ⇒ hai bên lệch nhau: hết phiên thì server coi là "còn dở" (chạy tiếp được) mà
+// giao diện lại hiện "Tải hoá đơn"; và ngưng lúc còn đang quét (chưa tìm thấy hoá đơn nào,
+// total = 0) thì mất luôn nút "Tải tiếp". Một nguồn duy nhất là isResumableJob.
+function downloadButtonState(state) {
+  if (!state) return { label: 'Tải hóa đơn', action: 'start', loading: false };
+  if (state.busy) return { label: 'Ngưng', action: 'pause', loading: true };
+  // Lượt còn dở NHƯNG điều kiện tra cứu đã đổi (người dùng đổi Từ ngày/Đến ngày…) thì bấm là
+  // chạy lượt MỚI, không phải chạy tiếp — nhãn phải nói đúng việc sẽ làm. Server cũng tự kiểm
+  // lại bằng sameDownloadParams() nên nếu giao diện có sai thì vẫn không tải nhầm khoảng ngày.
+  if (state.resumable && sameSearchForm(state.params)) return { label: 'Tải tiếp', action: 'resume', loading: false };
+  return { label: 'Tải hóa đơn', action: 'start', loading: false };
+}
+// So bộ điều kiện tra cứu đang chọn trên màn hình với bộ của lượt đang dở. Thứ tự phần tử của
+// `formats` không quan trọng (đã sắp) — cùng cách so sánh như core.js.
+function sameSearchForm(jobParams) {
+  if (!jobParams) return false;
+  const form = {
+    from: $('from').value, to: $('to').value, direction: $('direction').value,
+    family: $('family').value, status: $('status').value,
+    formats: [...document.querySelectorAll('.formats input:checked')].map(x => x.value),
+  };
+  const key = value => JSON.stringify({ ...value, formats: [...(value.formats || [])].sort() });
+  return key(jobParams) === key(form);
+}
 async function runLookup(url) {
-  // KHÔNG chặn ở đây: `pending` = true suốt thời gian request dài đang chờ (server chỉ trả lời khi
-  // tác vụ xong), nên phải xử lý nhánh DỪNG trước rồi mới tới guard pending — nếu không, bấm
-  // "Ngưng tải" / "Ngưng tra cứu" bị nuốt im lặng.
+  // KHÔNG chặn ở đây: `pending` = true suốt thời gian request dài đang chờ (server trả lời khi
+  // tác vụ kết thúc), nên phải xử lý nhánh DỪNG trước rồi mới tới guard pending — nếu không,
+  // bấm "Ngưng" bị nuốt im lặng.
   // Trạng thái MỚI NHẤT: render() vừa chạy trong nhịp poll, hoặc sẽ chạy ngay khi work()/refresh()
   // xong — KHÔNG gọi thêm /api/state một lần nữa như trước đây (bỏ một vòng trọn vẹn).
-  const stoppingSearch = url === '/api/search' && current.busy && current.mode !== 'stream' && current.state === 'searching';
-  const stoppingDownload = url === '/api/stream' && current.busy && (current.mode === 'stream' || current.state === 'downloading');
-  if (stoppingSearch || stoppingDownload) {
+  const action = downloadButtonState(current).action;
+  // Nhánh DỪNG trước tiên: đang chạy thì bấm là ngưng. Gọi /api/pause TRỰC TIẾP bằng
+  // call() (không qua work()) để guard `pending` không nuốt — pending đúng lúc này là true.
+  if (action === 'pause') {
     const mst = current.selected;
     const jobId = current.jobId;
     notice('Đang ngưng tác vụ của MST ' + mst + '…');
@@ -1370,39 +1441,32 @@ async function runLookup(url) {
   if (pending) return; // chỉ chặn thao tác MỚI khi đang có request khác
   if (current.busy) return;
   const folder = $('output').value.trim();
-  if (!folder) { notice('Chọn thư mục lưu hóa đơn trước khi tra cứu.'); $('output').focus(); return; }
-  // Người dùng có thể gõ/dán đường dẫn rồi bấm Tra cứu ngay: lưu lại trước khi chạy.
+  if (!folder) { notice('Chọn thư mục lưu hóa đơn trước khi tải.'); $('output').focus(); return; }
+  if (!current.selected) { notice('Chọn MST trước khi tải hóa đơn.'); return; }
+  // Người dùng có thể gõ/dán đường dẫn rồi bấm ngay: lưu lại trước khi chạy.
   if (folder !== (current.output || '')) {
     try { const saved = await call('/api/folder', { path: folder }); $('output').value = saved; current.output = saved; }
     catch (error) { noticeFail(error.message); $('output').focus(); return; }
   }
-  // Vòng đời mới: server TRẢ LỜI NGAY khi nhận lệnh (tác vụ chạy nền, progress theo /api/state).
-  // Vẽ NGAY trạng thái "đang chạy" trước khi gửi — bấm là UI phản hồi, không đợi mạng.
-  if (url === '/api/search' || url === '/api/stream') {
-    current.busy = true; current.mode = url === '/api/stream' ? 'stream' : 'search';
-    current.state = url === '/api/stream' ? 'downloading' : 'searching';
-    current.message = url === '/api/stream' ? 'Đang tra cứu và tải cuốn chiếu…' : 'Đang tra cứu…';
-  }
-  // Không hiện toast sau khi tra cứu: kết quả đã nằm trong bảng + dòng trạng thái/tiến độ.
-  await work(url, { mst: current.selected, from: $('from').value, to: $('to').value, direction: $('direction').value, family: $('family').value, status: $('status').value, formats: [...document.querySelectorAll('.formats input:checked')].map(x => x.value), output: folder }, { long: true });
+  // Vẽ NGAY trạng thái "đang chạy" TRƯỚC khi gửi — bấm là UI phản hồi, không đợi mạng.
+  // Quan trọng: vẽ vào CHÍNH `current` chứ không tạo bản sao, để `refresh()` (chạy ngay sau
+  // đó trong finally của work()) không ghi đè mất trạng thái lạc lưỡng.
+  current.busy = true;
+  current.mode = 'stream';
+  current.state = action === 'resume' ? 'downloading' : 'searching';
+  current.message = action === 'resume' ? 'Đang chạy tiếp từ chỗ đã dừng…' : 'Đang quét và tải toàn bộ hóa đơn…';
+  // Không hiện toast sau khi bấm: kết quả đã nằm trong bảng + dòng trạng thái/tiến độ.
+  await work(url, { mst: current.selected, from: $('from').value, to: $('to').value, direction: $('direction').value, family: $('family').value, status: $('status').value, formats: [...document.querySelectorAll('.formats input:checked')].map(x => x.value), output: folder, confirm: action === 'resume' }, { long: true });
 }
-$('search').onclick = () => runLookup('/api/search');
-$('stream-download').onclick = () => runLookup('/api/stream');
-$('resume').onclick = async () => {
-  if (!current.total) { notice('Chưa có lượt tải nào để tiếp tục — bấm “Tra cứu hóa đơn” trước.'); return; }
-  // Nhãn “Đang chạy…” NGAY lúc bấm: request dài nên trước đây bấm xong nút đứng im một chặp.
-  // render() bên trong work() sẽ tô nhãn đúng theo state (đang chạy → “Ngưng…”).
-  $('resume').textContent = 'Đang chạy…';
-  const result = await work('/api/resume', { mst: current.selected }, { long: true });
-  if (result) notice(result.message || 'Đã xử lý xong.');
-};
+// Nút MỘT duy nhất: bấm là chạy / dừng / chạy tiếp tuỳ trạng thái — server tự đoán (xem /api/download).
+$('download-btn').onclick = () => runLookup('/api/download');
 $('open').onclick = async () => {
   const restore = busyButton($('open'), 'Đang mở…');
   try { await work('/api/open-folder', {}); }
   finally { restore(); }
 };
 $('export-excel').onclick = async () => {
-  if (!current.total) { notice('Chưa có kết quả tra cứu để xuất Excel. Bấm “Tra cứu hóa đơn” trước.'); return; }
+  if (!current.total) { notice('Chưa có kết quả để xuất Excel. Bấm “Tải hóa đơn” trước.'); return; }
   // busyButton = phản hồi tức thì + chống bấm đúp (không xuất 2 file vì cùng một cú bấm).
   const restore = busyButton($('export-excel'), 'Đang xuất…');
   try {

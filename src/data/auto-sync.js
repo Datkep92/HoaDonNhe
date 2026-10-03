@@ -15,6 +15,8 @@
 //   - Nhường người dùng: nếu luồng thủ công đang bận thì hoãn lượt, không tranh cổng thuế.
 //   - Một hướng lỗi KHÔNG làm chết hướng còn lại (mục 42/71).
 //   - Chạy lại không nhân bản: việc chống trùng do SQLite + XML lo (mục 19).
+//   - NHƯỜNG ĐÚNG LÚC: yêu cầu dừng phải có hiệu lực NGAY CẢ KHI ĐANG Ở KHE GIỮA HAI HƯỚNG
+//     (Mua vào xong, chưa tới Bán ra) — xem yieldNow().
 // ---------------------------------------------------------------------------
 
 const { readSyncState, writeSyncState, defaultSyncState } = require('./mst-manager');
@@ -33,11 +35,28 @@ function createAutoSync({ runDirection, syncFile, manualBusy = () => false, para
   let lastReason = '';
   let timer = null;
   let currentRun = null;
+  // Yêu cầu nhường (người dùng mở lại cửa sổ, hết khung giờ, bấm Ngưng). Tách khỏi `running`
+  // vì hai thứ khác nhau: `running` = "đang chạy", cờ này = "được bảo dừng".
+  let yieldReason = '';
 
   // syncFile có thể là chuỗi hoặc hàm (MST/thư mục lưu đổi theo người dùng).
   const fileOf = () => (typeof syncFile === 'function' ? String(syncFile() || '') : String(syncFile || ''));
   const readState = () => { const file = fileOf(); return file ? readSyncState(file) : defaultSyncState(); };
   const writeState = state => { const file = fileOf(); return file ? writeSyncState(file, state) : state; };
+
+  // YÊU CẦU DỪNG lượt đang chạy.
+  //
+  // Vì sao cần ngoài `engine.pause()` (do server.js gọi): pause chỉ có tác dụng khi engine ĐANG BAY.
+  // Giữa hai hướng (Mua vào vừa xong, Bán ra chưa bắt đầu) thì `autoSyncEngines` đã trống ⇒
+  // pause() không tìm thấy gì, và lượt vẫn chạy tiếp Bán ra. Lỗi thật: người dùng mở lại cửa
+  // sổ lúc 17:59 (hết khung giờ) thì bộ lập lịch báo "đã nhường" nhưng Bán ra vẫn quét tiếp
+  // và còn đâm vào cổng thuế. Cờ này được `run()`/`oneDirection()` soi trước khi sang hướng kia.
+  function yieldNow(reason) {
+    if (!running) return false;
+    yieldReason = String(reason || 'có việc ưu tiên hơn');
+    log(`Auto Sync nhường (${yieldReason}).`);
+    return true;
+  }
 
   function status() {
     const state = readState();
@@ -48,6 +67,7 @@ function createAutoSync({ runDirection, syncFile, manualBusy = () => false, para
       finishedAt,
       lastReason,
       error,
+      yieldReason,
       settings: state.settings,
       directions: {
         buy: state.buy,
@@ -69,8 +89,10 @@ function createAutoSync({ runDirection, syncFile, manualBusy = () => false, para
   }
 
   // Ghi trạng thái KIỂU ĐỌC–SỬA–GHI ĐỒNG BỘ (không có await ở giữa) nên hai hướng chạy song song
-  // không ghi đè lẫn nhau. Bản cũ đọc rồi ghi rời nhau (đọc → await → ghi) nên hướng này có thể
-  // xoá mất kết quả vừa ghi của hướng kia.
+  // không ghi đè lẫn nhau: mỗi lần gọi là MỘT khối liên tục trên một luồng JS, hai khối không
+  // thể chen vào nhau, và khối sau luôn ĐỌC LẠI nên thấy kết quả khối trước vừa ghi.
+  // Bản cũ đọc rồi ghi rời nhau (đọc → await → ghi) nên hướng này có thể xoá mất kết quả vừa ghi
+  // của hướng kia. (Phần ghi ĐÃ nguyên tử ở writeSyncState — xem mst-manager.js.)
   function patchState(key, patch) {
     const state = readState();
     state[key] = { ...state[key], ...patch };
@@ -79,6 +101,11 @@ function createAutoSync({ runDirection, syncFile, manualBusy = () => false, para
 
   // MỘT hướng (Mua vào hoặc Bán ra). Không ném ra ngoài: hướng này lỗi không làm chết hướng kia.
   async function oneDirection({ key, code, label }, runOptions = {}) {
+    // ĐÃ ĐƯỢC YÊU CẦU DỪNG trước khi hướng này kịp bắt đầu ⇒ bỏ qua, KHÔNG đụng cổng thuế.
+    if (yieldReason) {
+      log(`Auto Sync ${label}: bỏ qua vì đã nhường (${yieldReason}).`);
+      return { key, ok: false, stopped: true, error: '', skippedByYield: true };
+    }
     const started = new Date().toISOString();
     patchState(key, { status: 'running', lastSync: started, lastError: null });
     try {
@@ -126,6 +153,7 @@ function createAutoSync({ runDirection, syncFile, manualBusy = () => false, para
       return { skipped: true, reason: 'manual-busy' };
     }
     running = true;
+    yieldReason = '';
     startedAt = new Date().toISOString();
     finishedAt = null;
     error = '';
@@ -134,19 +162,20 @@ function createAutoSync({ runDirection, syncFile, manualBusy = () => false, para
     const runOptions = options;
     const useParallel = typeof options.parallel === 'boolean' ? options.parallel : !!parallel();
     const detail = {};
+    let stopped = false;
     try {
       if (useParallel) {
         phase = 'Mua vào + Bán ra (song song)';
         for (const outcome of await Promise.all(DIRECTIONS.map(direction => oneDirection(direction, runOptions)))) {
           if (outcome.ok) detail[outcome.key] = { ok: true, ...outcome.result };
-          else { detail[outcome.key] = { ok: false, stopped: outcome.stopped, error: outcome.error }; if (!outcome.stopped) error = outcome.error; }
+          else { detail[outcome.key] = { ok: false, stopped: outcome.stopped, error: outcome.error }; if (!outcome.stopped) error = outcome.error; if (outcome.stopped) stopped = true; }
         }
       } else {
         for (const direction of DIRECTIONS) {
           phase = `${direction.label} (${direction.code})`;
           const outcome = await oneDirection(direction, runOptions);
           if (outcome.ok) detail[outcome.key] = { ok: true, ...outcome.result };
-          else { detail[outcome.key] = { ok: false, stopped: outcome.stopped, error: outcome.error }; if (!outcome.stopped) error = outcome.error; }
+          else { detail[outcome.key] = { ok: false, stopped: outcome.stopped, error: outcome.error }; if (!outcome.stopped) error = outcome.error; if (outcome.stopped) stopped = true; }
         }
       }
     } finally {
@@ -154,7 +183,9 @@ function createAutoSync({ runDirection, syncFile, manualBusy = () => false, para
       phase = '';
       finishedAt = new Date().toISOString();
     }
-    return { skipped: false, parallel: useParallel, detail };
+    // `stopped` để bên ngoài phân biệt "dừng theo yêu cầu" với "xong cả hai hướng" — bể
+    // "Đồng bộ tất cả" nhờ đó không báo lỗi khi chính người dùng bấm Ngưng.
+    return { skipped: false, stopped, parallel: useParallel, detail };
   }
 
   // Bộ đếm nhịp cũ: kiểm tra mỗi 60 giây để TỰ chạy lại sau `intervalMinutes`.
@@ -183,9 +214,11 @@ function createAutoSync({ runDirection, syncFile, manualBusy = () => false, para
 
   function stop() {
     if (timer) { clearInterval(timer); timer = null; }
+    // Dừng lượt đang chạy của chính MST này (nút Ngưng trên dòng MST, hoặc app thoát).
+    yieldNow('dừng bộ điều phối');
   }
 
-  return { status, configure, run, schedule, stop, get running() { return running; } };
+  return { status, configure, run, schedule, stop, yieldNow, get running() { return running; } };
 }
 
 module.exports = { createAutoSync, DIRECTIONS };

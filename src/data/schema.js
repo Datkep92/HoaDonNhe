@@ -26,7 +26,7 @@
 //   TM/CK nên không tự phân loại được — mục 3 của yêu cầu).
 // ---------------------------------------------------------------------------
 
-const SCHEMA_VERSION = 10;
+const SCHEMA_VERSION = 13;
 
 const TABLES = [
   `CREATE TABLE IF NOT EXISTS invoices (
@@ -56,6 +56,20 @@ const TABLES = [
     tien_thue REAL DEFAULT 0,
     tong_tien REAL DEFAULT 0,
     file_xml TEXT NOT NULL,
+    -- Mục 2: tra cứu nhà cung cấp. msttcgp = MST đơn vị cung cấp giải pháp hóa đơn
+    -- (thẻ <MSTTCGP> trong <TTChung>); lookup_code/lookup_url là mã tra cứu và cổng
+    -- tra cứu để tải PDF GỐC của nhà cung cấp (bản có chữ ký số NCC). Đều NULL khi
+    -- XML không có — không đoán.
+    msttcgp TEXT,
+    lookup_code TEXT,
+    lookup_url TEXT,
+    provider_id TEXT,
+    provider_name TEXT,
+    provider_level TEXT,
+    -- Mục 3 — file PDF GỐC do nhà cung cấp phát hành (có chữ ký số NCC), KHÁC hoàn toàn
+    -- với bản app dựng lại trong pdf/. Lưu ĐƯỜNG DẪN TƯƠNG ĐỐI so với thư mục MST để
+    -- người dùng dời cả thư mục lưu sang máy/ổ khác thì đường dẫn không hỏng.
+    original_pdf TEXT,
     created_at TEXT,
     updated_at TEXT
   )`,
@@ -192,6 +206,47 @@ const TABLES = [
     value INTEGER NOT NULL DEFAULT 0,
     updated_at TEXT
   )`,
+
+  // ---- v10: CHUYEN DOI DVT (tab "Chuyen doi DVT") -------------------------------
+  // dvt_mapping: mapping DVT cho ban ra -- ma hang la KHOA CHINH (BAT BUOC, KHONG DUOC DOI)
+  //   ma_hang = KHOA CHINH LOGIC (BAT BUOC, KHONG DUOC DOI) - dung cho ton kho sau nay
+  //   ten_hang = ten hien thi, CHO PHEP DOI tuy y nguoi dung (ca nhan hoa)
+  //   ten_chuan = ten chuan hoa (upper, trim, collapse spaces) de fuzzy match
+  //   dvt_goc = DVT nhu trong hoa don mua vao (VD: "Thung")
+  //   dvt_dich = DVT de ban ra (VD: "Hop", "Chai")
+  //   ty_le = 1 dvt_goc = N dvt_dich (VD: 1 Thung = 20 Hop)
+  //   UNIQUE(ma_hang, dvt_goc, dvt_dich) - 1 ma hang chi co 1 mapping cho 1 cap DVT goc->dich
+  `CREATE TABLE IF NOT EXISTS dvt_mapping (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ma_hang TEXT NOT NULL,
+    ten_hang TEXT NOT NULL,
+    ten_chuan TEXT NOT NULL,
+    dvt_goc TEXT NOT NULL,
+    dvt_dich TEXT NOT NULL,
+    ty_le REAL NOT NULL DEFAULT 1,
+    ghi_chu TEXT,
+    nguon TEXT DEFAULT 'manual',
+    trang_thai TEXT DEFAULT 'active',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(ma_hang, dvt_goc, dvt_dich)
+  )`,
+  // dvt_conversion_log: audit trail - log moi lan chuyen doi khi import hoa don ban ra
+  `CREATE TABLE IF NOT EXISTS dvt_conversion_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    invoice_id INTEGER NOT NULL,
+    item_stt INTEGER NOT NULL,
+    ten_hang_goc TEXT NOT NULL,
+    dvt_goc TEXT NOT NULL,
+    so_luong_goc REAL NOT NULL,
+    dvt_dich TEXT NOT NULL,
+    ty_le REAL NOT NULL,
+    so_luong_moi REAL NOT NULL,
+    mapping_id INTEGER,
+    loai TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY(invoice_id) REFERENCES invoices(id) ON DELETE CASCADE
+  )`,
 ];
 
 const INDEXES = [
@@ -221,6 +276,10 @@ const INDEXES = [
   'CREATE INDEX IF NOT EXISTS idx_reconciliation_bank ON reconciliation_matches(bank_transaction_id)',
   // v9 — tra mã hàng theo mã đã chuẩn hoá (đối chiếu hoá đơn ↔ danh mục công ty).
   'CREATE INDEX IF NOT EXISTS idx_product_master_chuan ON product_master(ma_chuan)',
+  // v10 -- DVT mapping indexes
+  'CREATE INDEX IF NOT EXISTS idx_dvt_mapping_ma_hang ON dvt_mapping(ma_hang, dvt_goc)',
+  'CREATE INDEX IF NOT EXISTS idx_dvt_mapping_ten_chuan ON dvt_mapping(ten_chuan, dvt_goc)',
+  'CREATE INDEX IF NOT EXISTS idx_dvt_log_invoice ON dvt_conversion_log(invoice_id)',
 ];
 
 // FTS5 (external content) cho tìm kiếm nhanh ở tab "Kho dữ liệu" (mục §34).

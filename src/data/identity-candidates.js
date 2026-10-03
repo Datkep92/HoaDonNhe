@@ -117,6 +117,7 @@ function observeCandidates(mstDir, candidates) {
       // mã này sau đó còn xuất hiện với vai trò đối tác ở lượt khác.
       if (item.ownSide === true) previous.ownSide = true;
       if (!previous.ten && item.ten) previous.ten = String(item.ten).trim();
+      // `side` = phía mã đứng ở lần thấy ĐẦU TIÊN đã ghi, và KHÔNG bị ghi đè (xem ghi chú bên dưới).
       if (!previous.side && (item.side === 'mua' || item.side === 'ban')) previous.side = item.side;
       if (!previous.firstFile && file) previous.firstFile = file;
     }

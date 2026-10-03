@@ -23,6 +23,10 @@ module.exports = {
   xmlWatcher: require('./xml-watcher'),
   xmlImport: require('./xml-import'),
   excelExport: require('./excel-export'),
+  // Mục 4.2 — bảng tổng hợp theo quý để kê khai thuế GTGT (chưa sinh XML: Mục 4.3).
+  vatSummary: require('./vat-summary'),
+  // Mục 3 — PDF GỐC của nhà cung cấp (khác bản app dựng lại trong pdf\).
+  originalPdf: require('./original-pdf'),
   bankStatement: require('./bank-statement'),
   reconciliation: require('./reconciliation'),
   identityCandidates: require('./identity-candidates'),

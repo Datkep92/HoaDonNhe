@@ -115,27 +115,82 @@ test('Kho dữ liệu: có cột thuế suất / tiền thuế trong các bảng
   for (const text of ['Thuế suất', 'Tiền thuế']) assert.ok(html.includes(text), `thiếu cột ${text}`);
 });
 
-test('nút đang chạy (Ngưng tra cứu / Ngưng tải) LUÔN bấm được để dừng', () => {
+test('nút Tải hóa đơn đang chạy LUÔN bấm được để dừng (không khoá bằng pending trần)', () => {
   // Lỗi thật đã gặp: công thức disable có `pending`, mà `pending` = true suốt thời gian request dài
-  // đang chờ (server chỉ trả lời khi tác vụ xong) ⇒ nút "Ngưng tải"/"Ngưng tra cứu" bị khoá,
-  // hover chỉ thấy vòng xoay (cursor:progress) mà bấm không ăn.
+  // đang chờ (server chỉ trả lời khi tác vụ xong) ⇒ nút "Ngưng" bị khoá, hover chỉ thấy vòng xoay
+  // (cursor:progress) mà bấm không ăn. Lỗi thứ hai: `state.authBusy` khoá cả nút "Ngưng" — đang
+  // tải mà đăng nhập nền bật thì không dừng được. Nay MỌI khoá gộp làm một và chỉ áp dụng khi
+  // nút KHÔNG ở trạng thái "Ngưng".
   const source = fs.readFileSync(path.join(root, 'src', 'renderer.js'), 'utf8');
-  for (const id of ['search', 'stream-download']) {
-    const found = source.match(new RegExp(`\\$\\('${id}'\\)\\.disabled = [^;]+;`));
-    assert.ok(found, `không tìm thấy dòng disable của #${id}`);
-    assert.ok(!/disabled = state\.authBusy \|\| pending \|\|/.test(found[0]), `#${id}: không được khoá bằng pending trần (sẽ khoá luôn nút đang chạy)`);
-    assert.ok(found[0].includes('pending && !'), `#${id}: pending chỉ được khoá nút KHÔNG phải nút đang chạy`);
+  const found = source.match(/downloadButton\.disabled = [^;]+;/);
+  assert.ok(found, 'không tìm thấy dòng disable của #download-btn');
+  assert.ok(!/disabled = state\.authBusy \|\| pending \|\|/.test(found[0]), 'không được khoá bằng pending trần (sẽ khoá luôn nút đang chạy)');
+  assert.ok(found[0].includes('&& !downloadRunning'), 'mọi khoá phải bỏ qua khi nút đang ở trạng thái Ngưng');
+  assert.ok(/authBusy[\s\S]*downloadRunning|disabled = [^;]*authBusy/.test(found[0]), 'công thức phải còn tính authBusy');
+});
+
+test('MỘT nút cho cả 3 việc: Tải hóa đơn / Ngưng / Tải tiếp — không còn nút rời rạc', () => {
+  // Ba nút cũ (#search "Tra cứu", #stream-download "Tải ngay", #resume "Tải tiếp") đã gộp
+  // thành #download-btn: nhãn đổi theo state, server đoán việc cần làm. Người dùng không còn
+  // phải tự nhớ bấm nút nào cho việc nào.
+  for (const id of ['search', 'stream-download', 'resume']) {
+    assert.ok(!ids.has(id), `#${id} phải được bỏ khỏi index.html (đã gộp vào #download-btn)`);
+    assert.ok(!html.includes(`id="${id}"`), `index.html vẫn còn #${id}`);
   }
+  const source = fs.readFileSync(path.join(root, 'src', 'renderer.js'), 'utf8');
+  assert.ok(source.includes('function downloadButtonState('), 'phải có downloadButtonState() làm nguồn sự thật cho nhãn nút');
+  // Nhãn của cả 3 trạng thái phải nằm trong HÀM đó, không rải ở render() và handler.
+  const start = source.indexOf('function downloadButtonState(');
+  const body = source.slice(start, source.indexOf('\n}', start));
+  for (const label of ['Tải hóa đơn', 'Ngưng', 'Tải tiếp']) {
+    assert.ok(body.includes(label), `downloadButtonState() phải trả nhãn "${label}"`);
+  }
+  // Nút dùng đúng hàm đó khi vẽ (render) lẫn khi bấm (handler) — không tự tính lần nữa.
+  assert.ok(source.includes('downloadButtonState(state)'), 'render() phải lấy nhãn từ downloadButtonState(state)');
+  assert.ok(source.includes('downloadButtonState(current).action'), 'runLookup() phải lấy hành động từ downloadButtonState(current)');
+});
+
+test('nút Tải tiếp: giao diện ĐỌC quyết định của server (state.resumable), không tự chế danh sách', () => {
+  // Lỗi thật: renderer khai báo mảng RESUMABLE_STATES riêng + thêm hai điều kiện lọc mà server
+  // không có (state.authenticated, state.total > 0) ⇒ hai bên lệch nhau:
+  //   · hết phiên (auth_required) thì server chạy tiếp được, giao diện lại hiện "Tải hóa đơn";
+  //   · ngưng lúc còn đang quét (total = 0) thì mất luôn nút "Tải tiếp".
+  // Nay server gửi sẵn `resumable` = isResumableJob(core.js) ⇒ một nguồn sự thật duy nhất.
+  const source = fs.readFileSync(path.join(root, 'src', 'renderer.js'), 'utf8');
+  const start = source.indexOf('function downloadButtonState(');
+  const body = source.slice(start, source.indexOf('\n}', start));
+  assert.ok(body.includes('state.resumable'), 'downloadButtonState() phải dùng state.resumable của server');
+  assert.ok(!/RESUMABLE_STATES/.test(source), 'renderer.js không được tự khai báo danh sách trạng thái còn dở');
+  assert.ok(!body.includes('state.authenticated'), '"Tải tiếp" không được đòi state.authenticated (loại mất auth_required)');
+  assert.ok(!body.includes('state.total'), '"Tải tiếp" không được đòi state.total > 0 (loại mất lượt ngưng lúc đang quét)');
+  // Server phải thật sự gửi cờ này, và gắn nó bằng đúng isResumableJob của core.js.
+  const server = fs.readFileSync(path.join(root, 'src', 'server.js'), 'utf8');
+  assert.ok(/resumable: isResumableJob\(/.test(server), '/api/state phải gửi resumable: isResumableJob(...)');
+});
+
+test('nút Tải tiếp không được tải nhầm khoảng ngày đã đổi', () => {
+  // Lỗi thật: "Tải tiếp" gửi confirm:true ⇒ server chạy tiếp job CŨ (job.params), còn người dùng
+  // đã đổi Từ ngày/Đến ngày ⇒ tải nhầm khoảng ngày cũ, và không có cách nào bắt đầu lượt mới.
+  const server = fs.readFileSync(path.join(root, 'src', 'server.js'), 'utf8');
+  assert.ok(/input\.confirm && isResumableJob\(currentJob\) && sameDownloadParams\(currentJob, requested\)/.test(server),
+    'nhánh chạy tiếp phải đòi cả isResumableJob lẫn sameDownloadParams (lệch điều kiện tra cứu thì chạy lượt mới)');
+  // validateParams phải nằm TRƯỚC nhánh (2) để nhánh đó có `requested` để so.
+  const requestedAt = server.indexOf('const requested = validateParams(input);', server.indexOf("url.pathname === '/api/download'"));
+  const resumeAt = server.indexOf('isResumableJob(currentJob) && sameDownloadParams', server.indexOf("url.pathname === '/api/download'"));
+  assert.ok(requestedAt > -1 && resumeAt > requestedAt, 'validateParams phải chạy trước nhánh chạy tiếp');
+  // Giao diện cũng phải nói đúng việc sẽ làm: lệch điều kiện tra cứu thì hiện "Tải hóa đơn".
+  const source = fs.readFileSync(path.join(root, 'src', 'renderer.js'), 'utf8');
+  assert.ok(/state\.resumable && sameSearchForm\(/.test(source), 'nhãn phải chỉ "Tải tiếp" khi điều kiện tra cứu còn khớp');
 });
 
 test('bấm "Ngưng" phải tới được nhánh dừng: nhánh dừng nằm TRƯỚC guard `if (pending) return;`', () => {
   // Lỗi thật đã gặp: runLookup() mở đầu bằng `if (pending) return;` — mà `pending` = true đúng lúc
-  // request tải đang chờ ⇒ cú bấm "Ngưng tải" bị nuốt im lặng: không dừng, cũng không báo lỗi.
+  // request tải đang chờ ⇒ cú bấm "Ngưng" bị nuốt im lặng: không dừng, cũng không báo lỗi.
   const source = fs.readFileSync(path.join(root, 'src', 'renderer.js'), 'utf8');
   const start = source.indexOf('async function runLookup(');
   assert.ok(start > -1, 'không tìm thấy runLookup trong renderer.js');
   const body = source.slice(start, source.indexOf('\n}', start));
-  const stopAt = body.indexOf('if (stoppingSearch || stoppingDownload)');
+  const stopAt = body.indexOf("=== 'pause'");
   const pendingAt = body.indexOf('if (pending) return');
   // runLookup render thẳng vào `current` (bỏ vòng gọi /api/state dư) nên guard giờ so current.busy.
   const busyAt = body.indexOf('if (current.busy) return;');
@@ -144,9 +199,11 @@ test('bấm "Ngưng" phải tới được nhánh dừng: nhánh dừng nằm TR
   assert.ok(/await (work|call)\('\/api\/pause'/.test(body), 'nhánh dừng phải gọi /api/pause');
   assert.ok(pendingAt > stopAt, 'guard pending phải nằm SAU nhánh dừng, nếu không bấm Ngưng bị nuốt');
   assert.ok(busyAt > stopAt, 'guard state.busy cũng phải nằm sau nhánh dừng');
+  // "Tải tiếp" phải báo server `confirm: true` — nếu không, server coi là lượt mới và quét lại từ đầu.
+  assert.ok(/confirm: action === 'resume'/.test(body), 'phải gửi confirm cho nhánh chạy tiếp');
 });
 
-test('bấm tra cứu/tải là UI phản hồi NGAY: vẽ optimistic + vòng poll tự hồi phục sau lỗi tạm thời', () => {
+test('bấm tải là UI phản hồi NGAY: vẽ optimistic + vòng poll tự hồi phục sau lỗi tạm thời', () => {
   const source = fs.readFileSync(path.join(root, 'src', 'renderer.js'), 'utf8');
   const start = source.indexOf('async function runLookup(');
   const body = source.slice(start, source.indexOf('\n}', start));
@@ -155,21 +212,45 @@ test('bấm tra cứu/tải là UI phản hồi NGAY: vẽ optimistic + vòng po
   const optimisticAt = body.indexOf("current.busy = true;");
   const sendAt = body.indexOf("await work(url,");
   assert.ok(busyAt > -1 && optimisticAt > busyAt && sendAt > optimisticAt, 'thứ tự phải là: guard busy → vẽ optimistic → gửi request');
+  // Vẽ vào CHÍNH `current` (không tạo bản sao) để refresh() ngay sau đó không ghi đè mất.
+  assert.ok(!/current = \{ *\.\.\./.test(body), 'không được tạo bản sao của current khi vẽ optimistic');
   // Vòng poll không được chết vì một nhịp hụt (nguyên nhân UI kẹt "Đang tải" dù đã xong).
   const refreshStart = source.indexOf('async function refresh()');
   const refresh = source.slice(refreshStart, source.indexOf('\n}', refreshStart));
   assert.ok(refresh.includes('pollFailures'), 'refresh() phải đếm nhịp hụt và tự hồi phục');
 });
 
-test('menu "Xuất Excel": Tải toàn bộ + 4 nhóm (Hóa đơn / Hàng hóa / Đối tác / Ngân hàng), mỗi nhóm đúng mục con', () => {
-  // Yêu cầu: bấm Xuất Excel ra "Tải toàn bộ", rồi các nhóm có mục con
-  // Hóa đơn -> Mua vào/Bán ra, Hàng hóa -> Mua vào/Bán ra, Đối tác -> Nhà cung cấp/Khách hàng,
-  // Ngân hàng -> Sao kê ngân hàng.
+test('nút "Bổ sung cột tra cứu": có trong thanh công cụ và nối đúng API (Mục 2)', () => {
+  // Nút phải nằm trong thanh công cụ tab Kho dữ liệu, KHÔNG phải trong hộp thoại: người
+  // dùng cần thấy và bấm được bất cứ lúc nào, không phải mở một hộp thoại trước.
+  const toolbarAt = html.indexOf('class="card data-toolbar"');
+  assert.ok(toolbarAt > -1, 'không tìm thấy thanh công cụ kho dữ liệu');
+  const btnAt = html.indexOf('id="data-backfill-lookup"');
+  assert.ok(btnAt > toolbarAt, 'nút phải nằm trong thanh công cụ kho dữ liệu');
+
+  const ui = fs.readFileSync(path.join(root, 'src', 'data-ui.js'), 'utf8');
+  assert.ok(/\$\('data-backfill-lookup'\)\.onclick/.test(ui), 'nút chưa được gắn sự kiện click');
+  // Gọi đúng endpoint đã có ở server.js.
+  assert.ok(/\/api\/db\/invoices\/backfill-lookup/.test(ui), 'phải gọi endpoint backfill-lookup');
+  const server = fs.readFileSync(path.join(root, 'src', 'server.js'), 'utf8');
+  assert.ok(/url\.pathname === '\/api\/db\/invoices\/backfill-lookup'/.test(server),
+    'server phải có endpoint backfill-lookup');
+  assert.ok(/backfillProviderLookup/.test(server), 'endpoint phải gọi backfillProviderLookup');
+
+  // Không được tự chạy lúc mở app — người dùng bấm mới chạy (đã thống nhất khi chọn phương án b).
+  const scanner = fs.readFileSync(path.join(root, 'src', 'data', 'xml-scanner.js'), 'utf8');
+  assert.ok(!/backfillProviderLookup/.test(fs.readFileSync(path.join(root, 'src', 'data', 'sqlite.js'), 'utf8')),
+    'KHÔNG được gọi backfill trong migration — phải để người dùng bấm');
+  assert.ok(scanner.includes('backfillProviderLookup'), 'hàm backfill phải nằm trong xml-scanner');
+});
+
+test('menu "Xuất Excel": Tải toàn bộ + 4 nhóm, mỗi nhóm đúng mục con', () => {
+  // Nhóm "Tra cứu NCC" đã BỎ (người dùng: tải Excel ra rồi tự tra là vô ích).
+  // Việc tra cứu nay ở cột "PDF gốc" của tab Danh sách.
   const listAt = html.indexOf('id="data-export-list"');
   assert.ok(listAt > -1, 'không tìm thấy menu xuất Excel');
   assert.ok(html.indexOf('data-part="all"') > listAt, 'phải có nút "Tải toàn bộ" trong menu');
 
-  // Các nhóm nằm SAU phần tử menu (không có nơi nào khác trong trang dùng class "group").
   const groups = [...html.matchAll(/<details class="group"><summary>([^<]+)<\/summary>([\s\S]*?)<\/details>/g)];
   assert.equal(groups.length, 4, 'phải có đúng 4 nhóm');
   assert.ok(html.indexOf(groups[0][0]) > listAt, 'nhóm phải nằm TRONG menu xuất Excel');
@@ -184,6 +265,7 @@ test('menu "Xuất Excel": Tải toàn bộ + 4 nhóm (Hóa đơn / Hàng hóa /
   const known = [...html.matchAll(/data-part="(\w+)"/g)].map(m => m[1]);
   for (const part of known) assert.ok(part === 'all' || excelExport.PARTS.includes(part), `mã bảng lạ: ${part}`);
   assert.equal(known.length, 8, 'tổng 8 lựa chọn (tất cả + 7 mục con)');
+  assert.match(html, /Tải toàn bộ \(7 bảng\)/, 'nhãn "Tải toàn bộ" phải khớp số bảng thật');
 
   // JS phải đóng menu VÀ các nhóm con sau khi chọn, nếu không lần sau mở ra còn mở sẵn nhóm cũ.
   const ui = fs.readFileSync(path.join(root, 'src', 'data-ui.js'), 'utf8');
@@ -288,8 +370,11 @@ test('chống bấm đúp: laneBusy cho nút ▶/⏹ từng dòng, busyButton ch
   const exportBody = source.slice(exportAt, exportAt + 900);
   assert.ok(exportBody.includes("busyButton($('export-excel'), 'Đang xuất…')"), 'Xuất Excel phải khoá nút + nhãn ngay lúc bấm');
   assert.ok(exportBody.indexOf('busyButton') < exportBody.indexOf("await work('/api/export-excel'"), 'khoá nút phải nằm TRƯỚC lệnh xuất');
-  // resume: đổi nhãn ngay (request dài, render() bên trong work() sẽ vẽ nhãn đúng theo state).
-  assert.ok(source.includes("$('resume').textContent = 'Đang chạy…'"), 'resume phải đổi nhãn ngay lúc bấm');
+  // "Tải tiếp" nay là TRẠNG THÁI của #download-btn: nhãn đổi ngay lúc bấm (request dài, render()
+  // bên trong work() sẽ vẽ nhãn đúng theo state) nên không còn handler #resume riêng.
+  assert.ok(!ids.has('resume'), 'đã bỏ nút #resume: "Tải tiếp" là trạng thái của #download-btn');
+  assert.ok(ids.has('download-btn'), 'phải có nút #download-btn');
+  assert.ok(source.includes("runLookup('/api/download')"), 'nút tải phải gọi /api/download');
 });
 
 test('Kho dữ liệu phản hồi tức thì: busyButton cho lưu/chạy Auto Sync, backfill, Tải lại + bảng mờ khi tải', () => {

@@ -74,7 +74,22 @@ function writeSyncState(file, state) {
     buy: { ...base.buy, ...((state && state.buy) || {}) },
     sell: { ...base.sell, ...((state && state.sell) || {}) },
   };
-  fs.writeFileSync(file, JSON.stringify(value, null, 2));
+  // GHI NGUYÊN TỬ: ghi file tạm rồi ĐỔI TÊN (rename là thao tác nguyên tử trên cùng ổ đĩa).
+  //
+  // Vì sao phải vậy: `writeFileSync` thẳng vào sync.json có thể để lại file BỊ CẮT CỤT nếu
+  // máy tắt/mất điện giữa lúc ghi. `readSyncState` gặp JSON hỏng thì trả về trạng thái MẶC ĐỊNH
+  // ⇒ MẤT TRẮN toàn bộ `lastSuccess`/`lastError`/`found` của MST, và bộ lập lịch nền sẽ tưởng
+  // MST đó chưa từng đồng bộ nên quét lại từ đầu, còn banner báo "chưa đồng bộ hôm nay" sai.
+  // Đây là loại mất dữ liệu KHÔNG tự phục hồi được, nên ghi bằng đường an toàn.
+  const text = JSON.stringify(value, null, 2);
+  const temp = `${file}.${process.pid}.tmp`;
+  fs.writeFileSync(temp, text);
+  try { fs.renameSync(temp, file); }
+  catch {
+    // rename thất bại (OneDrive/antivirus đang khoá file đích): ghi đè tại chỗ rồi dọn file tạm.
+    fs.writeFileSync(file, text);
+    try { fs.unlinkSync(temp); } catch {}
+  }
   return value;
 }
 

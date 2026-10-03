@@ -349,6 +349,11 @@ body{width:100%;min-height:100%;margin:0 auto;padding:0;font-size:13pt;font-fami
 .data-item .di-label{min-height:25px;height:auto;border-bottom:1px dashed transparent;display:flex;align-items:flex-start}
 .data-item .di-value{box-sizing:border-box;flex:1;min-height:25px;height:auto;border-bottom:1px dashed #e8e8e8;display:flex;align-items:flex-start;padding-left:10px;justify-content:flex-start}
 @page{size:A4;margin:0!important}
+.hd-origin{display:none}
+@media print{
+.hd-origin{position:fixed;left:0;right:0;bottom:0;display:block;z-index:9;box-sizing:border-box;padding:2px 6px;background:#fef2f2;border-top:1.5px solid #b91c1c;color:#b91c1c;font-family:"Times New Roman",serif;font-size:9pt;font-weight:bold;text-align:center;letter-spacing:.2px;line-height:1.25;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+.hd-origin-ok{background:#f0fdf4;border-top-color:#15803d;color:#15803d}
+}
 @media print{*{-webkit-print-color-adjust:exact;print-color-adjust:exact}body{width:auto;height:auto;margin:0 auto}table,tr,td{page-break-inside:avoid}table thead{display:table-row-group!important}.table-horizontal-wrapper{page-break-inside:avoid;padding-top:5px}.main-page{margin:0;width:initial;min-height:296mm;border:none}.ft-sign{page-break-inside:avoid!important;page-break-after:auto}.fd-end{padding-top:0!important}.sign-box{line-height:1.2!important}}
 </style>
 </head>

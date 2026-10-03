@@ -75,6 +75,12 @@ function createSyncScheduler(options = {}) {
   }
 
   // Ngưng MST đang chạy. Đánh dấu `yielded` để kết quả trả về được ghi là "nhường", không phải "xong".
+  // Ngưng MST đang chạy. Đánh dấu `yielded` để kết quả trả về được ghi là "nhường", không phải "xong".
+  //
+  // `pauseOne` chỉ pause được engine ĐANG BAY. Giữa hai hướng (Mua vào xong, Bán ra chưa bắt
+  // đầu) không còn engine nào để pause ⇒ lượt sẽ chạy tiếp Bán ra dù cổng đã đóng. `pauseOne`
+  // ở server.js gọi thêm `yieldNow()` của bộ điều phối nên lỗ hổng này đã đóng; `yieldNow`
+  // bên dưới chỉ đảm bảo lời nhắc vẫn được ghi ra dù caller không gọi cờ riêng.
   function yieldNow(reason) {
     if (!current) return false;
     current.yielded = true;

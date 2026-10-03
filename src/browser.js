@@ -79,13 +79,17 @@ function jwtAccount(token) {
   } catch { return null; }
 }
 class TaxBrowser {
-  constructor(root) { this.root = path.resolve(root); this.client = null; this.mst = ''; this.process = null; this.port = 0; this.visible = false; }
+  constructor(root) { this.root = path.resolve(root); this.client = null; this.mst = ''; this.process = null; this.port = 0; this.visible = false; this.auxTabs = new Set(); }
   // Đóng trình duyệt CÓ GIỚI THỜI GIAN: nếu Chrome/CDP treo thì Browser.close() chờ VĨNH VIỄN,
   // request /api/stream (giữ mở suốt lượt tải) không bao giờ trả lời ⇒ UI kẹt nút "Đang tải" dù
   // dữ liệu đã về hết — phải bấm Ngưng thủ công mới thoát (triệu chứng người dùng báo). Sau 5s
   // thì hủy tiến trình Chrome trực tiếp: cửa sổ chắc chắn đóng, luồng luôn được trả về.
   async close() {
     const client = this.client; this.client = null; this.mst = '';
+    // Dọn các tab phụ đã mở cho cổng khác (tracuuhoadon / dichvucong / thuedientu)
+    // TRƯỚC khi đóng hẳn cửa sổ, để không rò tab sau mỗi lượt tra cứu.
+    if (this.port) for (const id of this.auxTabs) { try { await CDP.Close({ host: '127.0.0.1', port: this.port, id }); } catch {} }
+    this.auxTabs.clear();
     const kill = () => { try { if (this.process && !this.process.killed) this.process.kill(); } catch {} this.process = null; this.port = 0; this.visible = false; };
     try {
       if (client) {
@@ -132,6 +136,32 @@ class TaxBrowser {
     const { windowId } = await this.client.Browser.getWindowForTarget();
     await this.client.Browser.setWindowBounds({ windowId, bounds: { windowState: 'minimized' } });
     this.visible = false;
+  }
+
+  /**
+   * Mở một cổng tra cứu của NHÀ CUNG CẤP trong chính Chromium này (Mục 3).
+   *
+   * Vì sao không mở trình duyệt hệ thống: người dùng phải nhập CAPTCHA/mã tra cứu rồi
+   * tải PDF gốc. Mở tab trong Chromium của app giữ mọi thứ trong một cửa sổ, và khi
+   * đóng app thì tab cũng đi luôn — không sót lại cửa sổ Chrome lơ lửng.
+   *
+   * Trả về target id để (nếu cần) điều khiển tiếp. Đăng ký vào auxTabs nên close() dọn sạch.
+   */
+  async openAuxPortal(url) {
+    const target = String(url || '').trim();
+    if (!/^https?:\/\//i.test(target)) throw new Error('Đường dẫn cổng tra cứu không hợp lệ.');
+    if (!this.client) throw new Error('Chưa có phiên trình duyệt. Bấm "Lấy CAPTCHA" hoặc đăng nhập trước.');
+    const created = await CDP.New({ host: '127.0.0.1', port: this.port, url: target });
+    this.auxTabs = this.auxTabs || new Set();
+    this.auxTabs.add(created.id);
+    // Đưa tab lên trước: tab tự tạo có thể mở ở nền, người dùng tưởng cửa sổ không mở.
+    try {
+      const client = await CDP({ host: '127.0.0.1', port: this.port, target: created.id });
+      await client.Page.enable();
+      await client.Page.bringToFront();
+      await client.close();
+    } catch { /* vẫn mở được cửa sổ, chỉ không ép lên trước */ }
+    return created.id;
   }
   // Chạy một lệnh CDP có CHẾ GIỚI THỜI GIAN phía Node. Trước đây Runtime.evaluate(awaitPromise)
   // chờ VĨNH VIỄN nếu tab cổng thuế bị treo (Chrome đóng băng tab nền, hộp thoại chặn trang…) —
@@ -237,6 +267,119 @@ class TaxBrowser {
       return bytes;
     }
     finally { try { await client.close(); } catch {}; try { await CDP.Close({ host: '127.0.0.1', port: this.port, id: target.id }); } catch {} }
+  }
+
+  // ========== MỞ RỘNG: Tra cứu MST · Tờ khai / DVC ==========
+  //
+  // BA NGUYÊN TẮC BẮT BUỘC Ở ĐÂY (sửa sai thì app mở/đóng cửa sổ Chrome lung tung):
+  //
+  // 1) KHÔNG BAO GIỜ gọi open() ở giữa lúc app đang chạy. open() tự close() trước,
+  //    nên gọi nó từ một route khác sẽ GIẾT phiên đang dùng cho việc tải hóa đơn.
+  //    Muốn bảo đảm có cửa sổ thì dùng ensureOpen() — chỉ mở khi CHƯA có.
+  //
+  // 2) KHÔNG tự ý mở cửa sổ Chrome thấp hơn. Ba cổng (hoadondientu / tracuuhoadon /
+  //    dichvucong) là ba ORIGIN khác nhau: fetch chéo origin sẽ bị CORS chặn. Cách
+  //    đúng là mở thêm TAB tại origin cần dùng rồi gọi fetch trong tab đó.
+  //
+  // 3) Tab tạm ra phải được nhớ lại để close() dọn, tránh rò tab mỗi lần bấm.
+
+  /** Mở cửa sổ CHỈ KHI CHƯA CÓ — không đụng phiên đang chạy. */
+  async ensureOpen(mst, visible = false) {
+    if (this.client && this.mst === mst) {
+      try { await this.evalWithTimeout('1', 8000); return; } catch { /* rơi xuống mở lại */ }
+    }
+    if (this.client && this.mst && this.mst !== mst) {
+      // Đang đăng nhập MST khác: KHÔNG đổi phiên (sẽ giật công việc đang chạy) —
+      // chỉ báo lỗi để người dùng tự quyết định.
+      throw new Error(`Cửa sổ Chrome đang đăng nhập MST ${this.mst}. Hãy chuyển về MST đó hoặc đóng cửa sổ trước khi dùng MST này.`);
+    }
+    await this.open(mst, visible);
+  }
+
+  async listTabs() {
+    if (!this.port) return [];
+    try { return await CDP.List({ host: '127.0.0.1', port: this.port }); }
+    catch { return []; }
+  }
+
+  /** Tìm (hoặc tạo) một tab đang đứng tại `origin`. Trả target id. */
+  async tabForOrigin(origin) {
+    const wanted = String(origin).replace(/\/+$/, '');
+    const tabs = await this.listTabs();
+    const found = tabs.find(t => t.type === 'page' && typeof t.url === 'string' && t.url.startsWith(wanted));
+    if (found) return found.id;
+    const target = await CDP.New({ host: '127.0.0.1', port: this.port, url: wanted + '/' });
+    this.auxTabs = this.auxTabs || new Set();
+    this.auxTabs.add(target.id);
+    // Đợi trang nạp xong để fetch trong tab đó không bị "about:blank" chặn origin.
+    await sleep(400);
+    return target.id;
+  }
+
+  /**
+   * Fetch trong tab tại đúng origin của URL ⇒ không bị CORS.
+   * @returns {Promise<{status:number, text:string, body:Buffer|null, ok:boolean}>}
+   */
+  async fetchSameOrigin(url, options = {}) {
+    const origin = new URL(url).origin;
+    const tabId = await this.tabForOrigin(origin);
+    const expression = `(async (u, o) => {
+      const c = new AbortController();
+      const t = setTimeout(() => c.abort(), 40000);
+      try {
+        const res = await fetch(u, {
+          method: o.method || 'GET',
+          headers: o.headers || {},
+          body: o.body,
+          credentials: 'include',
+          signal: c.signal,
+        });
+        const buf = new Uint8Array(await res.arrayBuffer());
+        let bin = '';
+        for (let i = 0; i < buf.length; i += 8192) bin += String.fromCharCode.apply(null, buf.subarray(i, i + 8192));
+        return { status: res.status, base64: btoa(bin), retryAfter: res.headers.get('retry-after') };
+      } catch (e) {
+        return { status: 0, error: e.message || 'Network error' };
+      } finally { clearTimeout(t); }
+    })(${JSON.stringify(url)}, ${JSON.stringify({ method: options.method, headers: options.headers, body: options.body })})`;
+
+    const out = await this.evalInTab(tabId, expression, 60000);
+    if (!out) throw new Error('Tab cổng thuế không phản hồi. Thử lại hoặc mở lại cửa sổ Chrome.');
+    if (out.status === 0) {
+      throw new Error(`Không kết nối được ${origin}: ${out.error || 'không rõ nguyên nhân'}.`);
+    }
+    return {
+      status: out.status,
+      text: out.base64 ? Buffer.from(out.base64, 'base64').toString('utf8') : '',
+      body: out.base64 ? Buffer.from(out.base64, 'base64') : null,
+      ok: out.status >= 200 && out.status < 300,
+    };
+  }
+
+  /** Tải cookie của MỘT origin (dùng khi cần kiểm tra phiên ngoài trang). */
+  async getCookies() {
+    if (!this.client) return [];
+    try { const result = await this.client.Network.getAllCookies(); return result.cookies || []; }
+    catch { return []; }
+  }
+
+  /** Chạy script trong tab cụ thể (tự mở/đóng kết nối CDP tạm). */
+  async evalInTab(tabId, expression, timeoutMs = 60000) {
+    if (!this.port) throw new Error('Chưa mở cửa sổ Chrome cho MST này.');
+    let targetClient = null;
+    try {
+      targetClient = await CDP({ host: '127.0.0.1', port: this.port, target: tabId });
+      // Dùng withTimeout() CỦA CHUNG thay vì tự dựng hẹn giờ riêng: cùng một khuôn (await bên
+      // trong + clearTimeout ở finally), nên không thể quên await — quên là timer chết và
+      // lệnh treo vô hạn, đúng lỗi mà withTimeout sinh ra để chặn.
+      return await withTimeout(
+        () => targetClient.Runtime.evaluate({ expression, awaitPromise: true, returnByValue: true }),
+        timeoutMs,
+        'Tab cổng thuế không phản hồi.',
+      );
+    } finally {
+      if (targetClient) { try { await targetClient.close(); } catch {} }
+    }
   }
 }
 module.exports = { TaxBrowser, browserPath, jwtAccount, disablePasswordManager, withTimeout, isBlankPdf, PDF_TIMEOUT_MS };

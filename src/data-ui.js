@@ -376,12 +376,15 @@ const OVERVIEW_CACHE_IDS = [
       data: ['KHO DỮ LIỆU', 'Quản lý dữ liệu hóa đơn', 'Tìm kiếm, tổng hợp và xuất dữ liệu đã lưu trên máy.'],
       bank: ['SAO KÊ NGÂN HÀNG', 'Đối chiếu dòng tiền', 'Nhập sao kê, kiểm tra giao dịch và đối chiếu với hóa đơn.'],
       accounting: ['HỖ TRỢ KẾ TOÁN', 'Xuất file nhập MISA AMIS', 'Dọc hoá đơn bán ra theo kỳ và xuất file “Mẫu bán hàng” đúng cấu trúc để nhập vào phần mềm kế toán.'],
+      dvt: ['CHUYỂN ĐỔI DVT', 'Quản lý quy tắc đơn vị tính', 'Map đơn vị tính từ hoá đơn mua vào (Thùng) sang đơn vị bán ra (Hộp, Chai).'],
+      mstlookup: ['TRA CỨU MST', 'Tra cứu Mã số Thuế', 'Kiểm tra trạng thái hoạt động của MST hàng loạt và xuất Excel.'],
+      tokhai: ['TẢI TỜ KHAI', 'Tờ khai thuế & Dịch vụ công', 'Tra cứu và tải tờ khai trên Dịch Vụ Công hoặc Thuế Điện Tử.'],
     };
     const info = viewInfo[next] || viewInfo.overview;
     $('view-title').textContent = info[1];
     // Mô tả tab không còn hàng riêng nữa ⇒ chuyển sang tooltip của nút tab đang bật và
     // aria-label của cả dãy nút, vẫn tra được mà không tốn chiều cao.
-    for (const [id, name] of [['view-overview', 'overview'], ['view-download', 'download'], ['view-data', 'data'], ['view-bank', 'bank'], ['view-accounting', 'accounting']]) {
+    for (const [id, name] of [['view-overview', 'overview'], ['view-download', 'download'], ['view-data', 'data'], ['view-bank', 'bank'], ['view-accounting', 'accounting'], ['view-dvt', 'dvt'], ['view-mstlookup', 'mstlookup'], ['view-tokhai', 'tokhai']]) {
       const button = $(id);
       const tabInfo = viewInfo[name] || viewInfo.overview;
       button.title = `${tabInfo[1]} — ${tabInfo[2]}`;
@@ -391,12 +394,12 @@ const OVERVIEW_CACHE_IDS = [
     // Pane: bỏ hidden ở cái mới trước khi gán hidden cho cái cũ
     // để animation fadeIn chạy đúng (nếu gán hidden trước, pane mới sẽ
     // bị display:none → không animate được).
-    const allPanes = ['pane-overview', 'pane-download', 'pane-data', 'pane-bank', 'pane-accounting'];
-    const paneMap = { overview:'pane-overview', download:'pane-download', data:'pane-data', bank:'pane-bank', accounting:'pane-accounting' };
+    const allPanes = ['pane-overview', 'pane-download', 'pane-data', 'pane-bank', 'pane-accounting', 'pane-dvt', 'pane-mstlookup', 'pane-tokhai'];
+    const paneMap = { overview:'pane-overview', download:'pane-download', data:'pane-data', bank:'pane-bank', accounting:'pane-accounting', dvt:'pane-dvt', mstlookup:'pane-mstlookup', tokhai:'pane-tokhai' };
     // Bước 1: show pane mới TRƯỚC
     for (const pid of allPanes) $(pid).hidden = pid !== paneMap[next];
     // Bước 2: cập nhật active class trên nút
-    for (const [id, name] of [['view-overview', 'overview'], ['view-download', 'download'], ['view-data', 'data'], ['view-bank', 'bank'], ['view-accounting', 'accounting']]) {
+    for (const [id, name] of [['view-overview', 'overview'], ['view-download', 'download'], ['view-data', 'data'], ['view-bank', 'bank'], ['view-accounting', 'accounting'], ['view-dvt', 'dvt'], ['view-mstlookup', 'mstlookup'], ['view-tokhai', 'tokhai']]) {
       const button = $(id);
       button.classList.toggle('active', name === next);
       button.setAttribute('aria-selected', name === next ? 'true' : 'false');
@@ -1164,6 +1167,8 @@ const OVERVIEW_CACHE_IDS = [
       await Promise.all([loadSummary(), visible, loadImportStatus(), loadAutoSync(), loadBackfill()]);
       // Panel mã chưa gán chỉ cần khi vào tab; lỗi của nó không được làm sập refreshAll.
       await loadCandidates().catch(() => {});
+      // Tổng hợp quý (Mục 4.2) cũng vậy: lỗi ở nó không được chặn phần còn lại của tab.
+      await loadVat().catch(() => {});
     } catch (error) { if (!isAbort(error)) fail(error); }
   }
 
@@ -1289,6 +1294,9 @@ const OVERVIEW_CACHE_IDS = [
       tr.append(numberCell);
       tr.append(td(inv.ten_ban || inv.mst_ban || ''));
       tr.append(td(inv.ten_mua || inv.mst_mua || ''));
+      // Cột PDF GỐC (Mục 3): xanh = đã có file gốc, vàng = có cổng tra cứu, xám = chỉ có
+      // bản app dựng lại. Bấm để XEM trong app — không mở trình duyệt ngoài.
+      tr.append(originalCell(inv));
       // Trạng thái đến từ kết quả tra cứu (XML không mang) — server gắn nhãn sẵn, cùng nguồn với Excel.
       tr.append(td(inv.stateLabel || ''));
       tr.append(td(inv.tien_truoc_thue == null ? '—' : num.format(inv.tien_truoc_thue), 'num'));
@@ -1803,7 +1811,7 @@ const OVERVIEW_CACHE_IDS = [
   // trường hợp: chưa nhập gì / có dữ liệu nhưng nằm ngoài bộ lọc / lọc quá hẹp.
   function bankEmptyHint() {
     const total = Number((bankSummaryData && bankSummaryData.allTransactions) || 0);
-    if (!total) return 'Chưa có sao kê nào cho MST này. Bấm “Nhập file sao kê…” để nạp Excel / CSV / PDF.';
+    if (!total) return 'Chưa có sao kê nào cho MST này. Bấm “Nhập file sao kꅓ để nạp Excel / CSV / PDF.';
     const scope = bankSummaryData.allFrom ? `${shortDay(bankSummaryData.allFrom)} → ${shortDay(bankSummaryData.allTo)}` : 'toàn bộ';
     const filtered = appRange.from || appRange.to || tabState.bank.flow || $('data-bank-q').value.trim();
     const extra = $('data-bank-category').value || $('data-bank-status').value || $('data-bank-account').value
@@ -2342,6 +2350,11 @@ Xoá luôn ${num.format(file.rows_imported || 0)} giao dịch của file này. K
     // Gọi loadMiaCatalog() Ở ĐÂY (không gọi trong showView) vì khối Hỗ trợ kế toán nằm ở scope
     // này — gọi từ showView sẽ ném ReferenceError và chặn luôn phần bật/tắt nút active.
     $('view-accounting').onclick = () => { showView('accounting'); loadMiaCatalog(); };
+$('view-dvt').onclick = () => showView('dvt');
+    // Tab Tra cứu MST và Tải tờ khai — PHẢI nối onclick ở đây, không có trong danh sách
+    // nào khác. Module UI của hai tab tự gắn listener khi pane của nó được bật.
+    $('view-mstlookup').onclick = () => { showView('mstlookup'); if (window.MstLookupUI) window.MstLookupUI.ensureInit(); };
+    $('view-tokhai').onclick = () => { showView('tokhai'); if (window.TokhaiUI) window.TokhaiUI.ensureInit(); };
     $('overview-refresh').onclick = () => {
       const restore = busyButton($('overview-refresh'), 'Đang đối chiếu…');
       void refreshOverview(true).finally(restore);
@@ -2461,6 +2474,30 @@ Xoá luôn ${num.format(file.rows_imported || 0)} giao dịch của file này. K
       void refreshAll().finally(restore);
     };
     $('data-import').onclick = startImport;
+
+    // MỤC 2 — BỔ SUNG CỘT TRA CỨU: đọc lại file XML gốc để điền cổng tra cứu / mã tra cứu
+    // của nhà cung cấp cho hóa đơn nhập trước khi kho có các cột này.
+    //
+    // Vì sao cần nút bấm chứ không tự chạy lúc mở app: lượt quét thường gặp file đã nhập
+    // thì đánh dấu "trùng" và KHÔNG cập nhật dòng cũ, nên phải đọc thẳng file. Để người
+    // dùng bấm thì thấy rõ việc gì đã chạy, bao nhiêu dòng đã điền, bao nhiêu file đã mất.
+    $('data-backfill-lookup').onclick = async () => {
+      const button = $('data-backfill-lookup');
+      const restore = busyButton(button, 'Đang đọc XML…');
+      try {
+        const result = await post('/api/db/invoices/backfill-lookup', {});
+        restore();
+        if (!result.candidates) {
+          window.notice('Không còn hóa đơn nào thiếu cột tra cứu — kho đã đầy đủ.');
+        } else {
+          const parts = [`đã bổ sung ${num.format(result.updated || 0)} hóa đơn`];
+          if (result.missing) parts.push(`${num.format(result.missing)} hóa đơn không còn file XML nên không tra được`);
+          if (result.failed) parts.push(`${num.format(result.failed)} file không đọc được`);
+          window.notice(`Xong: ${parts.join(' · ')}.`);
+        }
+        await refreshAll();
+      } catch (error) { restore(); fail(error); }
+    };
     // Menu "Xuất Excel": "Tải toàn bộ" hoặc mở từng nhóm (Hóa đơn / Hàng hóa / Đối tác)
     // rồi chọn Mua vào · Bán ra (hoặc Nhà cung cấp · Khách hàng).
     const exportMenu = $('data-export-menu');
@@ -2717,8 +2754,367 @@ Xoá luôn ${num.format(file.rows_imported || 0)} giao dịch của file này. K
     $('data-bank-note').ondblclick = deleteBankFile;
     $('data-bank-note').title = 'Bấm đúp để xoá toàn bộ sao kê của MST này.';
     paintAppRange();
+  }
 
-    $('invoice-close').onclick = closeInvoice;
+    // ---------------------------------------------------------------------------
+// PDF GỐC CỦA NHÀ CUNG CẤP (Mục 3)
+//
+// Ba trạng thái, tất cả đều bấm được trong app:
+//   xanh  "Có PDF gốc"    → mở file PDF ngay trong hộp thoại
+//   vàng  "Tra cứu NCC"  → mở hộp thoại chọn: mở cổng tra cứu (trong Chromium của app)
+//                            hoặc tự chọn file PDF đã tải tay
+//   xám  "Chỉ có bản dựng" → mở hộp thoại, hiện lý do cụ thể tại sao chưa có
+//
+// Ràng buộc đã kiểm thật (2026-10): KHÔNG nhà cung cấp nào trong hồ sơ người dùng có
+// endpoint trả PDF thẳng — VNPT bắt đăng nhập, EasyInvoice là trang tra cứu có
+// biểu mẫu. Nên app không tự gọi endpoint bên thứ ba; nó giúp người dùng tra cứu
+// và xem, chứ không tự tải.
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// BỔ SUNG MÃ / URL CỔNG TRA CỨU — mô phỏng luồng của bản tham chiếu 1.4.20_0.
+//
+// Bản tham chiếu làm đúng thế này: bấm vào hóa đơn → nếu còn thiếu mã tra cứu hoặc URL
+// cổng thì HỎI NGAY bằng hộp thoại ngay trong app, nhập xong nó tự đi tiếp. Không bắt
+// người dùng tự mở cổng ra tra rồi quay lại app.
+//
+// Ở đây mỗi lần hỏi đều LƯU lại vào kho (lookup_code / lookup_url) để lần sau bấm là
+// có ngay, không hỏi lại — cũng như bản tham chiếu đánh dấu nguồn là "user-entered".
+// ---------------------------------------------------------------------------
+let origInputRequest = null;
+
+function requestOrigInput({ title, help, label, type = 'text', placeholder = '', value = '', validate }) {
+  // Đang hỏi dở thì coi như người dùng đã bỏ (trả null) — tránh promise treo vĩnh viễn.
+  if (origInputRequest) finishOrigInput(null);
+  $('orig-input-title').textContent = title;
+  $('orig-input-help').textContent = help;
+  $('orig-input-label').textContent = label;
+  const field = $('orig-input-value');
+  field.type = type;
+  field.placeholder = placeholder;
+  field.value = value;
+  showOrigInputError('');
+  $('orig-input-dialog').showModal();
+  // focus sau khi modal đã mở, nếu không trình duyệt bỏ qua focus vào phần tử ẩn.
+  queueMicrotask(() => { try { field.focus(); field.select(); } catch { /* bỏ qua */ } });
+  return new Promise(resolve => { origInputRequest = { resolve, validate }; });
+}
+
+function showOrigInputError(message) {
+  const box = $('orig-input-error');
+  box.textContent = message;
+  box.hidden = !message;
+}
+
+function finishOrigInput(value) {
+  const pending = origInputRequest;
+  if (!pending) return;
+  origInputRequest = null;
+  if ($('orig-input-dialog').open) $('orig-input-dialog').close();
+  pending.resolve(value);
+}
+
+function submitOrigInput(event) {
+  event.preventDefault();
+  if (!origInputRequest) return;
+  const raw = String($('orig-input-value').value || '').trim();
+  if (!raw) { showOrigInputError('Hãy nhập thông tin hoặc bấm Hủy.'); $('orig-input-value').focus(); return; }
+  try {
+    finishOrigInput(origInputRequest.validate ? origInputRequest.validate(raw) : raw);
+  } catch (error) {
+    showOrigInputError(error && error.message ? error.message : String(error));
+  }
+}
+
+// URL cổng tra cứu: chỉ nhận http(s). Chặn rác rởi ngay tại ô nhập thay vì để tới lúc mở.
+function validatePortalUrl(value) {
+  let parsed;
+  try { parsed = new URL(value); } catch { throw new Error('URL phải bắt đầu bằng http:// hoặc https://'); }
+  if (!/^https?:$/.test(parsed.protocol)) throw new Error('URL phải bắt đầu bằng http:// hoặc https://');
+  if (!/\./.test(parsed.hostname)) throw new Error('URL phải có tên miền, ví dụ https://tenmien.vn/');
+  return parsed.href;
+}
+
+// Gắn sự kiện cho phần tử của Mục 3 mà KHÔNG ĐỂ PHẦN TỬ THIẾU làm chết cả IIFE.
+//
+// Vì sao cần: data-ui.js là MỘT IIFE duy nhất. Một dòng gán onclick mà phần tử đích
+// không tồn tại trong index.html sẽ ném TypeError NGAY ở cấp IIFE ⇒ phần code khai báo
+// SAU dòng đó không hề được đăng ký. Đúng lỗi đã gặp: các hàm phía dưới báo
+// "is not defined" và nút bấm không phản ứng, trong khi `node --check` vẫn xanh.
+// Gỡ một hộp thoại khỏi HTML giờ chỉ in cảnh báo, không còn làm hỏng cả tab.
+function bindOrig(id, event, handler) {
+  const el = $(id);
+  if (!el) {
+    console.warn(`[data-ui] thiếu phần tử #${id} — bỏ qua gắn sự kiện "${event}"`);
+    return false;
+  }
+  el.addEventListener(event, handler);
+  return true;
+}
+
+bindOrig('orig-input-form', 'submit', submitOrigInput);
+bindOrig('orig-input-close', 'click', () => finishOrigInput(null));
+bindOrig('orig-input-cancel', 'click', () => finishOrigInput(null));
+bindOrig('orig-input-dialog', 'close', () => { if (origInputRequest) finishOrigInput(null); });
+// Hỏi bổ sung rồi LƯU vào kho, trả về hóa đơn đã cập nhật để hàm gọi dùng tiếp.
+// Không nuốt lỗi: lỗi ghi kho phải ném lại để UI báo, không được báo "thành công" rồi im.
+async function saveLookupField(inv, field, value) {
+  const result = await post('/api/db/invoice-lookup', { key: inv.invoice_key, field, value });
+  // Lấy lại giá trị MÁY CHỦ đã lưu, không dùng giá trị người dùng gõ: URL được làm
+  // sạch ở server (bỏ dấu `;cổng;` dính vào tên miền của VNPT). Dùng giá trị thô thì
+  // cột vẫn hiện URL sai ngay sau khi lưu.
+  inv[field] = result && result.value ? String(result.value.value || '') : value;
+  return inv;
+}
+
+// Thiếu gì hỏi nấy, đúng thứ tự người dùng cần: cổng trước (để mở), mã sau.
+// Trả null nghĩa là người dùng bấm Hủy — hàm gọi phải dừng, không mở tiếp hộp sau.
+//
+// CHỈ hỏi mã tra cứu cho hóa đơn MUA VÀO. Hóa đơn bán ra là hóa đơn của chính hồ sơ
+// này, cổng của nhà cung cấp tra bằng SỐ HÓA ĐƠN chứ không cần mã bí mật — hỏi mã ở đó
+// là hỏi thừa, bắt người dùng điền một thứ không tồn tại, rồi lại hỏi tiếp 71 lần nữa
+// cho các hóa đơn còn lại.
+async function ensureLookupInfo(inv) {
+  const providerName = inv.provider_name || 'nhà cung cấp';
+  if (!/^https?:\/\//i.test(String(inv.lookup_url || ''))) {
+    const url = await requestOrigInput({
+      title: `Cần URL cổng ${providerName}`,
+      help: 'Dữ liệu Cổng Thuế chưa có URL cổng tra cứu hợp lệ. Dán đúng URL tra cứu ghi trên hóa đơn; thông tin này chỉ dùng để mở cổng nhà cung cấp.',
+      label: 'URL cổng tra cứu', type: 'url', placeholder: 'https://…', validate: validatePortalUrl,
+    });
+    if (!url) return null;
+    await saveLookupField(inv, 'lookup_url', url);
+  }
+  if (inv.direction !== 'BUY') return inv;
+  if (!String(inv.lookup_code || '').trim()) {
+    const code = await requestOrigInput({
+      title: `Cần mã tra cứu ${providerName}`,
+      help: 'Nhập mã tra cứu, mã nhận hóa đơn hoặc mã số bí mật của đúng hóa đơn này. Mã chỉ được dùng để tra cứu chính hóa đơn đó.',
+      label: 'Mã tra cứu / mã nhận hóa đơn', placeholder: 'Nhập mã của hóa đơn',
+    });
+    if (!code) return null;
+    await saveLookupField(inv, 'lookup_code', code);
+  }
+  return inv;
+}
+// Hộp thoại "chưa có PDF gốc": nói rõ vì sao, rồi đưa hai đường đi — tự chọn file đã
+// tải tay, hoặc mở cổng tra cứu ngay trong cửa sổ ứng dụng.
+// Trước khi hiện, hỏi bổ sung mã/URL còn thiếu (xem ensureLookupInfo).
+async function openOriginalPick(inv) {
+  pickTarget = inv;
+  $('orig-pick-subtitle').textContent = String(inv.original_reason || 'Chưa có file PDF gốc của nhà cung cấp.');
+  const button = $('orig-pick-portal');
+  const restore = busyButton(button, 'Đang chuẩn bị…');
+  try {
+    const ready = await ensureLookupInfo(inv);
+    restore();
+    // Người dùng bấm Hủy ở hộp nhập ⇒ KHÔNG mở hộp chọn file (tránh 2 modal chồng).
+    if (!ready) return;
+    const hasPortal = /^https?:\/\//i.test(String(inv.lookup_url || ''));
+    button.disabled = !hasPortal;
+    button.title = hasPortal
+      ? `Mở trong cửa sổ ứng dụng: ${inv.lookup_url}`
+      : 'Hóa đơn này chưa có cổng tra cứu nào đã biết.';
+    $('orig-pick-dialog').showModal();
+  } catch (error) { restore(); fail(error); }
+}
+let originalKey = '';
+let pickTarget = null;
+
+function originalCell(inv) {
+  const cell = document.createElement('td');
+  const kind = String(inv.original_state || 'none');
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = `orig-badge orig-${kind}`;
+  button.textContent = kind === 'have' ? 'Có PDF gốc' : (kind === 'lookup' ? 'Tra cứu NCC' : 'Chỉ có bản dựng');
+  button.title = kind === 'have'
+    ? 'Bấm để xem PDF gốc do nhà cung cấp phát hành (có chữ ký số).'
+    : String(inv.original_reason || '');
+  button.onclick = event => { event.stopPropagation(); onOriginalClick(inv); };
+  cell.append(button);
+  return cell;
+}
+
+function onOriginalClick(inv) {
+  if (String(inv.original_state) === 'have') openOriginalPdf(inv.invoice_key);
+  else openOriginalPick(inv);
+}
+
+function openOriginalPdf(key) {
+  originalKey = key;
+  $('orig-frame').src = `/api/db/invoice-original?key=${encodeURIComponent(key)}`;
+  $('orig-dialog').showModal();
+}
+
+bindOrig('orig-close', 'click', () => { $('orig-dialog').close(); });
+bindOrig('orig-dialog', 'close', () => { $('orig-frame').src = 'about:blank'; });
+bindOrig('orig-detach', 'click', async () => {
+  if (!originalKey) return;
+  try {
+    await post('/api/db/invoice-original/attach', { key: originalKey, clear: true });
+    $('orig-dialog').close();
+    window.notice('Đã bỏ liên kết file PDF gốc của hóa đơn này.');
+    await refreshAll();
+  } catch (error) { fail(error); }
+});
+bindOrig('orig-pick-close', 'click', () => { $('orig-pick-dialog').close(); });
+bindOrig('orig-pick-cancel', 'click', () => { $('orig-pick-dialog').close(); });
+bindOrig('orig-pick-portal', 'click', async () => {
+  if (!pickTarget) return;
+  const button = $('orig-pick-portal');
+  const restore = busyButton(button, 'Đang mở…');
+  try {
+    const result = await post('/api/db/provider/open-portal', { key: pickTarget.invoice_key });
+    restore();
+    $('orig-pick-dialog').close();
+    window.notice(result.opened
+      ? `Đã mở ${result.host}. Nhập CAPTCHA/mã tra cứu, tải PDF gốc về rồi bấm "Chọn file PDF…" để liên kết.`
+      : `Không mở được cửa sổ tự động. Cổng tra cứu: ${result.host}`);
+  } catch (error) { restore(); fail(error); }
+});
+bindOrig('orig-pick-open', 'click', async () => {
+  if (!pickTarget) return;
+  const button = $('orig-pick-open');
+  const restore = busyButton(button, 'Đang chọn…');
+  try {
+    const picked = await post('/api/db/invoice-original/pick', { key: pickTarget.invoice_key });
+    restore();
+    if (!picked || !picked.path) { window.notice('Chưa chọn file PDF nào.'); return; }
+    await post('/api/db/invoice-original/attach', { key: pickTarget.invoice_key, file: picked.path });
+    $('orig-pick-dialog').close();
+    window.notice('Đã liên kết PDF gốc. Bấm vào cột PDF gốc để xem trong ứng dụng.');
+    await refreshAll();
+  } catch (error) { restore(); fail(error); }
+});
+
+// ---------------------------------------------------------------------------
+// TỔNG HỢP QUÝ (Mục 4.2) — số liệu kê khai thuế GTGT.
+//
+// Ba điều bắt buộc ở đây:
+//  · mọi con số đều kèm nguồn (số HĐ, tổng tiền thanh toán, tiền trước thuế, tiền thuế)
+//    để người dùng tự kiểm lại với kho;
+//  · KHÔNG CHỐT "thuế = 0" khi kho chưa ghi thuế — phải nói rõ là hoá đơn không chịu
+//    thuế hay là chưa đủ dữ liệu (tín hiệu taxAvailable từ server);
+//  · khấu trừ do người dùng NHẬP TAY (không suy ra được từ hoá đơn) và nhãn phải ghi
+//    là số nhập, không phải số tính được.
+// ---------------------------------------------------------------------------
+let vatPeriods = [];
+function vatMoney(value) {
+  const n = Math.round(Number(value) || 0);
+  return n.toLocaleString('vi-VN');
+}
+
+function vatRow(label, value, note, cls = '') {
+  return `<tr><th scope="row">${label}</th>`
+    + `<td class="num ${cls}">${value}</td>`
+    + `<td class="vat-note-cell">${note || ''}</td></tr>`;
+}
+
+function vatRateTable(title, group, totalPretax, totalTax) {
+  const rows = group.rates.map(r => `<tr><td>Thuế suất ${safeOverviewText(r.rate)}</td>`
+    + `<td class="num">${num.format(r.invoices)}</td><td class="num">${vatMoney(r.pretax)}</td>`
+    + `<td class="num">${vatMoney(r.tax)}</td></tr>`).join('');
+  const noRate = group.missing.lines ? `<tr><td>${safeOverviewText(group.missing.rate)}</td>`
+    + `<td class="num">${num.format(group.missing.invoices)}</td><td class="num">${vatMoney(group.missing.pretax)}</td>`
+    + `<td class="num">${vatMoney(group.missing.tax)}</td></tr>` : '';
+  return `<div class="vat-block"><h4>${title}</h4>`
+    + '<table class="vat-table"><thead><tr><th>Mức thuế suất</th><th class="num">Số HĐ</th>'
+    + '<th class="num">Tiền trước thuế</th><th class="num">Tiền thuế</th></tr></thead>'
+    + `<tbody>${rows}${noRate}`
+    + `<tr class="vat-total"><th scope="row">Tổng</th><td class="num"></td>`
+    + `<td class="num">${vatMoney(totalPretax)}</td><td class="num">${vatMoney(totalTax)}</td></tr>`
+    + '</tbody></table>'
+    + `<p class="hint">Tổng tiền thanh toán (mọi hoá đơn kể cả không chịu thuế): ${vatMoney(group.totalLinePretax)}</p>`
+    + '</div>';
+}
+
+function renderVat(value) {
+  const notes = $('vat-warnings');
+  const list = Array.isArray(value.warnings) ? value.warnings : [];
+  notes.hidden = !list.length;
+  notes.innerHTML = list.map(text => `<p class="vat-warn">${safeOverviewText(text)}</p>`).join('');
+  $('vat-export').disabled = false;
+
+  const f = value.figures;
+  const taxLabel = value.taxAvailable ? '' : '<span class="vat-flag">chưa đủ dữ liệu thuế</span>';
+  const figures = [
+    vatRow('Doanh thu bán ra (tổng tiền thanh toán)', vatMoney(value.sell.total), `${num.format(value.sell.count)} hóa đơn`, 'vat-strong'),
+    vatRow('Trong đó: tiền trước thuế', vatMoney(value.sell.pretax), value.sell.pretax === 0 ? 'hóa đơn không ghi tiền trước thuế' : ''),
+    vatRow('Trong đó: tiền thuế', vatMoney(value.sell.tax), '', 'vat-strong'),
+    vatRow('(-) Tiền thuế mua vào được khấu trừ', vatMoney(f.deductibleInput), `${num.format(value.buy.count)} hóa đơn`),
+    vatRow('(-) Khấu trừ của kỳ', vatMoney(f.deduction), 'số bạn nhập — không suy ra được từ hóa đơn'),
+    vatRow('(=) Thuế phải nộp trong kỳ', vatMoney(f.payable), '', 'vat-payable'),
+    vatRow('Thuế chuyển sang kỳ sau', vatMoney(f.carried), 'khi thuế vào nhiều hơn thuế ra'),
+  ].join('');
+
+  $('vat-body').innerHTML = `<p class="hint">Kỳ <b>${safeOverviewText(value.label)}</b> `
+    + `(${safeOverviewText(value.range.from)} … ${safeOverviewText(value.range.to)})</p>`
+    + `<div class="vat-grid"><table class="vat-table"><tbody>${figures}</tbody></table>`
+    + vatRateTable('Doanh thu bán ra theo mức thuế suất', value.sellRates, value.sell.pretax, value.sell.tax)
+    + vatRateTable('Hàng hóa, dịch vụ mua vào theo mức thuế suất', value.buyRates, value.buy.pretax, value.buy.tax)
+    + '</div>'
+    + (value.taxAvailable ? '' : `<p class="vat-warn">Kho chưa ghi tiền thuế cho kỳ này ${taxLabel} — đây là hóa đơn không chịu thuế GTGT, không phải số liệu bị thiếu. Hãy đối chiếu với tờ khai bạn đã nộp.</p>`);
+}
+
+async function loadVat() {
+  const select = $('vat-period');
+  const body = $('vat-body');
+  if (!select || !body) return;
+  const parts = String(select.value || '').split('-');
+  if (parts.length !== 2) { body.innerHTML = '<p class="hint">Kho chưa có hóa đơn nào để tổng hợp.</p>'; return; }
+  body.innerHTML = '<p class="hint">Đang tính…</p>';
+  const query = `?year=${encodeURIComponent(parts[0])}&quarter=${encodeURIComponent(parts[1])}`
+    + `&deduction=${encodeURIComponent(Number($('vat-deduction').value) || 0)}`;
+  try {
+    const replyValue = await api(`/api/db/vat/quarter${query}`);
+    vatPeriods = replyValue.periods || vatPeriods;
+    renderVat(replyValue);
+  } catch (error) {
+    body.innerHTML = '';
+    fail(error);
+  }
+}
+
+function syncVatPeriods(periods) {
+  const select = $('vat-period');
+  if (!select) return;
+  const current = select.value;
+  if (!periods.length) { select.innerHTML = '<option value="">— chưa có dữ liệu —</option>'; return; }
+  select.innerHTML = periods.map(p => `<option value="${p.year}-${p.quarter}">${safeOverviewText(p.label)} (${num.format(p.invoices)} HĐ)</option>`).join('');
+  if (periods.some(p => `${p.year}-${p.quarter}` === current)) select.value = current;
+}
+
+$('vat-reload').onclick = () => { loadVat().catch(ignoreAbort); };
+$('vat-period').onchange = () => { loadVat().catch(ignoreAbort); };
+$('vat-deduction').onchange = () => { loadVat().catch(ignoreAbort); };
+$('vat-export').onclick = async () => {
+  const button = $('vat-export');
+  const parts = String($('vat-period').value || '').split('-');
+  if (parts.length !== 2) return;
+  const restore = busyButton(button, 'Đang xuất…');
+  try {
+    const params = new URLSearchParams({
+      year: parts[0], quarter: parts[1], deduction: String(Number($('vat-deduction').value) || 0),
+    });
+    const response = await fetch(`/api/db/vat/quarter.xlsx?${params.toString()}`);
+    if (!response.ok) {
+      const detail = await response.json().catch(() => ({}));
+      throw new Error(detail.error || `Không xuất được bảng tổng hợp (HTTP ${response.status}).`);
+    }
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `tong-hop-quy-${app.selected || 'MST'}-${parts[0]}Q${parts[1]}.xlsx`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+    restore();
+  } catch (error) { restore(); fail(error); }
+};
+
+$('invoice-close').onclick = closeInvoice;
     $('invoice-print').onclick = printInvoice;
     $('invoice-dialog').addEventListener('close', () => { $('invoice-frame').src = 'about:blank'; });
 
@@ -2766,7 +3162,6 @@ Xoá luôn ${num.format(file.rows_imported || 0)} giao dịch của file này. K
         if (view === 'overview') refreshOverview(false);
       }
     });
-  }
 
   restorePrefs();
   bind();
@@ -2814,3 +3209,8 @@ Xoá luôn ${num.format(file.rows_imported || 0)} giao dịch của file này. K
 
   window.HD_DATA_VIEW = { show: showView, refresh: refreshAll, openAutoSync };
 })();
+
+
+
+
+

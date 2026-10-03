@@ -36,8 +36,13 @@ aside h2{margin:17px 0 22px}
 .side-actions button{width:100%;padding:11px 12px;background:#1f3a54;border-color:#2c4a67;color:#dcebf7}
 .side-actions button.primary{background:#087f70;border-color:#0a8f7e;color:#fff}
 .side-actions button.danger{background:#5b2430;border-color:#7a3140;color:#ffc9d3}
+/* Nút tải hóa đơn: từ 1.1.2 chỉ CÒN MỘT nút (trước là lưới 2 cột cho "Tra cứu" + "Tải ngay")
+   ⇒ nửa trái trống. Khối này giữ nguyên để nút nằm đúng chỗ cũ khi mở khóa 2 nút sau này. */
 .search-actions{display:grid;grid-template-columns:1fr 1fr;gap:8px}
 .search-actions button{width:100%}
+#download-btn{grid-column:1/-1;padding:12px 14px;font-size:14px;font-weight:700}
+/* Nhãn nút dài hơn khi đang chạy ("Ngưng" / "Tải tiếp") — giữ bề rộng để nút không nhảy khi đổi nhãn. */
+#download-btn{min-height:42px}
 .side-license{display:flex;flex-direction:column;gap:7px;margin-top:12px;padding-top:12px;border-top:1px solid #263d55}
 .side-license strong{font-size:10px;letter-spacing:1px;text-transform:uppercase;color:#7df3d5;font-weight:700}
 .side-license button{width:100%;padding:9px 10px;font-size:11px}
@@ -74,6 +79,68 @@ tbody tr.clickable td:last-child::after{content:' ↗';color:#8a97a7}
 /* ---- Hỗ trợ nổi: local adapter, giữ nguyên UI khi nối Gateway ---- */
 .support-widget{position:fixed;right:26px;bottom:24px;z-index:20}.support-toggle{background:#087f70;border-color:#087f70;color:#fff;box-shadow:0 8px 24px #0b645344;font-size:12px}.support-panel{position:absolute;right:0;bottom:48px;width:min(360px,calc(100vw - 32px));background:#fff;border:1px solid #dce6ee;border-radius:13px;box-shadow:0 16px 45px #102b3540;overflow:hidden}.support-header{padding:14px 15px;background:#14283f;color:#fff;margin:0;display:flex;align-items:center;justify-content:space-between}.support-header strong,.support-header small{display:block}.support-header strong{font-size:13px}.support-header small{font-size:10px;color:#adbfce;margin-top:3px}.support-header button{padding:2px 8px;border:0;background:transparent;color:#fff;font-size:21px}.support-context{padding:8px 14px;display:flex;justify-content:space-between;gap:8px;color:#728398;font-size:10px;border-bottom:1px solid #eef2f5}.support-context span:last-child{color:#b67932}.support-messages{height:250px;overflow:auto;padding:12px;background:#f8fafc;display:flex;flex-direction:column;gap:8px}.support-empty{font-size:11px;color:#8291a2;text-align:center;line-height:1.6;margin:auto 12px}.support-message{max-width:82%;padding:8px 10px;border-radius:10px;background:#fff;border:1px solid #e4eaf0;font-size:12px;line-height:1.45;align-self:flex-end}.support-message.admin{align-self:flex-start;background:#e9f7f3;border-color:#cfede4}.support-message small{display:block;font-size:9px;color:#8493a2;margin-top:4px}.support-quick{padding:0 10px 9px}.support-quick button{width:100%;padding:7px 10px;font-size:11px;color:#0a6f63;background:#f2fbf8;border-color:#cfeae2}.support-quick button:hover{background:#e6f7f1}
 .support-compose{display:flex;gap:7px;padding:10px;border-top:1px solid #edf1f4}.support-compose input{margin:0;padding:9px}.support-compose button{padding:8px 11px}.support-license{padding:0 12px 8px;color:#60738a;font-size:11px}.support-license summary{cursor:pointer;padding:5px 0}.support-license form{display:flex;gap:6px}.support-license input{margin:0;padding:7px}.support-license button{padding:7px 10px}.support-error{min-height:15px;margin:0 12px 9px;font-size:10px;color:#a44e35}
+.chat-modes{display:flex;gap:5px;overflow-x:auto;padding:8px 10px;border-bottom:1px solid #e4eaf0;flex-shrink:0}
+.chat-modes button{flex:0 0 auto;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;padding:6px 9px;border-radius:5px}
+.chat-modes button[aria-pressed="true"]{background:#087f70;color:#fff;border-color:#087f70}
+.ai-mode-label{padding:6px 12px;color:#087f70;font-size:11px;overflow-wrap:anywhere}
+.support-panel{position:fixed;inset:0 0 0 auto;width:var(--chat-width,420px);height:100dvh;display:flex;flex-direction:column;border:0;border-left:1px solid #dce6ee;border-radius:0;box-shadow:none;overflow:hidden}
+.support-panel .support-header{flex-shrink:0;padding:14px 12px 14px 18px;gap:8px}
+.support-panel .support-header>div:first-child{min-width:0}
+.chat-window-actions{display:flex;gap:2px;flex-shrink:0}
+.chat-window-actions button{width:30px;height:30px;display:grid;place-items:center;font-size:20px;padding:0;border-radius:4px}
+.chat-window-actions button:hover{background:#ffffff18}
+.support-panel .support-messages{flex:1;min-height:0;height:auto;overscroll-behavior:contain}
+.support-panel .support-compose,.support-panel .support-context,.support-panel .support-license,.support-panel .support-error,.support-panel .ai-mode-label{flex-shrink:0}
+.support-panel .support-compose input{flex:1;min-width:0}
+.support-panel .support-compose button{flex-shrink:0}
+.chat-resize{position:absolute;inset:0 auto 0 0;width:7px;z-index:3;cursor:col-resize;touch-action:none}
+.chat-resize:hover,.chat-resize:focus-visible{background:#087f7040;outline:0}
+body.chat-resizing{cursor:col-resize;user-select:none}
+body.chat-resizing iframe{pointer-events:none}
+body.chat-open{--app-sidebar-width:250px}
+body.chat-open main{width:calc(100% - var(--app-sidebar-width) - var(--chat-width,420px));min-width:0;container-type:inline-size;container-name:chat-work}
+body.chat-open .app-top .view-switch{flex-wrap:wrap}
+body.chat-open .notice-stack{right:calc(var(--chat-width,420px) + 12px);max-width:calc(100vw - var(--chat-width,420px) - 24px)}
+body.chat-open #support-toggle{visibility:hidden;pointer-events:none}
+@media(max-width:1100px){body.chat-open{--app-sidebar-width:214px}body.chat-open main .workspace{grid-template-columns:minmax(0,1fr)}}
+@media(max-width:860px){body.chat-open{--app-sidebar-width:200px}}
+@media(max-width:760px){body.chat-open{--app-sidebar-width:0px}body.chat-open aside{display:none}body.chat-open main{margin-left:0;padding:12px 8px}body.chat-open .app-top{padding:12px 8px 0;margin:-12px -8px 5px}body.chat-open .app-top>.account{flex-wrap:wrap}body.chat-open .overview-kpis{grid-template-columns:minmax(0,1fr)}}
+@container chat-work (max-width:900px){
+  body.chat-open main .workspace{grid-template-columns:minmax(0,1fr)}
+  body.chat-open main .overview-dashboard{grid-template-columns:repeat(2,minmax(0,1fr))}
+  body.chat-open main .overview-dashboard>*{grid-column:auto;grid-row:auto;min-width:0}
+  body.chat-open main .overview-dashboard>.overview-chart-wide,body.chat-open main .overview-dashboard>.overview-debt-card,body.chat-open main .overview-dashboard>.overview-products-card{grid-column:1 / -1}
+  body.chat-open main .overview-kpis,body.chat-open main .bank-kpis,body.chat-open main .bank-filter-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+  body.chat-open main .bank-visual-grid{grid-template-columns:minmax(0,1fr)}
+}
+@container chat-work (max-width:560px){
+  body.chat-open main .overview-dashboard,body.chat-open main .overview-kpis,body.chat-open main .bank-kpis,body.chat-open main .bank-filter-grid{grid-template-columns:minmax(0,1fr)}
+  body.chat-open main .overview-dashboard>*{grid-column:1 / -1}
+  body.chat-open main .app-top>.account{flex-direction:column;align-items:stretch}
+  body.chat-open main .account-id{flex-wrap:wrap}
+  body.chat-open main .account-title{flex-basis:auto}
+  body.chat-open main .overview-filterbar{align-items:stretch}
+  body.chat-open main .overview-filterbar>div{min-width:0}
+  body.chat-open main .overview-filterbar select,body.chat-open main .overview-filterbar input{min-width:0;width:100%}
+}
+.support-widget:has(.support-panel.is-ai) .support-badge{display:none!important}
+.ai-workspace{display:flex;flex-direction:column;flex:1;min-height:0}
+.ai-tools{display:flex;gap:6px;padding:7px 10px;flex-shrink:0;border-bottom:1px solid #e4eaf0}
+.ai-tools button{font-size:11px;padding:5px 8px;border-radius:5px}
+.ai-tools #ai-retry{margin-left:auto}
+.ai-frame-host,.ai-thread{flex:1;min-height:0}
+#ai-frame{width:100%;height:100%;border:0;display:block;background:#fff}
+.ai-thread{overflow:auto;padding:12px;display:flex;flex-direction:column;gap:10px;background:#f8fafc}
+.ai-message{max-width:90%;align-self:flex-start;font-size:12px;line-height:1.6;overflow-wrap:anywhere;white-space:pre-wrap;color:#20324a}
+.ai-message.user{align-self:flex-end;background:#e9f7f3;padding:8px 10px;border-radius:6px}
+.ai-message small{display:block;font-weight:600;font-size:10px;color:#617287;margin-bottom:4px}
+#ai-form input{min-width:0;flex:1}#ai-form button{flex-shrink:0}
+#ai-provider-dialog{width:min(520px,calc(100vw - 24px));max-height:calc(100dvh - 24px);overflow:auto;border-radius:8px}
+#ai-provider-form label{display:block;font-size:12px;color:#617287;margin:10px 0}
+#ai-provider-form input:not([type="checkbox"]),#ai-provider-form select{width:100%;margin-top:5px}
+#ai-key-label span{display:flex;align-items:center;gap:6px;font-size:11px;margin-top:6px}
+#ai-clear-key{width:16px;height:16px;margin:0}#ai-provider-form .login-actions{flex-wrap:wrap}
+@media(max-width:480px){.ai-message{max-width:100%}.ai-tools{flex-wrap:wrap}.chat-modes button{max-width:160px}}
 /* ---- Settings: license/subscription + app lock ---- */
 .license-badge{display:inline-flex;align-items:center;vertical-align:middle;margin-left:9px;padding:4px 8px;border-radius:6px;background:#e8f5f2;color:#087f70;font-size:11px;font-weight:700}
 .settings-dialog,.payment-dialog{width:min(700px,calc(100vw - 36px));border:0;border-radius:12px;padding:0;box-shadow:0 22px 70px #102b3550;color:#20324a}
@@ -730,3 +797,129 @@ body.app-ready > aside, body.app-ready > main { animation: app-enter .55s cubic-
   cursor: not-allowed;
 }
 #output.locked:focus { outline: none; border-color: #d6e0eb; }
+
+/* ============================================================
+   Tab Tra cứu MST · Tải tờ khai
+   2 tab này dùng lại class sẵn có (card, filters, results, stats,
+   table-card, data-seg, data-chips, captcha-row của login.css).
+   Khối dưới chỉ bổ sung những gì app CHƯA có sẵn.
+   ============================================================ */
+
+/* mst-lookup-ui.js bật/tắt bằng classList('hidden'); app chỉ có [hidden] */
+.hidden { display: none !important; }
+
+/* Khối "chưa có dữ liệu" – app chỉ style #empty nên cần class dùng chung */
+.empty { text-align: center; padding: 30px 16px; color: #6c7d91; }
+.empty h3 { margin: 10px 0 5px; font-size: 14px; color: #20324a; }
+.empty p { margin: 0; font-size: 12px; line-height: 1.6; }
+
+/* Tiêu đề nhóm trong khung .filters */
+.filters .section-title { margin: 18px 0 9px; font-size: 12px; font-weight: 700; color: #6c7d91; text-transform: uppercase; letter-spacing: .4px; }
+
+/* Ô nhập danh sách MST */
+.filters textarea {
+  width: 100%; min-height: 108px; margin-top: 5px; padding: 10px 11px;
+  border: 1px solid #d6e0eb; border-radius: 8px; background: #fff;
+  font: 12px/1.6 Consolas, "Cascadia Mono", monospace; resize: vertical;
+}
+.filters textarea:focus { outline: none; border-color: #0b9e87; }
+
+/* Ô nhập mã xác thực — login.css có .captcha-row/.captcha-display nhưng chưa có ô nhập */
+.captcha-input {
+  flex: 0 0 auto; width: 118px; height: 38px; margin: 0; padding: 8px 10px;
+  border: 1px solid #d6e0eb; border-radius: 8px; background: #fff;
+  font: 600 14px/1 Consolas, monospace; letter-spacing: 2px; text-transform: uppercase;
+}
+.captcha-input:focus { outline: none; border-color: #0b9e87; }
+
+/* Cột trái hẹp 312px: cho CAPTCHA xuống dòng thay vì tràn */
+/* PATCH-WRAP: cột trái chỉ 276px, mọi nhóm nút phải xuống dòng được */
+.filters .captcha-row,
+.filters .data-chips,
+.filters .data-seg,
+.filters .actions { flex-wrap: wrap; }
+.filters .captcha-display { flex: 1 1 130px; min-width: 130px; }
+
+/* 5 ô thống kê thay vì 3 (mặc định của app) */
+.stats-5 { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+
+/* Nút chiếm hết bề ngang */
+.filters button.wide, .login-box button.wide { display: block; width: 100%; margin-top: 8px; }
+
+/* Nội dung hai dòng trong thanh trạng thái */
+.conn-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.conn-text strong { font-size: 12px; }
+.conn-text small { color: #76869a; font-size: 11px; }
+/* Nút nhóm đang chọn — .data-seg/.data-chips có sẵn nền trắng, cần tô đậm phần active */
+.data-seg .portal-tab.active,
+.data-chips .preset-btn.active { background: #e8f5f2; border-color: #9bd8cc; color: #087f70; }
+
+/* Thanh trạng thái kết nối cổng (tab Tờ khai) */
+.conn-bar {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 11px 13px; margin: 0 0 14px;
+  background: #f8fafc; border: 1px solid #e1e7ef; border-radius: 9px;
+}
+.conn-bar .muted { color: #76869a; font-size: 11px; }
+.conn-spacer { flex: 1 1 auto; }
+.conn-bar button { padding: 8px 12px; }
+
+/* Chấm trạng thái – tokhai-ui.js gán class theo tên */
+.status-dot { width: 10px; height: 10px; border-radius: 50%; background: #91a2b5; flex: none; }
+.status-dot.connected { background: #13b990; box-shadow: 0 0 0 3px #13b99033; }
+.status-dot.disconnected { background: #d98a8a; }
+
+/* Khung đăng nhập trực tiếp */
+.login-box { padding: 14px; margin: 0 0 14px; background: #fbfdfe; border: 1px solid #e1e7ef; border-radius: 10px; }
+.login-box-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+.login-box-title { margin: 0; font-size: 13px; }
+.login-box-head button { padding: 0 7px; border: 0; background: transparent; color: #8c9aab; font-size: 19px; line-height: 1; }
+.login-box-head button:hover { color: #40536b; }
+.login-box .login-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.login-box .login-fields label, .login-box > label:not(.remember) { display: block; margin-bottom: 12px; color: #6c7d91; font-size: 11px; font-weight: 600; }
+
+/* Ô mật khẩu + nút hiện/ẩn */
+.pass-wrap { position: relative; display: block; margin-top: 5px; }
+.pass-wrap input { width: 100%; padding-right: 40px; }
+.pass-wrap button { position: absolute; right: 4px; top: 50%; transform: translateY(-50%); padding: 6px 8px; border: 0; background: transparent; font-size: 14px; }
+
+/* Nhật ký */
+.log-list { max-height: 190px; overflow: auto; border-top: 1px solid #edf1f4; }
+.log-entry { display: flex; gap: 10px; padding: 5px 16px; border-bottom: 1px solid #f2f5f8; font-size: 11px; line-height: 1.5; }
+.log-time { flex: none; color: #9aa8b8; font-variant-numeric: tabular-nums; }
+.log-info { color: #40536b; }
+.log-ok { color: #078a76; }
+.log-warn { color: #a37300; }
+.log-error { color: #b14b3c; }
+
+/* Pill trạng thái trong bảng kết quả */
+.badge-status { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 10px; font-weight: 600; background: #eef5f5; color: #517c78; }
+.badge-status-active { background: #e3f7ee; color: #14795f; }
+.badge-status-inactive { background: #fdf1de; color: #9a6412; }
+.badge-status-other { background: #eef2f6; color: #64748b; }
+
+/* Nút trong ô "Thao tác" của bảng tờ khai */
+.ttk-hs-link { color: #087f70; font-size: 11px; font-weight: 600; margin-right: 8px; text-decoration: none; }
+.ttk-hs-link:hover { text-decoration: underline; }
+.ttk-btn-download { padding: 4px 9px; font-size: 11px; border-radius: 6px; }
+
+/* PATCH-NARROW — sửa tràn trong cột trái 276px */
+.login-box > label.remember {
+  display: flex; align-items: flex-start; gap: 8px; flex-wrap: wrap;
+  margin-bottom: 12px; color: #40536b; font-size: 11px; font-weight: 500;
+}
+.login-box > label.remember input { flex: none; width: 16px; height: 16px; padding: 0; margin: 0; }
+.login-box > label.remember span { flex: 1 1 120px; min-width: 0; }
+
+/* 1fr = minmax(auto,1fr) nên ô date không co được dưới min-content */
+.filters .date-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.filters .date-grid input { min-width: 0; width: 100%; }
+
+/* Bảng kết quả dùng chung cho 2 tab */
+.table-card .table-scroll { max-height: 460px; }
+.table-card thead th { position: sticky; top: 0; z-index: 1; background: #f6f9fc; }
+
+/* 8 nút tab trên header hẹp hơn */
+@media (max-width: 1180px) {
+  .app-top > header > .view-switch button { padding: 9px 10px; font-size: 11.5px; }
+}

@@ -79,6 +79,54 @@ test('xoá phiên xong đọc lại được là rỗng, không trả tên khoá
   assert.equal(secrets.read(mst, ['token']).token, '');
 });
 
+// ---------------------------------------------------------------------------
+// GHI BẤT ĐỒNG BỘ — đường đăng nhập nền chạy N MST SONG SONG.
+//
+// `write()` mã hoá bằng `protect()`, mà DPAPI spawn powershell.exe bằng execFileSync
+// (~500 ms/lần, CHẶN event loop của cả server). Ghi đồng bộ khi 10 MST đăng nhập cùng lúc
+// ⇒ chặn ~500 ms × 10 lần, trong khi giao diện poll `/api/state` mỗi 800 ms nên người dùng
+// thấy app đứng hình đúng lúc đang chờ.
+//
+// `writeAsync()` không phải "ghi sau" (đó là mất dữ liệu khi app tắt) mà là GOM vào hàng đợi
+// rồi xử lý khi event loop rảnh — dữ liệu vẫn được ghi đầy đủ, và `flushWrites()` khi thoát.
+// ---------------------------------------------------------------------------
+test('writeAsync KHÔNG ghi ngay (không chặn event loop) nhưng flushWrites() ghi đủ', () => {
+  const mst = '4500999001';
+  secrets.writeAsync(mst, { token: 'token-cho', cookies: 'cookie-cho' });
+  // Chưa flush ⇒ trên đĩa chưa có gì. Nếu hàm ghi ngay thì dòng này sẽ đúng và test hỏng —
+  // đúng thứ ta muốn chặn.
+  assert.equal(fs.existsSync(path.join(dir, 'secrets', `${mst}.json`)), false,
+    'writeAsync phải hoãn ghi, không ghi đồng bộ ngay');
+  secrets.flushWrites();
+  assert.equal(secrets.read(mst, ['token']).token, 'token-cho');
+  assert.equal(secrets.read(mst, ['cookies']).cookies, 'cookie-cho');
+});
+
+test('nhiều MST ghi bất đồng bộ rồi flush MỘT LẦN — không mất MST nào', () => {
+  const list = ['4500999002', '4500999003', '4500999004', '4500999005'];
+  for (const [i, mst] of list.entries()) secrets.writeAsync(mst, { token: `token-${i}` });
+  secrets.flushWrites();
+  list.forEach((mst, i) => {
+    assert.equal(secrets.read(mst, ['token']).token, `token-${i}`, `MST ${mst} mất dữ liệu khi ghi song song`);
+  });
+});
+
+test('ghi nhiều lần cho CÙNG MST trước khi flush thì phải gộp lại, không mất khoá nào', () => {
+  const mst = '4500999006';
+  secrets.writeAsync(mst, { token: 'token-1' });
+  secrets.writeAsync(mst, { password: 'mat-khau-1' });
+  secrets.writeAsync(mst, { token: 'token-2' });
+  secrets.flushWrites();
+  const value = secrets.read(mst, ['token', 'password']);
+  assert.equal(value.token, 'token-2', 'lần ghi sau thắng cho cùng một khoá');
+  assert.equal(value.password, 'mat-khau-1', 'khoá ghi ở giữa không được mất');
+});
+
+test('flushWrites() khi không có gì chờ thì không nổ', () => {
+  secrets.flushWrites();
+  secrets.flushWrites();
+});
+
 test('blob bị sửa tay sau khi đã đọc vẫn phải bị từ chối', () => {
   const blob = secrets.protect('gia-tri-that');
   assert.equal(secrets.unprotect(blob), 'gia-tri-that');

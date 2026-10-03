@@ -98,8 +98,10 @@ function insertInvoice(db, record) {
     try {
       info = db.prepare(`INSERT INTO invoices
         (invoice_key, direction, mst_ban, mst_mua, ten_ban, ten_mua, ngay_lap, khms_hd, khh_hd, so_hd,
-         loai_hoa_don, tthai, payment_method_raw, payment_method, tien_truoc_thue, tien_thue, tong_tien, file_xml, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+         loai_hoa_don, tthai, payment_method_raw, payment_method, tien_truoc_thue, tien_thue, tong_tien, file_xml,
+         msttcgp, lookup_code, lookup_url, provider_id, provider_name, provider_level, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                ?, ?, ?, ?, ?, ?, ?, ?)`).run(
         value.invoiceKey,
         value.direction,
         value.mstBan ?? null,
@@ -118,6 +120,12 @@ function insertInvoice(db, record) {
         asNumber(value.tienThue, 'invoices.tien_thue'),
         asNumber(value.tongTien, 'invoices.tong_tien'),
         value.fileXml,
+        value.msttcgp ?? null,
+        value.lookupCode ?? null,
+        value.lookupUrl ?? null,
+        value.providerId ?? null,
+        value.providerName ?? null,
+        value.providerLevel ?? null,
         stamp,
         stamp,
       );
@@ -152,7 +160,9 @@ function upsertInvoice(db, record) {
     db.prepare(`UPDATE invoices SET
       direction = ?, mst_ban = ?, mst_mua = ?, ten_ban = ?, ten_mua = ?, ngay_lap = ?,
       khms_hd = ?, khh_hd = ?, so_hd = ?, loai_hoa_don = ?, tthai = ?, payment_method_raw = ?, payment_method = ?, tien_truoc_thue = ?,
-      tien_thue = ?, tong_tien = ?, file_xml = ?, updated_at = ? WHERE id = ?`).run(
+      tien_thue = ?, tong_tien = ?, file_xml = ?,
+      msttcgp = ?, lookup_code = ?, lookup_url = ?, provider_id = ?, provider_name = ?, provider_level = ?,
+      updated_at = ? WHERE id = ?`).run(
       value.direction,
       value.mstBan ?? null,
       value.mstMua ?? null,
@@ -170,6 +180,12 @@ function upsertInvoice(db, record) {
       asNumber(value.tienThue, 'invoices.tien_thue'),
       asNumber(value.tongTien, 'invoices.tong_tien'),
       value.fileXml,
+      value.msttcgp ?? null,
+      value.lookupCode ?? null,
+      value.lookupUrl ?? null,
+      value.providerId ?? null,
+      value.providerName ?? null,
+      value.providerLevel ?? null,
       stamp,
       existing.id,
     );

@@ -14,6 +14,10 @@
 
 const XLSX = require('../../resources/xlsx.cjs');
 const queries = require('./queries');
+const providerRegistry = require('./provider-registry');
+// Làm sạch URL cổng tra cứu (bỏ phần `;cổng;` dính vào tên miền của VNPT). Cùng hàm với
+// lúc nhập XML và lúc mở cổng, để một URL luôn có đúng một dạng.
+const { cleanPortalUrl } = require('./original-pdf');
 const vnDate = require('../vn-date');
 const bankStatement = require('./bank-statement');
 
@@ -27,8 +31,13 @@ const SHEET = {
   bank: 'Sao kê ngân hàng',
 };
 
-const INVOICE_HEADERS = ['STT', 'Ngày lập', 'Ký hiệu', 'Số hóa đơn', 'MST người bán', 'Tên người bán', 'MST người mua', 'Tên người mua', 'Tiền trước thuế', 'Tiền thuế', 'Tổng tiền'];
-const INVOICE_WIDTHS = [6, 12, 16, 14, 16, 38, 16, 38, 16, 14, 16];
+const INVOICE_HEADERS = ['STT', 'Ngày lập', 'Ký hiệu', 'Số hóa đơn', 'MST người bán', 'Tên người bán', 'MST người mua', 'Tên người mua', 'Tiền trước thuế', 'Tiền thuế', 'Tổng tiền', 'Cổng tra cứu NCC'];
+const INVOICE_WIDTHS = [6, 12, 16, 14, 16, 38, 16, 38, 16, 14, 16, 52];
+// Sheet tra cứu NCC: ĐÃ BỎ theo yêu cầu người dùng — tải Excel ra rồi lại phải tự mở
+// cổng để xem là vô ích. Việc đó nay nằm ngay ở cột "PDF gốc" của tab Danh sách: bấm là
+// xem trong app. Cột link tra cứu trong sheet hóa đơn vẫn giữ để đưa cho kế toán.
+const LOOKUP_HEADERS = null;
+const LOOKUP_WIDTHS = null;
 const PRODUCT_HEADERS = ['Mã hàng', 'Tên hàng', 'ĐVT', 'Thuế suất', 'Số lượng', 'Thành tiền', 'Tiền thuế'];
 const PRODUCT_WIDTHS = [18, 46, 10, 10, 14, 18, 14];
 const PARTNER_HEADERS = ['MST', 'Tên', 'Số hóa đơn', 'Tổng tiền', 'Tiền thuế'];
@@ -42,10 +51,23 @@ const dmy = value => vnDate.dmy(value);
 // Tiền: giữ số (Excel cộng được), giá trị thiếu ⇒ để trống thay vì 0 để không sai lệch tổng.
 const money = value => (value === null || value === undefined || value === '' ? null : (Number.isFinite(Number(value)) ? Number(value) : null));
 
-function addSheet(book, name, headers, rows, widths) {
+// linkColumn: chỉ số cột (0-based) cần làm hyperlink — cột cổng tra cứu NCC. Ô chứa
+// URL thật thì gắn link bấm được; ô rỗng thì để trống, không gắn gì. Điều kiện kiểm
+// theo tên cột có chứa "Cổng tra cứu" (hai sheet gọi tên khác nhau) để không gắn nhầm
+// vào cột chứa chữ thường.
+function addSheet(book, name, headers, rows, widths, linkColumn = -1) {
   const sheet = XLSX.utils.aoa_to_sheet([headers, ...rows]);
   sheet['!cols'] = widths.map(wch => ({ wch }));
   if (rows.length) sheet['!autofilter'] = { ref: XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: rows.length, c: headers.length - 1 } }) };
+  const linkable = linkColumn >= 0 && /cổng tra cứu/i.test(String(headers[linkColumn] || ''));
+  if (linkable) {
+    for (let r = 0; r < rows.length; r += 1) {
+      const url = String((rows[r][linkColumn] || '')).trim();
+      const cell = sheet[XLSX.utils.encode_cell({ r: r + 1, c: linkColumn })];
+      if (!url || !/^https?:\/\//i.test(url) || !cell) continue;
+      cell.l = { Target: url, Tooltip: 'Mở cổng tra cứu của nhà cung cấp' };
+    }
+  }
   XLSX.utils.book_append_sheet(book, sheet, name);
   return rows.length;
 }
@@ -74,10 +96,12 @@ function stateClause(filters, alias = '') {
 }
 
 // Danh sách hoá đơn MỘT chiều — dùng CHUNG mệnh đề WHERE với tab Danh sách (kể cả tìm kiếm FTS5).
+// Cột cuối là cổng tra cứu của nhà cung cấp (Mục 2) để người dùng mở tra PDF GỐC.
+// Rỗng khi XML không có và bảng tra không biết cổng — KHÔNG bịa URL.
 function invoiceRows(db, direction, filters) {
   const { clause, params } = queries.invoiceWhere(db, { ...filters, direction });
   const rows = db.prepare(`SELECT ngay_lap, khms_hd, khh_hd, so_hd, mst_ban, ten_ban, mst_mua, ten_mua,
-      tien_truoc_thue, tien_thue, tong_tien
+      tien_truoc_thue, tien_thue, tong_tien, lookup_url
     FROM invoices ${clause}
     ORDER BY ngay_lap ASC, id ASC`).all(...params);
   return rows.map((row, index) => [
@@ -92,6 +116,10 @@ function invoiceRows(db, direction, filters) {
     money(row.tien_truoc_thue),
     money(row.tien_thue),
     money(row.tong_tien),
+    // Làm sạch lúc xuất: dữ liệu nhập trước khi có `cleanPortalUrl` còn lưu URL kiểu
+    // `…vnpt-invoice.com.vn;817501;`. Người dùng đưa link đó cho kế toán thì bị hỏng.
+    // Ô trống nghĩa là "chưa biết cổng" — nói thẳng còn hơn đưa link không mở được.
+    cleanPortalUrl(row.lookup_url) || '',
   ]);
 }
 
@@ -167,6 +195,9 @@ function bankRows(db, filters) {
 }
 
 // parts: danh sách bảng muốn xuất (thiếu ⇒ xuất TẤT CẢ). Dùng cho "xuất tất cả" và "xuất riêng lẻ".
+// KHÔNG có 'lookup': người dùng bỏ sheet tra cứu NCC vì phải mở Excel ra xem thì vô ích —
+// việc đó nay nằm ngay trong cột "PDF gốc" của tab Danh sách. Cột link tra cứu trong
+// sheet hóa đơn vẫn giữ, vì người dùng vẫn có thể đưa link đó cho kế toán.
 const PARTS = ['buy', 'sell', 'productsBuy', 'productsSell', 'suppliers', 'buyers', 'bank'];
 
 // MỌI sheet đều theo ĐÚNG bộ lọc đang xem (q + khoảng ngày + TRẠNG THÁI + CHIỀU), kể cả 2 sheet
@@ -180,15 +211,16 @@ function buildWorkbook(db, filters = {}, parts) {
   // tay một bảng từ menu "Xuất Excel" thì tôn trọng đúng lựa chọn đó, không cắt thêm.
   const direction = String(filters.direction || '').toUpperCase();
   if (!requested.length && (direction === 'BUY' || direction === 'SELL')) {
+    // 'lookup' chỉ có ý nghĩa ở chiều mua vào (hoá đơn bán ra không có NCC bên ngoài).
     const drop = direction === 'BUY'
-      ? ['sell', 'productsSell', 'buyers']
-      : ['buy', 'productsBuy', 'suppliers'];
+      ? ['sell', 'productsSell', 'buyers', 'lookup']
+      : ['buy', 'productsBuy', 'suppliers', 'lookup'];
     for (const part of drop) wanted.delete(part);
   }
   const book = XLSX.utils.book_new();
   const counts = {};
-  if (wanted.has('buy')) counts.buy = addSheet(book, SHEET.buy, INVOICE_HEADERS, invoiceRows(db, 'BUY', filters), INVOICE_WIDTHS);
-  if (wanted.has('sell')) counts.sell = addSheet(book, SHEET.sell, INVOICE_HEADERS, invoiceRows(db, 'SELL', filters), INVOICE_WIDTHS);
+  if (wanted.has('buy')) counts.buy = addSheet(book, SHEET.buy, INVOICE_HEADERS, invoiceRows(db, 'BUY', filters), INVOICE_WIDTHS, INVOICE_HEADERS.indexOf('Cổng tra cứu NCC'));
+  if (wanted.has('sell')) counts.sell = addSheet(book, SHEET.sell, INVOICE_HEADERS, invoiceRows(db, 'SELL', filters), INVOICE_WIDTHS, INVOICE_HEADERS.indexOf('Cổng tra cứu NCC'));
   if (wanted.has('productsBuy')) counts.productsBuy = addSheet(book, SHEET.productsBuy, PRODUCT_HEADERS, productRows(db, 'BUY', filters), PRODUCT_WIDTHS);
   if (wanted.has('productsSell')) counts.productsSell = addSheet(book, SHEET.productsSell, PRODUCT_HEADERS, productRows(db, 'SELL', filters), PRODUCT_WIDTHS);
   if (wanted.has('suppliers')) counts.suppliers = addSheet(book, SHEET.suppliers, PARTNER_HEADERS, partnerRows(db, 'supplier', filters), PARTNER_WIDTHS);
@@ -206,4 +238,72 @@ function fileName(mst, now = new Date(), parts) {
   return `kho-du-lieu-${one}${mst || 'MST'}-${stamp}.xlsx`;
 }
 
-module.exports = { buildWorkbook, fileName, SHEET, PARTS, INVOICE_HEADERS, PRODUCT_HEADERS, PARTNER_HEADERS, BANK_HEADERS, INVOICE_WIDTHS, PRODUCT_WIDTHS, PARTNER_WIDTHS, BANK_WIDTHS, invoiceRows, productRows, partnerRows };
+// Tên sheet trong Excel không được chứa : \ / ? * [ ]. Nhãn kỳ có dạng "Quý 1/2026"
+// nên phải thay dấu gạch chéo trước khi đưa vào tên sheet (giữ dấu gạch chéo ở tiêu đề
+// trong ô bên trong sheet).
+function sheetNameOf(value, fallback) {
+  const cleaned = String(value == null ? '' : value).replace(/[\\/:*?[\]]/g, '-').trim();
+  return (cleaned || fallback || 'Sheet').slice(0, 31);
+}
+
+// ---------------------------------------------------------------------------
+// TỔNG HỢP QUÝ RA EXCEL (Mục 4.2) — file RIÊNG, không thêm vào workbook của kho.
+//
+// Vì sao tách riêng: đây là bảng kê để đối chiếu với tờ khai, mỗi kỳ một file, có
+// đầy đủ chỉ tiêu và ghi chú giải thích. Trộn vào workbook tổng hợp sẽ làm loãng.
+//
+// Cột "Ghi chú" ghi rõ mỗi con số lấy từ đâu; cảnh báo ước lượng đưa vào sheet "Ghi chú"
+// chứ không giấu trong ô số.
+// ---------------------------------------------------------------------------
+const VAT_FIGURE_HEADERS = ['Chỉ tiêu', 'Số tiền (đồng)', 'Ghi chú'];
+const VAT_FIGURE_WIDTHS = [44, 20, 62];
+const VAT_RATE_HEADERS = ['Mức thuế suất', 'Số hóa đơn', 'Tiền trước thuế', 'Tiền thuế'];
+const VAT_RATE_WIDTHS = [22, 14, 20, 18];
+
+function vatQuarterWorkbook(value, dir = '') {
+  const f = value.figures;
+  const figures = [
+    ['Doanh thu bán ra (tổng tiền thanh toán)', value.sell.total, `${value.sell.count} hóa đơn — tổng tiền thanh toán trên hóa đơn`],
+    ['Trong đó: tiền trước thuế', value.sell.pretax, 'invoices.tien_truoc_thue'],
+    ['Trong đó: tiền thuế', value.sell.tax, 'invoices.tien_thue'],
+    ['Giá trị hóa đơn mua vào (trước thuế)', value.buy.pretax, `${value.buy.count} hóa đơn`],
+    ['Tiền thuế mua vào được khấu trừ', f.deductibleInput, 'invoices.tien_thue chiều mua vào'],
+    ['Khấu trừ của kỳ', f.deduction, 'SỐ NHẬP TAY — không suy ra được từ hóa đơn'],
+    ['Thuế phải nộp trong kỳ', f.payable, 'thuế bán ra − thuế mua vào − khấu trừ'],
+    ['Thuế chuyển sang kỳ sau', f.carried, 'khi thuế vào nhiều hơn thuế ra'],
+  ];
+  const book = XLSX.utils.book_new();
+
+  addSheet(book, sheetNameOf(`Tổng hợp ${value.label}`, 'Tổng hợp'),
+    VAT_FIGURE_HEADERS,
+    figures.map(([label, amount, note]) => [label, money(amount), note]),
+    VAT_FIGURE_WIDTHS);
+
+  const rateRows = (group) => [
+    ...group.rates.map(r => [`Thuế suất ${r.rate}`, r.invoices, money(r.pretax), money(r.tax)]),
+    ...(group.missing.lines ? [[group.missing.rate, group.missing.invoices, money(group.missing.pretax), money(group.missing.tax)]] : []),
+    ['Tổng', '', money(group.totalLinePretax), money(group.totalTax)],
+  ];
+  addSheet(book, 'Bán ra theo thuế suất', VAT_RATE_HEADERS, rateRows(value.sellRates), VAT_RATE_WIDTHS);
+  addSheet(book, 'Mua vào theo thuế suất', VAT_RATE_HEADERS, rateRows(value.buyRates), VAT_RATE_WIDTHS);
+
+  const notes = [
+    [`Kỳ tính thuế`, `${value.label} (${value.range.from} … ${value.range.to})`],
+    ['Phương pháp tính thuế', 'Chưa xác định — app chưa sinh tờ khai (phần này mới chỉ tính số liệu).'],
+    ['Hóa đơn loại trừ', `tthai 4/5/6 (đã bị thay thế / đã bị điều chỉnh / đã bị hủy): mua vào ${value.buy.excluded}, bán ra ${value.sell.excluded} hóa đơn bị loại.`],
+    ['Tổng thuế theo mức thuế suất', `mua vào ${value.ratesMatchTotals.buy ? 'khớp' : 'LỆCH'} tổng hóa đơn · bán ra ${value.ratesMatchTotals.sell ? 'khớp' : 'LỆCH'} tổng hóa đơn`],
+    ...(value.warnings || []).map(text => ['Ghi chú', text]),
+  ];
+  addSheet(book, 'Ghi chú', ['Mục', 'Nội dung'], notes, [30, 96]);
+
+  const stamp = `${value.year}${String(value.quarter).padStart(2, '0')}`;
+  return {
+    filename: `tong-hop-quy-${stamp}.xlsx`,
+    buffer: XLSX.write(book, { type: 'buffer', bookType: 'xlsx' }),
+    dir,
+  };
+}
+
+module.exports = { buildWorkbook, fileName, SHEET, PARTS, INVOICE_HEADERS, PRODUCT_HEADERS, PARTNER_HEADERS, BANK_HEADERS, INVOICE_WIDTHS, PRODUCT_WIDTHS, PARTNER_WIDTHS, BANK_WIDTHS, invoiceRows, productRows, partnerRows, vatQuarterWorkbook };
+
+

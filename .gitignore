@@ -60,6 +60,12 @@ src/*.min.css
 # src/bank-pdf.js), KHÔNG được require() và KHÔNG khai trong pkg.assets ⇒ không vào EXE.
 /src/pdf conver/
 
+# Bản GIẢI NÉN của hai extension Chrome dùng để so sánh tính năng (eTax 3IN1 và
+# "Kho hóa đơn gốc"). Đây là MÃ NGUỒN CỦA BÊN THỨ BA — không đẩy lên repo công khai,
+# chỉ dùng đọc tham chiếu tại máy.
+/1.2.0_0/
+/1.4.20_0/
+
 # Bản landing CŨ (v1) là một repo git RIÊNG (remote cntaxtools-landing.git) — KHÔNG nằm trong repo này.
 # Thêm vào đây sẽ thành "gitlink" rỗng, clone về là mất nội dung. Nơi deploy là landing-v2/ (workflow deploy-landing.yml).
 /landing-page/
@@ -70,3 +76,7 @@ src/*.min.css
 /tmp-sk-pdf-test.cjs
 /# MASTER TASK*.md
 /*SQlite.md
+
+# Trang xem trước tĩnh do tools/preview-new-tabs.cjs SINH RA để soi bố cục 2 tab mới —
+# không phải mã nguồn, không cần lưu vào git.
+/tools/preview-new-tabs.html

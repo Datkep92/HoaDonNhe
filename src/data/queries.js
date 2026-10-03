@@ -572,9 +572,12 @@ function listInvoices(db, options = {}) {
   const { clause, params } = invoiceWhere(db, options);
 
   const total = db.prepare(`SELECT COUNT(*) AS c FROM invoices ${clause}`).get(...params).c;
+  // Cột tra cứu NCC + file PDF gốc (Mục 2/3) để cột "PDF gốc" trong danh sách dựng
+  // được ngay từ kho — không cần mở từng hóa đơn mới biết có bản gốc hay không.
   const rows = db.prepare(`SELECT id, invoice_key, direction, ngay_lap, khms_hd, khh_hd, so_hd,
       mst_ban, ten_ban, mst_mua, ten_mua, tong_tien, tien_truoc_thue, tien_thue, tthai,
-      payment_method_raw, payment_method, reconciliation_status, review_status, file_xml
+      payment_method_raw, payment_method, reconciliation_status, review_status, file_xml,
+      msttcgp, lookup_code, lookup_url, provider_id, provider_name, provider_level, original_pdf
     FROM invoices ${clause}
     ORDER BY ngay_lap DESC, id DESC
     LIMIT ? OFFSET ?`).all(...params, size, offset);

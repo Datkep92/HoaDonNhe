@@ -23,6 +23,13 @@ const fn = (name, span = 2600) => {
   return serverSrc.slice(at, at + span);
 };
 
+// Cùng cách cắt, nhưng BỎ CHÚ THÍCH — nhiều chốt ở đây được giải thích trong comment
+// ("KHÔNG đụng loginChallenge"…) nên so thẳng ra sẽ khớp nhầm chữ trong comment chứ không
+// phải trong code. Chỉ code mới là hành vi thật.
+const fnCode = (name, span = 2600) => fn(name, span)
+  .replace(/\/\/[^\n]*/g, '')
+  .replace(/\/\*[\s\S]*?\*\//g, '');
+
 // ---- không khoá UI -------------------------------------------------------------
 
 test('REGRESSION: đăng nhập nền KHÔNG được báo thành authBusy cho giao diện', () => {
@@ -54,31 +61,36 @@ test('hai cờ phải tách bạch, và đều được xoá trong finally', () 
 // ---- không mở hộp thoại -------------------------------------------------------
 
 test('REGRESSION: đăng nhập nền không được để lại trạng thái chờ CAPTCHA', () => {
-  // autoLoginAccount() ghi loginChallenge (toàn cục) khi cần CAPTCHA. Đăng nhập nền
-  // không mở modal nào, nên để lại trạng thái đó ⇒ giao diện tưởng đang chờ nhập
-  // CAPTCHA ở một hộp thoại không tồn tại.
-  const body = fn('function maybeAutoRelogin', 1800);
-  assert.match(body, /const before = loginChallenge/);
-  assert.match(body, /loginChallenge = before/);
-  const finallyBlock = body.slice(body.indexOf('.finally('));
-  assert.match(finallyBlock, /loginChallenge = before/,
-    'phai khoi phuc loginChallenge trong finally');
+  // Bản cũ phải CẤT giữ `loginChallenge` rồi khôi phục lại, vì `autoLoginAccount` ghi biến
+  // toàn cục đó khi cần CAPTCHA. Nay lõi là `autoLoginFor` — nó KHÔNG đụng `loginChallenge`
+  // chút nào, nên không còn gì để cất/khôi phục.
+  //
+  // Nếu sau này ai đó thêm `loginChallenge` vào lõi, giao diện sẽ tưởng đang chờ nhập CAPTCHA
+  // ở một hộp thoại không tồn tại ⇒ nên chặn ngay tại đây thay vì chỉ hy vọng có nhớ phục hồi.
+  const body = fnCode('function maybeAutoRelogin', 1800);
+  assert.doesNotMatch(body, /loginChallenge/,
+    'lõi đăng nhập nền không được đụng loginChallenge (trạng thái CAPTCHA toàn cục)');
+  const core = fnCode('async function autoLoginFor', 2200);
+  assert.doesNotMatch(core, /loginChallenge/, 'lõi autoLoginFor cũng không được đụng');
 });
 
 test('đăng nhập nền chỉ ghi log, không gọi hàm mở hộp thoại nào', () => {
   const body = fn('function maybeAutoRelogin', 1800);
   assert.doesNotMatch(body, /challengeResponse\(/, 'tu dong dang nhap nen khong duoc tao challenge');
-  assert.doesNotMatch(body, /submitLogin|captcha\(mst\)/, 'khong duoc tu goi CAPTCHA');
+  assert.doesNotMatch(body, /submitLogin/, 'khong duoc tu goi submitLogin');
   assert.match(body, /noteBackgroundAuthFail/, 'that bai phai duoc ghi lai de bo qua');
-  assert.match(body, /return true;\n?\s*}\n/, 'co bao hien ra ket qua');
+  // PhảI trả promise ra để nơi gọi chờ được (startupSessionCheck gom Promise.all).
+  assert.match(body, /backgroundAuthTasks\.set\(mst, task\)/, 'phai luu promise de request cho duoc');
+  assert.match(body, /return task;/, 'phai tra promise ra ngoai');
 });
 
 test('đăng nhập nền không được phép ném lỗi ra ngoài', () => {
   const body = fn('function maybeAutoRelogin', 1800);
   // Không await (nếu await thì chặn thao tác của người dùng) và không throw.
-  assert.match(body, /autoLoginAccount\([\s\S]*?\)\s*\n\s*\.then\(/,
+  // Lõi gọi là `autoLoginFor` (không đụng `selected`/`loginChallenge`) để nhiều MST chạy song song.
+  assert.match(body, /autoLoginFor\(mst,[\s\S]*?\)\s*\n\s*\.then\(/,
     'phai chay khong await roi .then() — await se lam tra cuu cua nguoi dung bi treo');
-  assert.match(body, /\.catch\(error => noteBackgroundAuthFail/,
+  assert.match(body, /\.catch\(error => \{ noteBackgroundAuthFail/,
     'phai co .catch — loi nen duoc ghi lai chu khong duot lan sang request nao');
 });
 
@@ -90,7 +102,12 @@ test('REGRESSION: tự đăng nhập phải có hạn số lần, không dội c
   assert.ok(max, 'phai co BACKGROUND_AUTH_MAX_ATTEMPTS');
   assert.ok(cooldown, 'phai co BACKGROUND_AUTH_COOLDOWN_MS');
   assert.ok(Number(max[1]) <= 5, `${max[1]} lần thử là quá nhiều, có thể bị cổng thuế khoá tài khoản`);
+  // Chạy SONG SONG KHÔNG được nới lỏng hai chốt này: đó là chốt chống khoá tài khoản, còn
+  // tốc độ đến từ việc bỏ giới hạn "chỉ MST đang chọn" (xem test phạm vi ở trên).
   assert.ok(Number(cooldown[1]) >= 30000, 'cooldown quá ngắn thì hai lần thử liên tiếp như nhau');
+  // Hạn mức phải tính THEO TỪNG MST — nếu dùng chung một bộ đếm thì 10 MST đăng nhập song
+  // song sẽ cộng dồn và đủ 3 lần là cả danh sách bị bỏ, dù mỗi MST mới hỏng đúng một lần.
+  assert.match(serverSrc, /backgroundAuthFails\.set\(mst,/, 'bộ đếm lỗi phải khoá theo từng MST');
   const guard = fn('function canAutoRelogin', 1200);
   assert.match(guard, /BACKGROUND_AUTH_MAX_ATTEMPTS/, 'canAutoRelogin phai chan khi het luot');
   assert.match(guard, /BACKGROUND_AUTH_COOLDOWN_MS/, 'canAutoRelogin phai chan khi chua qua cooldown');
@@ -110,9 +127,47 @@ test('đăng nhập nền không xen vào lúc MST đang chạy tác vụ', () =
 
 // ---- phạm vi ------------------------------------------------------------------
 
-test('đăng nhập nền chỉ áp cho MST ĐANG CHỌN, không mở cả danh sách', () => {
+test('đăng nhập nền chạy cho MỌI MST có mật khẩu, SONG SONG — không chỉ MST đang chọn', () => {
+  // Đổi (1.1.2): trước đây chỉ login MST đang chọn (`mst !== selected`) nên các MST khác phải
+  // chờ người dùng bấm tay — mở app phải chờ tuần tự từng cái. Mỗi MST có kho cookie riêng
+  // (tct-api `jars`) nên chạy song song được.
   const guard = fn('function canAutoRelogin', 1200);
-  assert.match(guard, /mst !== selected/, 'chi MST dang chon');
+  assert.doesNotMatch(guard, /mst !== selected/, 'đã bỏ giới hạn chỉ MST đang chọn');
+  // Nhưng vẫn phải kẹp đúng các điều kiện an toàn — nới phạm vi KHÔNG được nới chốt.
+  assert.match(guard, /accountFor\(mst\)/, 'vẫn chỉ MST có trong danh sách');
+  assert.match(guard, /isRemembered\(mst\)/, 'vẫn chỉ MST đã lưu mật khẩu');
+  assert.match(guard, /authBusy\.has\(mst\)/, 'vẫn chặn khi MST đó đang đăng nhập');
+});
+
+test('đăng nhập nền KHÔNG đụng biến MST đang xem — nếu không sẽ giành nhau khi chạy song song', () => {
+  // Đây là lý do tách `autoLoginFor` ra khỏi `autoLoginAccount`: bản gọi `selectAccount(mst)`
+  // nên mỗi lượt ghi đè `selected` toàn cục — vài lượt chạy song song sẽ đổi MST đang xem
+  // của người dùng và ghi nhầm danh tính vào phiên.
+  const relogin = fnCode('function maybeAutoRelogin', 2000);
+  assert.match(relogin, /autoLoginFor\(mst,/, 'phải dùng lõi không đụng selected');
+  assert.doesNotMatch(relogin, /autoLoginAccount\(/, 'không được gọi đường có selectAccount()');
+  const core = fnCode('async function autoLoginFor', 2200);
+  assert.doesNotMatch(core, /selectAccount\(/, 'lõi không được đổi MST đang chọn');
+  assert.doesNotMatch(core, /loginChallenge/, 'lõi không được đụng trạng thái CAPTCHA toàn cục');
+  // `authAccount` chỉ cập nhật khi đúng MST đang xem.
+  assert.match(core, /if \(mst === selected\) authAccount/, 'chỉ cập nhật authAccount của MST đang chọn');
+});
+
+test('lúc khởi động: login SONG SONG mọi MST hết phiên, không phải lần lượt', () => {
+  const startup = fn('async function startupSessionCheck', 3400);
+  assert.match(startup, /needLogin/, 'phải gom danh sách MST cần đăng nhập');
+  assert.match(startup, /Promise\.all\(needLogin\.map/, 'phải chạy SONG SONG, không tuần tự');
+  assert.match(startup, /!directTokens\.has\(item\.mst\)/, 'chỉ MST chưa có phiên');
+  assert.match(startup, /isRemembered\(item\.mst\)/, 'chỉ MST đã lưu mật khẩu');
+  assert.doesNotMatch(fnCode('async function startupSessionCheck', 3400), /maybeAutoRelogin\(selected,/,
+    'không còn giới hạn MST đang chọn');
+});
+
+test('đăng nhập xong thì tự chạy Auto Sync — dữ liệu sẵn sàng không cần bấm nút', () => {
+  const relogin = fn('function maybeAutoRelogin', 2000);
+  assert.match(relogin, /autoSyncFor\(mst\)/, 'phải tự kích hoạt Auto Sync cho MST vừa đăng nhập');
+  assert.match(relogin, /!instance\.running/, 'không chạy chồng nếu MST đang đồng bộ');
+  assert.match(relogin, /instance\.run\('auto-login'\)/, 'chạy Auto Sync ngầm');
 });
 
 // ---- chặn chạy lượt giữa lúc đang đăng nhập ---------------------------------
@@ -121,7 +176,9 @@ test('REGRESSION: bấm Tra cứu giữa lúc đang tự đăng nhập nền ph�
   // Nút không bị khoá khi đăng nhập nền (nếu khoá, tính năng này đóng băng giao diện).
   // Nên bấm vào phải chạy được — ném "đang tự đăng nhập lại, thử lại sau" tức là người
   // dùng bấm nút hoạt động rồi nhận lỗi: tệ hơn cả lúc khoá nút.
-  for (const route of ['/api/search', '/api/stream']) {
+  // /api/download là đường DUY NHẤT của nút tải từ 1.1.2 (#search + #stream-download + #resume
+  // đã gộp). /api/search và /api/stream còn lại là đường NỘI BỘ cho Auto Sync / quét lần đầu.
+  for (const route of ['/api/download', '/api/search', '/api/stream']) {
     const at = serverSrc.indexOf(`url.pathname === '${route}'`);
     assert.ok(at > 0, `khong tim thay ${route}`);
     const tail = serverSrc.slice(at, at + 1600);
@@ -144,7 +201,11 @@ test('REGRESSION: chờ lượt đăng nhập nền phải có trần thời gia
 
 test('có đủ ba điểm kích hoạt: chọn MST · lúc khởi động · lượt tra cứu hết phiên', () => {
   assert.match(fn('async function selectAccount', 1200), /maybeAutoRelogin\(mst,/, 'khi bam chon MST');
-  assert.match(fn('async function startupSessionCheck', 2600), /maybeAutoRelogin\(selected,/, 'luc khoi dong');
+  // Lúc khởi động nay gom nhiều MST và chạy song song (xem test ở trên) thay vì một MST.
+  // Điểm kích hoạt theo LƯỢT THỦ CÔNG nay nằm ở /api/download (đường duy nhất của nút tải).
+  const download = serverSrc.slice(serverSrc.indexOf("url.pathname === '/api/download'"), serverSrc.indexOf("url.pathname === '/api/resume'"));
+  assert.match(download, /maybeAutoRelogin\(target\.mst,/, 'khi luot tai dung vi het phien');
+  // Đường nội bộ /api/search vẫn phải giữ điểm kích hoạt của riêng nó (quét lần đầu MST mới).
   const search = serverSrc.slice(serverSrc.indexOf("url.pathname === '/api/search'"), serverSrc.indexOf("url.pathname === '/api/stream'"));
   assert.match(search, /maybeAutoRelogin\(target\.mst,/, 'khi luot tra cuu dung vi het phien');
 });
@@ -154,9 +215,15 @@ test('REGRESSION: chỉ kích hoạt khi phiên thực sự không dùng đượ
   const select = fn('async function selectAccount', 1200);
   assert.match(select, /if \(!restored && !account\) maybeAutoRelogin/,
     'chi khi vua restore that bai va checkLogin that khong ra gi do moi dang lai');
-  const startup = fn('async function startupSessionCheck', 2600);
-  assert.match(startup, /if \(selected && !directTokens\.has\(selected\)\)/,
-    'chi khi MST dang chon khong con token moi dang lai');
+  // Lúc khởi động: mọi MST đều được soi trước bằng restoreSession, nên chỉ MST KHÔNG có token
+  // mới vào danh sách đăng nhập lại.
+  const startup = fn('async function startupSessionCheck', 3200);
+  assert.match(startup, /\.filter\(item => !directTokens\.has\(item\.mst\)/,
+    'chi khi MST khong con token moi dang lai');
+  // Và phải còn chốt canAutoRelogin() bên trong maybeAutoRelogin — nếu mất thì mọi MST
+  // đều bị kích hoạt kể cả MST không có mật khẩu / đang chạy tác vụ.
+  assert.match(fn('function maybeAutoRelogin', 300), /if \(!canAutoRelogin\(mst\)\) return null/,
+    'van phai kiem tra canAutoRelogin truoc khi chay');
 });
 
 // ---- giao diện ----------------------------------------------------------------
@@ -180,8 +247,9 @@ test('giao diện vẽ lại khi trạng thái đăng nhập nền đổi', () =
 test('giao diện KHÔNG khoá nút khi đăng nhập nền', () => {
   // Công thức khoá nút phải dùng authBusy (đã tách sang foreground) chứ không dùng
   // cờ đăng nhập nền. Test này chặn việc sau này ai đó nhét backgroundAuth vào.
-  const at = rendererSrc.indexOf("$('search').disabled =");
+  // Từ 1.1.2 nút "Tra cứu" + "Tải ngay" + "Tải tiếp" đã gộp thành MỘT #download-btn.
+  const at = rendererSrc.indexOf("downloadButton.disabled =");
   const line = rendererSrc.slice(at, rendererSrc.indexOf('\n', at));
-  assert.match(line, /state\.authBusy/, 'nut Tra cuu khoa theo authBusy (foreground)');
-  assert.doesNotMatch(line, /backgroundAuth/, 'nut Tra cuu KHONG duoc khoa theo dang nhap nen');
+  assert.match(line, /state\.authBusy/, 'nut Tai hoa don khoa theo authBusy (foreground)');
+  assert.doesNotMatch(line, /backgroundAuth/, 'nut Tai hoa don KHONG duoc khoa theo dang nhap nen');
 });

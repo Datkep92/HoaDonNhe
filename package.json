@@ -10,7 +10,9 @@
     "start": "node src/server.js",
     "test:support": "node --test --test-isolation=none tests/worker-gateway.test.js tests/machine-id.test.js tests/support-sync.test.js tests/support-reconcile.test.js tests/support-license.test.js tests/support-trial.test.js tests/support-realtime.test.js tests/apps-script.test.js tests/autostart.test.js",
     "reconcile:support": "node tools/support-reconcile.cjs",
-    "test": "node --test --test-isolation=none tests/core.test.js tests/first-scan.test.js tests/misa-export.test.js tests/tct-api.test.js tests/secrets.test.js tests/fast-startup.test.js tests/presence-status.test.js tests/background-auth.test.js tests/pace.test.js tests/folders.test.js tests/period.test.js tests/excel.test.js tests/app-lock.test.js tests/support-license.test.js tests/support-trial.test.js tests/support-realtime.test.js tests/machine-id.test.js tests/support-sync.test.js tests/support-reconcile.test.js tests/worker-gateway.test.js tests/updater.test.js tests/update-check.test.js tests/apps-script.test.js tests/data-core.test.js tests/xml-engine.test.js tests/data-queries.test.js tests/auto-sync.test.js tests/rebuild.test.js tests/large-data.test.js tests/backfill.test.js tests/backfill-catchup.test.js tests/ui-wiring.test.js tests/invoice-a4.test.js tests/pdf-download.test.js tests/lifecycle.test.js tests/pace-rest.test.js tests/excel-export.test.js tests/superseded.test.js tests/superseded-queue.test.js tests/password-manager.test.js tests/autostart.test.js tests/autosync-manual.test.js tests/mst-format.test.js tests/identity-candidates.test.js tests/vn-date.test.js tests/sync-background.test.js tests/output-lock.test.js tests/sync-pool.test.js tests/retry-failed.test.js tests/mst-lanes.test.js tests/captcha-solver.test.js tests/bank.test.js tests/remember-mst.test.js tests/mst-cache.test.js tests/boot-cache.test.js tests/minify-ui.test.js tests/static-cache.test.js tests/payment-reconciliation.test.js",
+    "test": "node --test --test-isolation=none tests/core.test.js tests/first-scan.test.js tests/misa-export.test.js tests/tct-api.test.js tests/secrets.test.js tests/fast-startup.test.js tests/presence-status.test.js tests/background-auth.test.js tests/pace.test.js tests/folders.test.js tests/period.test.js tests/excel.test.js tests/app-lock.test.js tests/support-license.test.js tests/support-trial.test.js tests/support-realtime.test.js tests/machine-id.test.js tests/support-sync.test.js tests/support-reconcile.test.js tests/worker-gateway.test.js tests/updater.test.js tests/update-check.test.js tests/apps-script.test.js tests/data-core.test.js tests/xml-engine.test.js tests/data-queries.test.js tests/own-code-import.test.js tests/own-code-real.test.js tests/auto-sync.test.js tests/rebuild.test.js tests/large-data.test.js tests/backfill.test.js tests/backfill-catchup.test.js tests/ui-wiring.test.js tests/invoice-a4.test.js tests/provenance-note.test.js tests/provider-lookup.test.js tests/vat-summary.test.js tests/pdf-download.test.js tests/lifecycle.test.js tests/pace-rest.test.js tests/excel-export.test.js tests/superseded.test.js tests/superseded-queue.test.js tests/password-manager.test.js tests/autostart.test.js tests/autosync-manual.test.js tests/mst-format.test.js tests/identity-candidates.test.js tests/vn-date.test.js tests/sync-background.test.js tests/output-lock.test.js tests/sync-pool.test.js tests/retry-failed.test.js tests/mst-lanes.test.js tests/captcha-solver.test.js tests/bank.test.js tests/remember-mst.test.js tests/mst-cache.test.js tests/boot-cache.test.js tests/minify-ui.test.js tests/static-cache.test.js tests/payment-reconciliation.test.js tests/ai-bridge.test.js tests/original-pdf.test.js tests/original-lookup-input.test.js tests/data-ui-scope.test.js tests/parse-all-src.test.js",
+    "test:ai": "node --test --test-isolation=none tests/ai-bridge.test.js",
+    "test:ai:browser": "node tests/ai-browser.cjs",
     "test:payment": "node --test --test-isolation=none tests/payment-reconciliation.test.js",
     "test:browser": "node tests/browser-regression.js",
     "build": "node tools/build-app.cjs",
@@ -45,6 +47,9 @@
       "src/*.min.css",
       "src/renderer.js",
       "src/chat-widget.js",
+      "src/ai-chat.js",
+      "src/ai-bridge.js",
+      "src/ai-providers.js",
       "src/app-settings.js",
       "src/update-ui.js",
       "src/app-lock.js",
@@ -75,7 +80,12 @@
       "node_modules/sharp/package.json",
       "node_modules/sharp/dist/*.cjs",
       "src/excel-worker.js",
-      "src/excel-worker-thread.js"
+      "src/excel-worker-thread.js",
+      "src/mst-lookup.js",
+      "src/tokhai.js",
+      "src/mst-lookup-ui.js",
+      "src/tokhai-ui.js",
+      "src/dvt-ui.js"
     ]
   }
 }

@@ -33,7 +33,9 @@ function schemaVersion(db) {
 }
 
 // Nâng schema theo bước: v0 (file mới) → v1 → v2 → v3 (FTS5) → v4 (cột tthai)
-// → v5 (bảng sao kê) → v6 (cột payment_method) → v7 (cột kết quả đối chiếu).
+// → v5 (bảng sao kê) → v6 (cột payment_method) → v7 (cột kết quả đối soát)
+// → v8 (đánh giá thủ công) → v10 (phân loại sao kê) → v12 (tra cứu NCC)
+// → v13 (file PDF gốc của NCC).
 //
 // THỨ TỰ BẮT BUỘC: bảng → thêm cột còn thiếu → index → FTS.
 // DB cũ đã có bảng `invoices` nhưng CHƯA có cột `tthai`; nếu tạo index trên cột đó TRƯỚC khi
@@ -109,6 +111,22 @@ function applySchema(db) {
       ensureColumn(db, 'bank_transactions', 'category', 'TEXT');
       ensureColumn(db, 'bank_transactions', 'category_source', 'TEXT');
       ensureColumn(db, 'bank_transactions', 'categorized_at', 'TEXT');
+    }
+    // v12: tra cứu nhà cung cấp (Mục 2) — cổng tra cứu + mã tra cứu để tải PDF GỐC.
+    // Chỉ ALTER TABLE ADD COLUMN, dữ liệu hoá đơn cũ giữ nguyên; giá trị NULL cho tới
+    // khi lượt nhập/quét lại đọc lại XML.
+    if (current < 12) {
+      ensureColumn(db, 'invoices', 'msttcgp', 'TEXT');
+      ensureColumn(db, 'invoices', 'lookup_code', 'TEXT');
+      ensureColumn(db, 'invoices', 'lookup_url', 'TEXT');
+      ensureColumn(db, 'invoices', 'provider_id', 'TEXT');
+      ensureColumn(db, 'invoices', 'provider_name', 'TEXT');
+      ensureColumn(db, 'invoices', 'provider_level', 'TEXT');
+    }
+    // v13: file PDF GỐC của NCC (Mục 3). Đường dẫn tương đối so với thư mục MST.
+    // Chỉ ALTER TABLE ADD COLUMN, dữ liệu hóa đơn cũ giữ nguyên.
+    if (current < 13) {
+      ensureColumn(db, 'invoices', 'original_pdf', 'TEXT');
     }
     for (const sql of INDEXES) db.exec(sql);
     for (const sql of FTS5) db.exec(sql);

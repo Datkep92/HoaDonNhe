@@ -139,8 +139,47 @@ function withStatusNote(html, state) {
   return `${source.slice(0, end + 1)}${note}${source.slice(end + 1)}`;
 }
 
+// ---------------------------------------------------------------------------
+// DẢI CẢNH BÁO NGUỒN GỐC BẢN IN.
+//
+// Bản A4 này do ứng dụng DỰNG LẠI từ JSON của Cổng Thuế (xem invoice-html.js),
+// KHÔNG phải bản PDF do nhà cung cấp phát hành ⇒ không có chữ ký số của NCC.
+// Nếu in ra đính kèm hồ sơ, người nhận rất dễ hiểu nhầm là bản gốc. Vì vậy phải
+// in kèm dải cảnh báo ở MỌI trang.
+//
+// Cách làm: chèn <div class="hd-origin"> ngay sau <body> (đúng khuôn với
+// withStatusNote ở trên), còn CSS do invoice-html.js định nghĩa — ngoài media
+// "print" thì `display:none` nên BẢN XEM TRÊN MÀN HÌNH không đổi một pixel nào.
+// `position:fixed` trong print là điều kiện để dải LẶP ở mọi trang: khối .main-page
+// là tờ A4 có nội dung tràn sang các trang sau, dải tĩnh đặt trước nó chỉ ra trang 1.
+// Chọn CHÂN trang vì đầu trang sẽ đẩy nội dung và làm hóa đơn 1 trang thành 2 trang.
+//
+// Đường sẵn cho Mục 3 (tải PDF gốc NCC): khi đó truyền 'supplier' ⇒ dải đỏ biến
+// mất, hiện dải xanh. KHÔNG có tuỳ chọn tắt cảnh báo trong UI — cố ý.
+// ---------------------------------------------------------------------------
+const ORIGIN_NOTE = {
+  portal: { cls: 'hd-origin', text: 'BẢN THỂ HIỆN TỪ DỮ LIỆU CỔNG THUẾ — KHÔNG PHẢI PDF GỐC NHÀ CUNG CẤP' },
+  supplier: { cls: 'hd-origin hd-origin-ok', text: 'Bản in từ hóa đơn điện tử đã ký số của nhà cung cấp' },
+};
+
+function originNote(provenance) {
+  const spec = ORIGIN_NOTE[String(provenance ?? '')];
+  return spec ? `<div class="${spec.cls}">${spec.text}</div>` : '';
+}
+
+function withProvenanceNote(html, provenance) {
+  const note = originNote(provenance);
+  const source = String(html || '');
+  if (!note) return source;
+  const body = source.indexOf('<body');
+  if (body < 0) return note + source;
+  const end = source.indexOf('>', body);
+  if (end < 0) return note + source;
+  return `${source.slice(0, end + 1)}${note}${source.slice(end + 1)}`;
+}
+
 function buildInvoiceA4Document(xmlText, options = {}) {
   return withStatusNote(withFitStyle(buildInvoiceA4(xmlText, options)), options.state);
 }
 
-module.exports = { buildInvoiceA4, buildInvoiceA4Document, withFitStyle, withStatusNote, statusNote, toInvoiceShape };
+module.exports = { buildInvoiceA4, buildInvoiceA4Document, withFitStyle, withStatusNote, statusNote, originNote, withProvenanceNote, toInvoiceShape };

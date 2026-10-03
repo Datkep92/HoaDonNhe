@@ -22,9 +22,43 @@
 3. **Bấm vào một dòng**: nếu còn phiên thì vào thẳng giao diện chính để tra cứu ngay; nếu hết phiên thì ứng dụng **tự giải CAPTCHA và đăng nhập** (tên đăng nhập điền sẵn; MST đã lưu mật khẩu thì không phải gõ gì).
 4. **Ứng dụng tự giải CAPTCHA — không phải gõ mã.** Khi đăng nhập, app tự lấy ảnh CAPTCHA từ cổng thuế, đọc mã bằng mô hình nhận dạng **nhúng sẵn trong EXE và chạy ngay trên máy** (không gửi ảnh đi đâu), rồi gửi đăng nhập; đọc sai thì tự lấy ảnh mới và thử lại (tối đa 5 lần). Bạn chỉ cần **mật khẩu**: đã lưu (tick **Nhớ mật khẩu cho MST này**) thì bấm là vào, chưa lưu thì nhập mật khẩu một lần trong form **Đăng nhập**. Muốn tự tay nhập mã hoặc đăng nhập dự phòng trong trình duyệt thì dùng **Hiện Chrome đăng nhập / Ẩn Chrome đăng nhập**. Nút **Xoá mật khẩu đã lưu** bỏ mật khẩu đã nhớ nhưng vẫn giữ phiên đang đăng nhập.
 5. Lần sau chọn MST trong danh sách: ứng dụng dùng lại phiên đã lưu (token + cookie), không cần CAPTCHA cho tới khi cổng thuế hết hạn. Tick **Nhớ mật khẩu cho MST này** thì lần sau app tự giải CAPTCHA và đăng nhập, không phải gõ gì. Mỗi MST luôn dùng một profile Chrome riêng (`du_lieu/profiles/{MST}`) nên cookie và phiên không lẫn nhau.
-5. Chọn **Thư mục lưu (dùng chung cho mọi MST)**: bấm **Chọn thư mục…** để chọn trong máy, hoặc gõ/dán đường dẫn đầy đủ vào ô rồi bấm ra ngoài. Một thư mục duy nhất cho toàn bộ MST, được ghi nhớ cho lần sau và **không** đổi theo từng lượt tải. Chưa chọn thì bấm **Tra cứu** sẽ báo *"Chọn thư mục lưu hóa đơn trước khi tra cứu."*
+5. Chọn **Thư mục lưu (dùng chung cho mọi MST)**: bấm **Chọn thư mục…** để chọn trong máy, hoặc gõ/dán đường dẫn đầy đủ vào ô rồi bấm ra ngoài. Một thư mục duy nhất cho toàn bộ MST, được ghi nhớ cho lần sau và **không** đổi theo từng lượt tải. Chưa chọn thì bấm **Tải hóa đơn** sẽ báo *"Chọn thư mục lưu hóa đơn trước khi tải."*
 
 6. **Chọn nhanh khoảng ngày**: chọn **Năm** + **Tháng** (hoặc đổi **Chọn nhanh** sang *Theo quý* / *Cả năm*). Chọn quý thì ô Tháng tự ẩn, chọn tháng thì ô Quý tự ẩn; ứng dụng tự điền **Từ ngày — Đến ngày** (ví dụ Năm 2025 + Quý 1 → `01/01/2025 – 31/03/2025`, tháng 2 năm 2024 → `01/02/2024 – 29/02/2024`). Ô **Nhóm hóa đơn** mặc định là **Cả hai nhóm**.
+
+### Một nút "Tải hóa đơn" — bấm một lần là chạy trọn vẹn
+
+Tab **Tra cứu & tải** chỉ còn **MỘT nút**. Nhãn đổi theo trạng thái, và server tự đoán
+cần làm gì — người dùng không phải chọn giữa "chỉ tra cứu" và "tải luôn":
+
+| Trạng thái lượt | Nhãn nút | Bấm là |
+| --- | --- | --- |
+| Chưa có lượt, hoặc đã tải xong | **Tải hóa đơn** | Quét + tải **toàn bộ** hóa đơn trong khoảng ngày đang chọn (mua vào hoặc bán ra, tuỳ ô *Loại*), theo đúng các định dạng đang tick. Hóa đơn **hiện ra ngay khi tải xong từng cái**, không phải đợi hết lượt. |
+| Đang chạy | **Ngưng** | Dừng lại, **giữ nguyên tiến độ** để chạy tiếp sau. |
+| Lượt còn dở (bị ngắt mạng, 429, ...) | **Tải tiếp** | Chạy tiếp đúng chỗ dừng — chỉ làm phần chưa xong, không quét lại từ đầu. |
+
+Ba nhãn này lấy từ **một hàm duy nhất** (`downloadButtonState()` trong `src/renderer.js`), và
+danh sách trạng thái "còn dở" dùng chung với server (`isResumableJob()` trong `src/core.js`) —
+nên nút không bao giờ hiện "Tải tiếp" khi server lại coi là lượt mới, hoặc ngược lại.
+
+**Lỗi tạm thời được tự thử lại — không cần bấm lần nữa.** Hoá đơn lỗi *tạm thời*
+(`timeout` / `network` / `portal`) được thử lại ngay trong lượt, nghỉ luỹ tiến **5s → 15s → 45s**
+(tối đa 3 lần) rồi mới đánh dấu lỗi. Ba loại lỗi sau **không** thử lại từng hóa đơn, vì
+làm vậy là sai hoặc vô ích:
+
+| Loại lỗi | Vì sao không thử lại từng hóa đơn | Xử lý thay thế |
+| --- | --- | --- |
+| `rate_limited` (429) | Cả lượt đều bị chặn — thử lại từng hóa đơn chỉ là **dội thêm request** vào cổng | Lượt dừng, giữ tiến độ; `src/pace.js` tự nghỉ theo `Retry-After` rồi bấm **Tải tiếp** |
+| `invalid_xml` | File hỏng, thử lại y hệt cũng hỏng | Giữ nguyên lỗi trên dòng đó, các hóa đơn khác chạy tiếp |
+| `auth` (hết phiên) | Phải đăng nhập lại | App tự mở form đăng nhập, xong là bấm **Tải tiếp** |
+
+Cờ này **chỉ bật cho lượt thủ công** của nút này (`autoRetry: true` trong `createEngine()`).
+Auto Sync, quét lần đầu MST mới và `retryFailed()` dựng Engine **không** bật — lịch nền giữ
+nguyên hành vi cũ. Cấu hình qua biến môi trường: `HOADON_DOWNLOAD_MAX_RETRIES` (mặc định 3),
+`HOADON_DOWNLOAD_RETRY_BASE_MS` (5000), `HOADON_DOWNLOAD_RETRY_MAX_MS` (60000).
+
+> Đường `/api/search` và `/api/stream` **vẫn còn** trong server cho Auto Sync / quét lần đầu /
+> test, nhưng giao diện **không** gọi tới nữa — mọi thao tác của người dùng đi qua `/api/download`.
 
 7. EXE chạy **không có cửa sổ terminal**. Muốn thoát: đóng cửa sổ app (app cũng tự thoát khi giao diện ngừng phản hồi 2,5 phút). Nhật ký khởi động/lỗi nằm ở `du_lieu/nhat-ky.log`; lỗi nghiêm trọng hiện thêm hộp thoại.
 
@@ -121,9 +155,45 @@ File trong thư mục định dạng cũ (bản trước ghi phẳng ngay trong 
 - MCCQT và ngày lập lấy từ detail response của cổng thuế; khi lượt tải **có tải XML** (chọn **XML** hoặc **ZIP**) thì XML gốc là nguồn dự phòng (`<MCCQT>`, `<NLap>`) đúng như luồng API của dự án extension. Chỉ chọn HTML/PDF thì **không** gọi thêm API XML.
 - Vì ảnh được nhúng vào từng file nên mỗi `.html`/`.pdf` **nặng thêm ~200 KB**.
 
+### Cột "PDF gốc" — phân biệt bản dựng lại với bản của nhà cung cấp
+
+- Hai thứ này **khác nhau hoàn toàn**, và trước đây ứng dụng gộp làm một:
+  - `Mua_vao/pdf/` và `Ban_ra/pdf/` là bản **ứng dụng dựng lại** từ JSON của cổng thuế. Nó **không có chữ ký số của nhà cung cấp**, nên mọi trang đều in kèm dải cảnh báo đỏ ở chân trang (không tắt được — xem `ORIGIN_NOTE` trong `src/data/invoice-a4.js`).
+  - **Hoá đơn gốc** là bản PDF **do nhà cung cấp phát hành**, có chữ ký số. Chỉ bản này mới dùng được khi nộp hoặc khi đối chiếu.
+- Tab **Kho dữ liệu → Danh sách** có cột **PDF gốc** với ba trạng thái, tất cả đều bấm được ngay trong ứng dụng:
+
+  | Màu | Nhãn | Bấm vào thì |
+  | --- | --- | --- |
+  | Xanh | Có PDF gốc | Mở PDF **ngay trong ứng dụng** (không mở trình duyệt ngoài) |
+  | Vàng | Tra cứu NCC | Hộp thoại: mở cổng tra cứu **trong cửa sổ Chromium của ứng dụng**, hoặc tự chọn file PDF đã tải về |
+  | Xám | Chỉ có bản dựng | Hộp thoại hiện **lý do cụ thể** vì sao chưa có bản gốc |
+
+- Ứng dụng **tự ghép** file trong `Mua_vao/pdf-goc/` và `Ban_ra/pdf-goc/` với đúng hóa đơn theo khoá 4 trường (MST người bán · mẫu số · ký hiệu · số hóa đơn) — cùng quy ước đặt tên với file ứng dụng tự tải. Đặt file PDF gốc tải tay từ cổng nhà cung cấp vào đúng thư mục đó là cột chuyển sang xanh ngay, không cần thao tác gì thêm. Ngoài ra mỗi hóa đơn có nút **Bỏ liên kết file này** để gỡ liên kết thủ công.
+- **Đã kiểm thật, không giả định:** trong toàn bộ hồ sơ của người dùng, **không nhà cung cấp nào** có đường dẫn trả thẳng file PDF. Cụ thể:
+  - **VNPT** (`…vnpt-invoice.com.vn`) — mọi đường dẫn đều bị chuyển hướng về `/Account/LogOn`, tức **bắt buộc đăng nhập**. Ngoài ra URL lưu trong XML có dạng `https://host;817501;` — dấu `;…` dính vào phần tên miền nên URI đó không dùng được.
+  - **EasyInvoice** (`…easyinvoice.vn`) — `/` chuyển tới `/Search/Index`, là **trang tra cứu có biểu mẫu**, không phải điểm tải file.
+  - Vì vậy ứng dụng **không tự gọi endpoint của bên thứ ba** (dễ vỡ khi bên kia đổi trang, và có rủi ro vi phạm điều khoản dịch vụ). Ứng dụng làm đúng phần nên làm: chỉ ra cổng tra cứu, mở cổng đó **trong cửa sổ của chính ứng dụng** để người dùng nhập CAPTCHA/mã rồi tải, rồi xem lại ngay trong ứng dụng.
+- Cột **Cổng tra cứu NCC** trong sheet hóa đơn vẫn giữ (kèm hyperlink bấm được) để đưa cho kế toán. Sheet `Tra cứu PDF gốc NCC` riêng **đã bỏ** — tải Excel ra rồi lại tự mở cổng để xem là vô ích, việc đó nay nằm ngay ở cột trên màn hình.
+- Nút **Bổ sung cột tra cứu** trong thanh công cụ Kho dữ liệu đọc lại file XML gốc để điền `MSTTCGP` / cổng tra cứu / mã tra cứu cho những hóa đơn cũ đã nhập trước khi có tính năng. Nút **không chạy tự động** khi mở app hay khi nâng cấp dữ liệu — bấm tay một lần là xong.
+- **Bấm vào nút là ứng dụng hỏi luôn** — không bắt người dùng tự tra cứu rồi quay lại. Đúng như bản tham chiếu:
+  1. Thiếu **URL cổng** ⇒ mở hộp thoại *Cần URL cổng …*, dán URL ghi trên hóa đơn. Sai định dạng thì báo ngay tại ô nhập, không phải tới lúc mở.
+  2. Hóa đơn **mua vào** còn thiếu **mã tra cứu** ⇒ mở tiếp hộp thoại *Cần mã tra cứu …*.
+  3. Hóa đơn **bán ra không hỏi mã** — cổng nhà cung cấp tra bằng **số hóa đơn**, hỏi mã là hỏi thừa (và lặp lại ở từng hóa đơn).
+  4. Mọi thứ nhập tay đều **lưu vào kho**, lần sau bấm là có ngay, không hỏi lại. Bấm **Hủy** ở bất kỳ bước nào thì luồng dừng, không mở tiếp hộp sau.
+- **URL được làm sạch ở mọi nơi** — lúc nhập XML, lúc lưu, lúc mở cổng và lúc xuất Excel, đều dùng chung một hàm. Cần vì XML của VNPT ghi cổng dạng `https://host;817501;`: dấu `;…` bị **dính vào tên miền** nên URI gốc không mở được, và tên miền đó cũng không khớp kiểm tra `.vn$` — nếu không cắt, toàn bộ hóa đơn VNPT sẽ không mở được cổng. URL đang tốt thì **giữ nguyên xi**, không bị "chuẩn hoá" mất dấu `/` cuối.
+- **Cột không báo sai:** nút chỉ hiện màu vàng *Tra cứu NCC* khi URL còn dùng được; URL hỏng thì rơi về xám kèm lý do, thay vì báo vàng rồi bấm không mở được gì.
+- **Nút bấm không bao giờ "không phản ứng":** phần gắn sự kiện đi qua một hàm kiểm tra phần tử, nên gỡ nhầm một hộp thoại khỏi HTML chỉ in một cảnh báo thay vì làm hỏng cả trang.
+### Bảng kê khai thuế GTGT theo quý
+
+- Thẻ **Tổng hợp quý** trong tab Kho dữ liệu tính đúng số liệu kê khai: doanh thu bán ra, tiền trước thuế và tiền thuế mua vào, theo **từng mức thuế suất**, rồi mới cộng vào tổng.
+- Cộng dồn theo `(hóa đơn, mức thuế suất)` chứ không theo dòng hàng — hóa đơn nhiều dòng nhiều mức thuế sẽ bị **nhân đôi** nếu cộng `SUM(invoices.tien_truoc_thue) GROUP BY thue_suat`.
+- Phân biệt rõ **“không chịu thuế”** với **“chưa đủ dữ liệu”**: hóa đơn không có thuế ghi rõ là không chịu thuế, chứ không để người dùng tưởng là app tính ra 0.
+- **Khấu trừ là số nhập tay** — không thể suy ra từ hóa đơn, nên nhãn ghi rõ đó là số nhập, không phải số tính được.
+- Bấm **Xuất Excel** ở thẻ này ra một file riêng, không trộn vào workbook của kho dữ liệu.
+
 ### Xuất Excel danh sách và tránh tải trùng
 
-- Sau khi tra cứu, nút **Xuất Excel theo mẫu MISA** tạo **01 file `.xlsx`** ngay trong thư mục nhánh 2 `MST-<MST>/<Mua_vao|Ban_ra>/` với tên `<từ ngày> - <đến ngày> - <Mua vào|Bán ra>.xlsx` (ví dụ `14-09-2026 - 16-09-2026 - Mua vào.xlsx`) — **không** nằm trong thư mục `xml/pdf/html`. Dữ liệu lấy **từ chính kết quả tra cứu**: không gọi API chi tiết từng hóa đơn, không tải XML/PDF, không tra cứu lại. File giống **đúng file mẫu** `DANH SÁCH HÓA ĐƠN`: sheet `sheet 1`, 2 dòng trống đầu, dòng 3 tiêu đề, dòng 4 “Từ ngày … đến ngày …”, dòng 6 header **19 cột**, dữ liệu từ dòng 7; `Ngày lập` là text `dd/mm/yyyy`, tiền là số, `Tỷ giá` là text `1.0`, `Tổng tiền phí` để trống nếu không có, độ rộng cột theo mẫu. `Kết quả kiểm tra hóa đơn` suy ra từ `ttxly` (5/8 → `Đã cấp mã hóa đơn`, 6 → `Hóa đơn không có mã`).
+- Sau khi tải, nút **Xuất Excel theo mẫu MISA** tạo **01 file `.xlsx`** ngay trong thư mục nhánh 2 `MST-<MST>/<Mua_vao|Ban_ra>/` với tên `<từ ngày> - <đến ngày> - <Mua vào|Bán ra>.xlsx` (ví dụ `14-09-2026 - 16-09-2026 - Mua vào.xlsx`) — **không** nằm trong thư mục `xml/pdf/html`. Dữ liệu lấy **từ chính kết quả tra cứu**: không gọi API chi tiết từng hóa đơn, không tải XML/PDF, không tra cứu lại. File giống **đúng file mẫu** `DANH SÁCH HÓA ĐƠN`: sheet `sheet 1`, 2 dòng trống đầu, dòng 3 tiêu đề, dòng 4 “Từ ngày … đến ngày …”, dòng 6 header **19 cột**, dữ liệu từ dòng 7; `Ngày lập` là text `dd/mm/yyyy`, tiền là số, `Tỷ giá` là text `1.0`, `Tổng tiền phí` để trống nếu không có, độ rộng cột theo mẫu. `Kết quả kiểm tra hóa đơn` suy ra từ `ttxly` (5/8 → `Đã cấp mã hóa đơn`, 6 → `Hóa đơn không có mã`).
 - Trước khi tải, ứng dụng **quét thư mục đích một lần** rồi đối chiếu từng hóa đơn; tên file là quy tắc xác định (`MST người bán_mẫu số_ký hiệu_số hóa đơn_hậu tố`) nên cùng một hóa đơn luôn là cùng một file. File đã tồn tại thì **không tải lại, không ghi đè, không đổi tên, không tạo file trùng** — và vẫn kiểm tra lại ngay trước mỗi request.
 - Dòng thống kê dưới thanh tiến độ: `Tổng … · đã có sẵn … · đưa vào hàng tải … · đã tải … · bỏ qua … · lỗi …`. Dòng hóa đơn có file sẵn hiện **Đã có sẵn – bỏ qua**.
 
@@ -146,6 +216,8 @@ Cookie và JWT vẫn có thể hết hạn theo cổng thuế. Khi đó chọn M
 - Request Node tới cổng thuế (`src/tct-api.js`) phải mang bộ header giống Chrome: `User-Agent` + `sec-ch-ua`, `sec-ch-ua-mobile`, `sec-ch-ua-platform` + `sec-fetch-site/mode/dest` + `Origin`/`Referer` + `request-id`. Đo ngày 18/09/2026: POST thiếu bộ này bị WAF trả HTTP 403 `Hệ thống phát hiện hành vi không hợp lệ. Yêu cầu đã bị chặn.`; chỉ thêm `User-Agent` hoặc chỉ thêm client hints vẫn bị chặn, phải đủ cả bộ mới tới được ứng dụng.
 - `src/pace.js` giữ **nhịp** giữa hai request tới cổng thuế (mặc định 900ms + jitter 300ms, đổi bằng `HOADON_NHIP_MS` / `HOADON_NHIP_JITTER_MS`) và **tự nghỉ** khi cổng trả 429 hoặc 403: 429 nghỉ theo `Retry-After` của cổng, không có thì tăng dần 20s → 40s → 80s… (tối đa 10 phút); 403 đúng thông báo chặn thì nghỉ 10 phút. Cả đường tải qua Node (`src/tct-api.js`) và qua trang cổng thuế (`src/browser.js`) đều dùng chung nhịp này. Cổng thuế trả 429 là **quá nhiều yêu cầu** — VNIT không bị vì nó cũng có "nhịp" và tự nghỉ (`NHIP`, `PHUT_NGHI_MIN/MAX`, chế độ an toàn); bản này trước đây gọi tra cứu/tải liên tiếp không chờ nên bị chặn.
 - `src/first-scan.js` quyết định lượt **quét 10 ngày gần nhất** cho MST mới thêm: cửa sổ ngày theo giờ VN (10 ngày trọn, gồm hôm nay), thứ tự **mua vào → bán ra**, định dạng XML, và **có nên chạy hay không** (4 trạng thái `pending`/`running`/`done`/`failed` lưu ở `accounts[].firstScan` trong `du_lieu/accounts.json`). Module thuần, không phụ thuộc server nên test thẳng được (`tests/first-scan.test.js`). Móc vào **cuối `checkLogin()`** — nơi MỌI đường đăng nhập đều đi qua — nên đăng nhập thất bại không đánh dấu gì, và `/api/state` (vòng poll) không kích hoạt được.
+- **Nút tải thủ công tự thử lại lỗi tạm thời** (`autoRetry` trong `src/core.js`, bật riêng cho engine của `createEngine()` — Auto Sync và `runAutoSyncDirection()` dựng engine riêng **không** bật). Chỉ `timeout` / `network` / `portal` được thử lại (`RETRYABLE_DOWNLOAD_TYPES`), nghỉ luỹ tiến 5s → 15s → 45s rồi mới đánh dấu lỗi. `429` / `auth` / XML hỏng **không** thử lại từng hóa đơn — xem bảng ở mục *Một nút "Tải hóa đơn"*; 429 do `pace.js` nghỉ rồi bấm **Tải tiếp**. Lúc nghỉ phải **dừng được** (`sleepInterruptible` nghe `AbortController` của lượt) — bấm Ngưng là dừng ngay, không phải chờ hết thời gian nghỉ. Cấu hình: `HOADON_DOWNLOAD_MAX_RETRIES` / `HOADON_DOWNLOAD_RETRY_BASE_MS` / `HOADON_DOWNLOAD_RETRY_MAX_MS`.
+- **`/api/download` là đường DUY NHẤT** của nút tải: server tự đoán theo job — đang chạy thì `pause()`, lượt còn dở (`isResumableJob()` trong `src/core.js`) thì `resume(true)`, còn lại thì `stream()` (tái sử dụng danh sách đã quét nếu `canReuseSearch()` khớp điều kiện). `isResumableJob()` và `downloadButtonState()` trong `renderer.js` dùng **cùng một danh sách trạng thái**, nên nút không bao giờ hiện "Tải tiếp" khi server lại coi là lượt mới. `/api/search` và `/api/stream` **còn** cho Auto Sync / quét lần đầu / test, nhưng giao diện không gọi tới.
 - Không lấy hay thay đổi cookie trong profile Chrome/Edge cá nhân của người dùng.
 - Icon/version: **file Setup** mang icon + thông tin version; khi cài, installer đặt thêm `CN-Tax-Tools.ico` cạnh app và trỏ shortcut Desktop/Start Menu + mục gỡ cài đặt vào icon đó. Không gán icon trực tiếp vào app EXE vì `rcedit` ghi lại PE resource làm hỏng snapshot nhúng của `pkg` (EXE báo `Pkg: Error reading from file`).
 
@@ -255,3 +327,4 @@ CN-Tax-Tools-Setup-vX.Y.Z.exe.sha256
 CN-Tax-Tools-vX.Y.Z.exe                 <- payload cho self-update
 CN-Tax-Tools-vX.Y.Z.exe.sha256
 ```
+

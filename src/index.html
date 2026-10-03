@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'"><title>CN Tax Tools</title><link rel="icon" type="image/png" href="icon.png"><link rel="stylesheet" href="style.css"><link rel="stylesheet" href="login.css"><link rel="stylesheet" href="data-view.css"><link rel="preload" as="script" href="renderer.js"><link rel="preload" as="script" href="data-ui.js"></head>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-src 'self' https://*.easytool.dev; object-src 'none'; base-uri 'none'; form-action 'self'"><title>CN Tax Tools</title><link rel="icon" type="image/png" href="icon.png"><link rel="stylesheet" href="style.css"><link rel="stylesheet" href="login.css"><link rel="stylesheet" href="data-view.css"><link rel="preload" as="script" href="renderer.js"><link rel="preload" as="script" href="data-ui.js"><script src="ai-providers.js" defer></script><script src="ai-bridge.js" defer></script><script src="ai-chat.js" defer></script></head>
 <body><div id="boot-splash" class="boot-splash">
   <div class="boot-aurora" aria-hidden="true"></div>
   <div class="boot-panel">
@@ -22,7 +22,7 @@
   <div class="side-actions"><button id="add-mst" class="primary">＋ Thêm MST</button><button id="sync-all" class="secondary" title="Chạy Auto Sync cho tất cả MST cùng lúc — 3 luồng song song, xong cái nào rút cái kế tiếp">Đồng bộ tất cả</button></div>
   <div class="side-license"><strong id="side-license-state">Activate</strong></div>
   <div class="side-bottom"><button id="settings-open" class="link" type="button">Cài đặt</button><br><small id="app-version"><b>CN</b> Tax Tools</small> <button id="update-available" class="link" type="button" hidden></button></div></aside>
-<main id="main-content"><div class="app-top"><header><div class="view-switch" id="view-switch" role="tablist" aria-label="Khu vực làm việc"><button id="view-overview" class="active" type="button" role="tab" aria-selected="true">Tổng quan</button><button id="view-download" type="button" role="tab" aria-selected="false">Tra cứu &amp; tải</button><button id="view-data" type="button" role="tab" aria-selected="false">Kho dữ liệu</button><button id="view-bank" type="button" role="tab" aria-selected="false">Sao kê ngân hàng</button><button id="view-accounting" type="button" role="tab" aria-selected="false">Hỗ trợ kế toán</button></div><!-- Tiêu đề tab gộp CHUNG hàng với dãy nút: trước có hàng riêng (nhãn TỔNG QUAN +
+<main id="main-content"><div class="app-top"><header><div class="view-switch" id="view-switch" role="tablist" aria-label="Khu vực làm việc"><button id="view-overview" class="active" type="button" role="tab" aria-selected="true">Tổng quan</button><button id="view-download" type="button" role="tab" aria-selected="false">Tra cứu &amp; tải</button><button id="view-data" type="button" role="tab" aria-selected="false">Kho dữ liệu</button><button id="view-bank" type="button" role="tab" aria-selected="false">Sao kê ngân hàng</button><button id="view-accounting" type="button" role="tab" aria-selected="false">Hỗ trợ kế toán</button><button id="view-dvt" type="button" role="tab" aria-selected="false">Chuyển đổi DVT</button><button id="view-mstlookup" type="button" role="tab" aria-selected="false">Tra cứu MST</button><button id="view-tokhai" type="button" role="tab" aria-selected="false">Tải tờ khai</button></div><!-- Tiêu đề tab gộp CHUNG hàng với dãy nút: trước có hàng riêng (nhãn TỔNG QUAN +
      tên tab + mô tả) chiếm 108px ở trên màn hình. Nay chỉ còn tên tab căn phải. Mô tả (ghi chú)
      không xoá hẳn mà chuyển sang tooltip của nút tab đang bật — vẫn tra được, không tốn chiều cao.
      #view-eyebrow cũng bỏ: nó chỉ lặp lại chính tên nút tab đang được tô đậm. -->
@@ -136,8 +136,13 @@
   <div class="overview-kpis" id="overview-kpis"></div>
   <section class="overview-dashboard"><article class="card overview-chart-wide"><div class="overview-card-head"><div><span class="overview-caption">XU HƯỚNG TRONG NĂM</span><h3 id="overview-monthly-title">Bán ra và mua vào</h3></div><div class="overview-legend"><span><i class="sell"></i>Bán ra</span><span><i class="buy"></i>Mua vào</span></div></div><div id="overview-monthly" class="overview-bars"></div></article><article class="card overview-alerts"><div class="overview-card-head"><div><span class="overview-caption">ƯU TIÊN XỬ LÝ</span><h3>Cần kiểm tra</h3></div></div><div id="overview-alerts"></div></article><article class="card overview-warn-card"><div class="overview-card-head"><div><span class="overview-caption">HÀNG HÓA · CẦN XEM LẠI</span><h3>Cần xem lại</h3></div></div><div id="overview-goods-warnings"></div></article><article class="card overview-sell-card"><div class="overview-card-head"><div><span class="overview-caption">CHIỀU BÁN RA · TIỀN VÀO</span><h3>Bán ra — Khách hàng</h3></div></div><div id="overview-sell"></div></article><article class="card overview-buy-card"><div class="overview-card-head"><div><span class="overview-caption">CHIỀU MUA VÀO · TIỀN RA</span><h3>Mua vào — Nhà cung cấp</h3></div></div><div id="overview-buy"></div></article><article class="card overview-donut-card"><div class="overview-card-head"><div><span class="overview-caption">CHUYỂN KHOẢN</span><h3>Kết quả đối chiếu</h3></div></div><div id="overview-reconciliation"></div></article><article class="card overview-bank-card"><div class="overview-card-head"><div><span class="overview-caption">DÒNG TIỀN</span><h3>Ngân hàng</h3></div></div><div id="overview-bank"></div></article><article class="card overview-products-card"><div class="overview-card-head"><div><span class="overview-caption">HÀNG HÓA</span><h3>Bán ra và mua vào</h3></div></div><div id="overview-products"></div></article><article class="card overview-debt-card"><div class="overview-card-head"><div><span class="overview-caption">CÔNG NỢ</span><h3>Phải thu và phải trả</h3></div></div><div id="overview-debt"></div></article><article class="card overview-tax-card"><div class="overview-card-head"><div><span class="overview-caption">THUẾ / NGƯỠNG</span><h3>Doanh thu lũy kế</h3></div><select id="tax-rule" aria-label="Loại hình kinh doanh và năm áp dụng"></select></div><div id="overview-tax"></div></article><article class="card overview-ai-card"><div class="overview-card-head"><div><span class="overview-caption">DỮ LIỆU CHO AI · MỤC 29</span><h3>JSON thống kê (chờ tích hợp AI)</h3></div></div><div class="overview-ai"><code id="ai-summary-json" aria-label="Bản JSON thống kê"></code><button id="ai-summary-copy" type="button" class="secondary">Sao chép JSON</button><p class="overview-ai-note">Chưa tích hợp AI — số liệu lấy từ SQLite; AI (khi có) chỉ diễn giải, không tự tính lại.</p></div></article></section>
 </div>  <!-- end #pane-overview -->
-<div class="workspace" id="pane-download" hidden><section class="card filters"><h3>Điều kiện tra cứu</h3><label>Loại tra cứu<select id="direction"><option value="purchase">Hóa đơn mua vào</option><option value="sold">Hóa đơn bán ra</option></select></label><label>Nhóm hóa đơn<select id="family"><option value="query">Hóa đơn điện tử</option><option value="sco-query">Hóa đơn máy tính tiền</option><option value="both" selected>Cả hai nhóm</option></select></label><div class="date-grid"><label>Từ ngày<input id="from" type="date"></label><label>Đến ngày<input id="to" type="date"></label></div><div class="period-row"><span class="period-label">Chọn nhanh</span><select id="period-mode" title="Kiểu chọn: theo tháng, theo quý hoặc cả năm"><option value="month">Tháng</option><option value="quarter">Quý</option><option value="year">Năm</option></select><select id="period-year" title="Năm"></select><select id="period-month" title="Tháng"></select><select id="period-quarter" title="Quý" hidden></select></div><label>Trạng thái hóa đơn<select id="status"><option value="">Tất cả</option><option value="1">Hóa đơn mới</option><option value="2">Hóa đơn thay thế</option><option value="3">Hóa đơn điều chỉnh</option><option value="4">Đã bị thay thế</option><option value="5">Đã bị điều chỉnh</option><option value="6">Đã bị hủy</option></select></label><h3 class="section-title">Định dạng tải</h3><div class="formats"><label><input type="checkbox" value="xml" checked> XML</label><label><input type="checkbox" value="zip"> ZIP</label><label><input type="checkbox" value="xlsx" checked> Excel</label><label><input type="checkbox" value="html"> HTML</label><label><input type="checkbox" value="pdf"> PDF</label></div><p class="hint">Excel là bảng tổng hợp. HTML/PDF là bản hiển thị dựng từ dữ liệu API.</p><label>Thư mục lưu (dùng chung cho mọi MST)<div class="folder"><input id="output" placeholder="Chưa chọn — bấm Chọn thư mục…" autocomplete="off" spellcheck="false"><button id="choose" type="button" title="Chọn thư mục trong máy">Chọn thư mục…</button><button id="change-output" type="button" title="Đổi thư mục lưu — sẽ hỏi xác nhận vì dữ liệu đã tải ở thư mục cũ không còn hiện trong app" hidden>Đổi thư mục…</button></div></label><p class="hint">Một thư mục chung cho mọi MST; file nằm trong <b>&lt;thư mục này&gt;\MST-&lt;số MST&gt;\Mua_vao|Ban_ra\xml|pdf|html|zip</b>. <span id="output-hint-note">Có thể gõ/dán đường dẫn đầy đủ rồi bấm ra ngoài ô.</span></p><div class="search-actions"><button id="search" class="primary">Tra cứu</button><button id="stream-download" class="secondary">Tải ngay</button></div></section>
-<section class="results"><div class="stats"><div class="card"><span>TỔNG HÓA ĐƠN</span><strong id="stat-total">0</strong></div><div class="card downloaded"><span>ĐÃ TẢI</span><strong id="stat-downloaded">0</strong></div><div class="card existed"><span>ĐÃ CÓ SẴN</span><strong id="stat-existed">0</strong></div><div class="card errors"><span>LỖI</span><strong id="stat-failed">0</strong></div></div><section class="card table-card"><div class="table-head"><h3 id="results-title">Danh sách hóa đơn</h3><span id="state" class="badge">Sẵn sàng</span></div><div class="table-scroll"><table><thead><tr><th class="stt">STT</th><th>Ngày</th><th>Số / Ký hiệu</th><th>Người bán</th><th>Người mua</th><th>Tổng tiền</th><th>Kết quả</th></tr></thead><tbody id="rows"></tbody></table><div id="empty"><div class="empty-icon">▤</div><h3>Bắt đầu một lượt tra cứu</h3><p>Đăng nhập, chọn khoảng ngày và thư mục lưu.<br>Kết quả hóa đơn sẽ xuất hiện tại đây.</p></div></div><p id="limit" class="hint"></p></section><section class="card progress-card"><div class="progress-heading"><strong id="message">Đăng nhập để bắt đầu.</strong><span id="percentage">0%</span></div><progress id="progress" value="0" max="100"></progress><div class="actions"><button id="export-excel" class="secondary" disabled>Xuất Excel theo mẫu MISA</button><button id="resume" class="secondary" disabled>Tải tiếp / Thử lại lỗi</button><button id="open" class="link">Mở thư mục ↗</button></div><p class="hint" id="stats"></p></section></section></div><div class="workspace" id="pane-data" hidden>
+<div class="workspace" id="pane-download" hidden><section class="card filters"><h3>Điều kiện tải hóa đơn</h3><label>Loại tra cứu<select id="direction"><option value="purchase">Hóa đơn mua vào</option><option value="sold">Hóa đơn bán ra</option></select></label><label>Nhóm hóa đơn<select id="family"><option value="query">Hóa đơn điện tử</option><option value="sco-query">Hóa đơn máy tính tiền</option><option value="both" selected>Cả hai nhóm</option></select></label><div class="date-grid"><label>Từ ngày<input id="from" type="date"></label><label>Đến ngày<input id="to" type="date"></label></div><div class="period-row"><span class="period-label">Chọn nhanh</span><select id="period-mode" title="Kiểu chọn: theo tháng, theo quý hoặc cả năm"><option value="month">Tháng</option><option value="quarter">Quý</option><option value="year">Năm</option></select><select id="period-year" title="Năm"></select><select id="period-month" title="Tháng"></select><select id="period-quarter" title="Quý" hidden></select></div><label>Trạng thái hóa đơn<select id="status"><option value="">Tất cả</option><option value="1">Hóa đơn mới</option><option value="2">Hóa đơn thay thế</option><option value="3">Hóa đơn điều chỉnh</option><option value="4">Đã bị thay thế</option><option value="5">Đã bị điều chỉnh</option><option value="6">Đã bị hủy</option></select></label><h3 class="section-title">Định dạng tải</h3><div class="formats"><label><input type="checkbox" value="xml" checked> XML</label><label><input type="checkbox" value="zip"> ZIP</label><label><input type="checkbox" value="xlsx" checked> Excel</label><label><input type="checkbox" value="html"> HTML</label><label><input type="checkbox" value="pdf"> PDF</label></div><p class="hint">Excel là bảng tổng hợp. HTML/PDF là bản hiển thị dựng từ dữ liệu API.</p><label>Thư mục lưu (dùng chung cho mọi MST)<div class="folder"><input id="output" placeholder="Chưa chọn — bấm Chọn thư mục…" autocomplete="off" spellcheck="false"><button id="choose" type="button" title="Chọn thư mục trong máy">Chọn thư mục…</button><button id="change-output" type="button" title="Đổi thư mục lưu — sẽ hỏi xác nhận vì dữ liệu đã tải ở thư mục cũ không còn hiện trong app" hidden>Đổi thư mục…</button></div></label><p class="hint">Một thư mục chung cho mọi MST; file nằm trong <b>&lt;thư mục này&gt;\MST-&lt;số MST&gt;\Mua_vao|Ban_ra\xml|pdf|html|zip</b>. <span id="output-hint-note">Có thể gõ/dán đường dẫn đầy đủ rồi bấm ra ngoài ô.</span></p><!-- MỘT NÚT DUY NHẤT thay cho cặp "Tra cứu" + "Tải ngay". Nhãn đổi theo trạng thái
+     (Tải hóa đơn → Ngưng → Tải tiếp), server tự đoán nên giao diện không còn phải chọn
+     "chỉ tra cứu" hay "tải luôn": xem downloadButtonState() trong renderer.js. -->
+<div class="search-actions"><button id="download-btn" class="primary" title="Quét và tải TOÀN BỘ hoá đơn trong khoảng ngày đang chọn. Lỗi tạm thời (mạng chập, cổng bận) được tự thử lại — không cần bấm lần nữa.">Tải hóa đơn</button></div></section>
+<section class="results"><div class="stats"><div class="card"><span>TỔNG HÓA ĐƠN</span><strong id="stat-total">0</strong></div><div class="card downloaded"><span>ĐÃ TẢI</span><strong id="stat-downloaded">0</strong></div><div class="card existed"><span>ĐÃ CÓ SẴN</span><strong id="stat-existed">0</strong></div><div class="card errors"><span>LỖI</span><strong id="stat-failed">0</strong></div></div><section class="card table-card"><div class="table-head"><h3 id="results-title">Danh sách hóa đơn</h3><span id="state" class="badge">Sẵn sàng</span></div><div class="table-scroll"><table><thead><tr><th class="stt">STT</th><th>Ngày</th><th>Số / Ký hiệu</th><th>Người bán</th><th>Người mua</th><th>Tổng tiền</th><th>Kết quả</th></tr></thead><tbody id="rows"></tbody></table><div id="empty"><div class="empty-icon">▤</div><h3>Bắt đầu tải hóa đơn</h3><p>Đăng nhập, chọn khoảng ngày và thư mục lưu, rồi bấm <b>Tải hóa đơn</b>.<br>Hóa đơn sẽ hiện ra ngay khi tải xong từng cái.</p></div></div><p id="limit" class="hint"></p></section><section class="card progress-card"><div class="progress-heading"><strong id="message">Đăng nhập để bắt đầu.</strong><span id="percentage">0%</span></div><progress id="progress" value="0" max="100"></progress><!-- Nút #resume đã bỏ: "Tải tiếp / Thử lại lỗi" nay là TRẠNG THÁI của nút #download-btn ở trên,
+     và lỗi tạm thời được tự thử lại ngay trong lượt nên không cần bấm tay. -->
+<div class="actions"><button id="export-excel" class="secondary" disabled>Xuất Excel theo mẫu MISA</button><button id="open" class="link">Mở thư mục ↗</button></div><p class="hint" id="stats"></p></section></section></div><div class="workspace" id="pane-data" hidden>
 <section class="data-overview">
 <div class="data-tiles" id="data-tiles"></div>
 <div class="data-filters">
@@ -155,7 +160,7 @@
 </div>
 </div>
 </section>
-<section class="card data-toolbar"><button id="data-import" class="primary" type="button">Nhập / cập nhật từ XML</button><button id="data-refresh" class="secondary" type="button">Tải lại</button><button id="backfill-open" class="secondary" type="button">Tải lịch sử</button><details class="data-export" id="data-export-menu"><summary class="secondary" id="data-export" title="Xuất kho dữ liệu ra Excel — theo đúng bộ lọc đang xem">Xuất Excel</summary><div class="data-export-list" id="data-export-list" role="menu"><button type="button" data-part="all" role="menuitem" class="all">Tải toàn bộ (7 bảng)</button><details class="group"><summary>Hóa đơn</summary><div class="sub"><button type="button" data-part="buy" role="menuitem">Mua vào</button><button type="button" data-part="sell" role="menuitem">Bán ra</button></div></details><details class="group"><summary>Hàng hóa</summary><div class="sub"><button type="button" data-part="productsBuy" role="menuitem">Mua vào</button><button type="button" data-part="productsSell" role="menuitem">Bán ra</button></div></details><details class="group"><summary>Đối tác</summary><div class="sub"><button type="button" data-part="suppliers" role="menuitem">Nhà cung cấp</button><button type="button" data-part="buyers" role="menuitem">Khách hàng</button></div></details><details class="group"><summary>Ngân hàng</summary><div class="sub"><button type="button" data-part="bank" role="menuitem">Sao kê ngân hàng</button></div></details></div></details><div class="data-job"><progress id="data-import-bar" max="100" value="0" hidden></progress><span class="hint" id="data-import-status">Chưa nhập lần nào trong phiên này.</span></div></section>
+<section class="card data-toolbar"><button id="data-import" class="primary" type="button">Nhập / cập nhật từ XML</button><button id="data-refresh" class="secondary" type="button">Tải lại</button><button id="backfill-open" class="secondary" type="button">Tải lịch sử</button><button id="data-backfill-lookup" class="secondary" type="button" title="Đọc lại file XML gốc để điền cổng tra cứu và mã tra cứu của nhà cung cấp cho hóa đơn nhập trước khi có các cột này">Bổ sung cột tra cứu</button><details class="data-export" id="data-export-menu"><summary class="secondary" id="data-export" title="Xuất kho dữ liệu ra Excel — theo đúng bộ lọc đang xem">Xuất Excel</summary><div class="data-export-list" id="data-export-list" role="menu"><button type="button" data-part="all" role="menuitem" class="all">Tải toàn bộ (7 bảng)</button><details class="group"><summary>Hóa đơn</summary><div class="sub"><button type="button" data-part="buy" role="menuitem">Mua vào</button><button type="button" data-part="sell" role="menuitem">Bán ra</button></div></details><details class="group"><summary>Hàng hóa</summary><div class="sub"><button type="button" data-part="productsBuy" role="menuitem">Mua vào</button><button type="button" data-part="productsSell" role="menuitem">Bán ra</button></div></details><details class="group"><summary>Đối tác</summary><div class="sub"><button type="button" data-part="suppliers" role="menuitem">Nhà cung cấp</button><button type="button" data-part="buyers" role="menuitem">Khách hàng</button></div></details><details class="group"><summary>Ngân hàng</summary><div class="sub"><button type="button" data-part="bank" role="menuitem">Sao kê ngân hàng</button></div></details></div></details><div class="data-job"><progress id="data-import-bar" max="100" value="0" hidden></progress><span class="hint" id="data-import-status">Chưa nhập lần nào trong phiên này.</span></div></section>
 <section class="card data-content">
 <div class="data-tabs" role="tablist" aria-label="Nội dung kho dữ liệu"><button id="data-tab-products-btn" class="active" type="button" role="tab" aria-selected="true">Hàng hóa</button><button id="data-tab-list-btn" type="button" role="tab" aria-selected="false">Danh sách hóa đơn</button><button id="data-tab-partners-btn" type="button" role="tab" aria-selected="false">Đối tác</button></div>
 <div id="data-tab-products">
@@ -166,13 +171,18 @@
 <div id="data-tab-list" hidden>
 <div class="data-subbar"><div class="data-seg" id="data-seg-list" role="group" aria-label="Chiều hóa đơn của danh sách"><button type="button" data-dir="all" class="active">Tất cả</button><button type="button" data-dir="BUY">Mua vào</button><button type="button" data-dir="SELL">Bán ra</button></div><div class="data-subbar-right"><span id="data-count" class="badge">0 hóa đơn</span></div></div>
 <div class="data-subbar"><div class="data-seg" id="data-seg-state" role="group" aria-label="Lọc theo trạng thái hóa đơn"><button type="button" data-state="all" class="active" title="Không lọc theo trạng thái">Tất cả</button><button type="button" data-state="1" title="Hóa đơn mới">Mới</button><button type="button" data-state="2" title="Hóa đơn thay thế">Thay thế</button><button type="button" data-state="3" title="Hóa đơn điều chỉnh">Điều chỉnh</button><button type="button" data-state="4" title="Đã bị thay thế — không cộng vào hàng hóa">Bị thay thế</button><button type="button" data-state="5" title="Đã bị điều chỉnh — không cộng vào hàng hóa">Bị điều chỉnh</button><button type="button" data-state="6" title="Đã bị hủy — không cộng vào hàng hóa">Đã hủy</button></div></div>
-<div class="table-scroll data-table-scroll"><table><thead><tr><th class="stt">STT</th><th>Ngày</th><th>Số / Ký hiệu</th><th>Người bán</th><th>Người mua</th><th>Trạng thái</th><th class="num">Trước thuế</th><th class="num">Tiền thuế</th><th class="num">Tổng tiền</th></tr></thead><tbody id="data-rows"></tbody></table></div>
+<div class="table-scroll data-table-scroll"><table><thead><tr><th class="stt">STT</th><th>Ngày</th><th>Số / Ký hiệu</th><th>Người bán</th><th>Người mua</th><th>PDF gốc</th><th>Trạng thái</th><th class="num">Trước thuế</th><th class="num">Tiền thuế</th><th class="num">Tổng tiền</th></tr></thead><tbody id="data-rows"></tbody></table></div>
 <div class="data-pager"><button id="data-prev" class="secondary" type="button">‹ Trước</button><span id="data-page">Trang 1 / 1</span><button id="data-next" class="secondary" type="button">Sau ›</button><span class="hint">Bấm vào <b>Số / Ký hiệu</b> để mở hoá đơn khổ A4 · ↑ ↓ rồi Enter</span></div>
 </div>
 <div id="data-tab-partners" hidden>
 <div class="data-subbar"><div class="data-seg" id="data-seg-partners" role="group" aria-label="Loại đối tác"><button type="button" data-kind="all" class="active">Tất cả</button><button type="button" data-kind="supplier">Nhà cung cấp</button><button type="button" data-kind="buyer">Khách hàng</button></div><div class="data-subbar-right"><span class="badge">từ hóa đơn đã nhập</span></div></div>
 <div class="table-scroll data-table-scroll"><table><thead><tr><th>Loại</th><th>MST</th><th>Tên</th><th class="num">Số HĐ</th><th class="num">Tiền thuế</th><th class="num">Tổng tiền</th></tr></thead><tbody id="data-partners"></tbody></table></div>
 </div>
+</section>
+<section class="card data-vat" id="data-vat-card">
+<div class="data-subbar"><div><h3 class="section-title">Tổng hợp quý (kê khai thuế GTGT)</h3><p class="hint">Số liệu lấy từ kho: hoá đơn không còn hiệu lực (đã bị thay thế / điều chỉnh / hủy) không được cộng. Chưa sinh file tờ khai.</p></div><div class="data-subbar-right"><label class="data-field inline">Kỳ <select id="vat-period" aria-label="Kỳ kê khai"></select></label><label class="data-field inline">Khấu trừ <input id="vat-deduction" class="vat-deduction-input" type="number" min="0" step="1000" value="0" aria-label="Số khấu trừ của kỳ (đồng)"></label><button id="vat-reload" class="secondary" type="button">Tính lại</button><button id="vat-export" class="secondary" type="button" disabled>Xuất Excel</button></div></div>
+<div id="vat-warnings" class="vat-notes" hidden></div>
+<div id="vat-body" class="vat-body"><p class="hint">Đang tính…</p></div>
 </section>
 </div>
 <div class="workspace" id="pane-bank" hidden>
@@ -225,6 +235,30 @@
 <div class="invoice-dialog-head"><h2 id="invoice-title">Hoá đơn</h2><p id="invoice-subtitle">Bản xem trước khổ A4 — đọc từ chính file XML của hoá đơn.</p><button id="invoice-close" type="button" aria-label="Đóng hoá đơn">×</button></div>
 <div class="invoice-frame-wrap"><iframe id="invoice-frame" title="Hoá đơn khổ A4" src="about:blank"></iframe></div>
 <div class="invoice-dialog-actions"><button id="invoice-print" class="secondary" type="button">In / Lưu PDF</button></div>
+</dialog>
+
+<dialog id="orig-dialog" class="invoice-dialog" aria-labelledby="orig-title">
+<div class="invoice-dialog-head"><h2 id="orig-title">Hoá đơn gốc của nhà cung cấp</h2><p id="orig-subtitle">Bản PDF do nhà cung cấp phát hành — có chữ ký số, khác hoàn toàn bản app dựng lại.</p><button id="orig-close" type="button" aria-label="Đóng hoá đơn gốc">×</button></div>
+<div class="invoice-frame-wrap"><iframe id="orig-frame" title="PDF hoá đơn gốc của nhà cung cấp" src="about:blank"></iframe></div>
+<div class="invoice-dialog-actions"><button id="orig-detach" class="secondary" type="button">Bỏ liên kết file này</button></div>
+</dialog>
+
+<dialog id="orig-pick-dialog" class="invoice-dialog" aria-labelledby="orig-pick-title">
+<div class="invoice-dialog-head"><h2 id="orig-pick-title">Chọn file PDF gốc</h2><p id="orig-pick-subtitle">Chọn file PDF do nhà cung cấp phát hành (file trong thư mục lưu của hồ sơ này).</p><button id="orig-pick-close" type="button" aria-label="Đóng">×</button></div>
+<div class="invoice-dialog-actions"><button id="orig-pick-open" class="secondary" type="button">Chọn file PDF…</button><button id="orig-pick-portal" class="secondary" type="button">Mở cổng tra cứu NCC</button><button id="orig-pick-cancel" type="secondary" type="button">Đóng</button></div>
+</dialog>
+
+<!-- BỔ SUNG NGUỒN PDF GỐC — mô phỏng đúng luồng của bản tham chiếu 1.4.20_0: bấm vào
+     hóa đơn, nếu còn thiếu mã tra cứu / URL cổng thì HỎI NGAY trong app thay vì bắt
+     người dùng tự tra cứu rồi quay lại. -->
+<dialog id="orig-input-dialog" class="invoice-dialog" aria-labelledby="orig-input-title">
+<form id="orig-input-form" novalidate>
+<div class="invoice-dialog-head"><div><p class="orig-input-eyebrow">BỔ SUNG NGUỒN PDF GỐC</p><h2 id="orig-input-title">Nhập thông tin nhà cung cấp</h2></div><button id="orig-input-close" type="button" aria-label="Đóng">×</button></div>
+<p id="orig-input-help" class="orig-input-help"></p>
+<label class="orig-input-field"><span id="orig-input-label">Giá trị</span><input id="orig-input-value" type="text" autocomplete="off" spellcheck="false"></label>
+<p id="orig-input-error" class="orig-input-error" role="alert" hidden></p>
+<div class="invoice-dialog-actions"><button id="orig-input-cancel" type="button">Hủy</button><button type="submit" id="orig-input-submit" class="primary">Tiếp tục</button></div>
+</form>
 </dialog>
 <dialog id="autosync-dialog" aria-labelledby="autosync-title">
 <div class="login-heading"><div><h2 id="autosync-title">Auto Sync</h2><p id="autosync-mst">Tự tra cứu → tải XML còn thiếu → nhập vào kho dữ liệu.</p></div><button id="autosync-close" type="button" aria-label="Đóng Auto Sync">×</button></div>
@@ -324,7 +358,20 @@
 <section class="support-widget" aria-label="Hỗ trợ khách hàng">
   <button id="support-toggle" class="support-toggle" type="button" aria-expanded="false" aria-controls="support-panel">💬 Hỗ trợ<span id="support-badge" class="support-badge" hidden aria-hidden="true"></span></button>
   <div id="support-panel" class="support-panel" hidden>
-    <header class="support-header"><div><strong><span class="support-label">Hỗ trợ</span> <span class="brand-mark"><b>CN</b> Tax Tools</span></strong><small id="support-mode">Kết nối máy chủ/ Ngắt kết nối máy chủ</small></div><button id="support-close" type="button" aria-label="Đóng hỗ trợ">×</button></header>
+    <div id="chat-resize" class="chat-resize" role="separator" aria-orientation="vertical" aria-label="Độ rộng khung chat" tabindex="0" aria-valuemin="280" aria-valuemax="800" aria-valuenow="420"></div>
+    <header class="support-header"><div><strong><span class="support-label">Hỗ trợ</span> <span class="brand-mark"><b>CN</b> Tax Tools</span></strong><small id="support-mode">Kết nối máy chủ/ Ngắt kết nối máy chủ</small></div><div class="chat-window-actions"><button id="chat-minimize" type="button" title="Thu gọn chat" aria-label="Thu gọn chat">−</button><button id="support-close" type="button" aria-label="Đóng hỗ trợ">×</button></div></header>
+    <small id="ai-mode-label" class="ai-mode-label" hidden></small>
+    <nav id="chat-modes" class="chat-modes" aria-label="Chế độ trò chuyện">
+      <button type="button" data-mode="support" aria-pressed="true">Hỗ trợ</button>
+      <button id="ai-add" type="button" title="Thêm chế độ AI" aria-label="Thêm chế độ AI">+</button>
+    </nav>
+    <section id="ai-workspace" class="ai-workspace" hidden>
+      <div class="ai-tools"><button id="ai-edit" type="button" title="Cấu hình chế độ">Cấu hình</button><button id="ai-new" type="button" title="Cuộc trò chuyện mới">Chat mới</button><button id="ai-retry" type="button">Thử lại</button></div>
+      <div id="ai-frame-host" class="ai-frame-host" hidden><iframe id="ai-frame" title="Trò chuyện AI" sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox" referrerpolicy="no-referrer" allow="clipboard-write"></iframe></div>
+      <div id="ai-thread" class="ai-thread" aria-live="polite" hidden></div>
+      <form id="ai-form" class="support-compose" hidden><input id="ai-input" aria-label="Tin nhắn AI" maxlength="16000" autocomplete="off" placeholder="Nhập tin nhắn AI…"><button id="ai-send" type="submit" class="primary">Gửi</button><button id="ai-stop" type="button" hidden>Dừng</button></form>
+    </section>
+    <p id="ai-error" class="support-error" role="status" hidden></p>
     <div class="support-context"><span id="support-room"></span><span id="support-license"></span></div>
     <div id="support-messages" class="support-messages" aria-live="polite"></div>
     <div class="support-quick" role="group" aria-label="Lệnh nhanh" hidden><!-- Tạm ẩn: bỏ thuộc tính hidden để bật lại nút /check --><button id="support-check" type="button">/check — Xem thông tin bản quyền của máy này</button></div>
@@ -332,5 +379,188 @@
     <details class="support-license"><summary>Nhập License Key</summary><form id="support-license-form"><input id="support-key" maxlength="160" autocomplete="off" placeholder="XXXX-XXXX-XXXX"><button type="submit">Kích hoạt</button></form></details>
     <p id="support-error" class="support-error" role="status"></p>
   </div>
+<dialog id="ai-provider-dialog" aria-labelledby="ai-provider-title">
+  <form id="ai-provider-form">
+    <div class="login-heading"><h2 id="ai-provider-title">Cấu hình AI</h2><button id="ai-provider-close" type="button" aria-label="Đóng">×</button></div>
+    <label>Tên<input id="ai-provider-label" maxlength="80" required></label>
+    <label>Loại<select id="ai-provider-type"><option value="web">AI web miễn phí</option><option value="openai">API key riêng</option><option value="local">Ollama trên máy</option></select></label>
+    <label>Địa chỉ<input id="ai-provider-url" type="url" required></label>
+    <div id="ai-provider-api"><label>Model<input id="ai-provider-model" list="ai-model-list" maxlength="200"><datalist id="ai-model-list"></datalist></label><button id="ai-models" type="button">Lấy danh sách model</button></div>
+    <label id="ai-key-label">API key<input id="ai-provider-key" type="password" autocomplete="off"><span><input id="ai-clear-key" type="checkbox"> Xoá key đã lưu</span></label>
+    <p id="ai-provider-error" class="support-error" role="status"></p>
+    <div class="login-actions"><button id="ai-provider-save" type="submit" class="primary">Lưu</button><button id="ai-provider-delete" type="button">Xoá chế độ</button><button id="ai-provider-cancel" type="button">Huỷ</button></div>
+  </form>
+</dialog>
+<div class="workspace" id="pane-dvt" hidden>
+  <section class="card filters dvt-filters">
+    <h3>Quản lý quy tắc đơn vị tính</h3>
+    <p class="hint">Quy tắc chuyển đổi đơn vị tính từ hoá đơn <b>mua vào</b> (Thùng) sang đơn vị <b>bán ra</b> (Hộp, Chai). Chỉ áp dụng cho hoá đơn BÁN RA. <b>Mã hàng là khoá bắt buộc và không đổi</b> (sẽ là khoá chính cho kho hàng sau này); tên hàng sửa tự do.</p>
+    <div class="dvt-search-row">
+      <label class="data-field search"><input id="dvt-search" type="search" placeholder="Tìm mã hàng, tên hàng, DVT gốc, DVT đích..." autocomplete="off" spellcheck="false" aria-label="Tìm mapping DVT"></label>
+      <select id="dvt-filter-source" class="data-field" title="Lọc theo nguồn">
+        <option value="all">Tất cả nguồn</option>
+        <option value="manual">Tạo thủ công</option>
+        <option value="auto_learn">Tự động học</option>
+        <option value="import">Import Excel</option>
+        <option value="product_master">Từ Product Master</option>
+      </select>
+      <select id="dvt-filter-status" class="data-field" title="Lọc theo trạng thái">
+        <option value="all">Tất cả trạng thái</option>
+        <option value="active">Đang hoạt động</option>
+        <option value="inactive">Đã vô hiệu</option>
+      </select>
+    </div>
+  </section>
+
+  <section class="dvt-table-card card">
+    <div class="table-head">
+      <h3>Danh sách mapping DVT</h3>
+      <span class="badge" id="dvt-count">0 mapping</span>
+    </div>
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr>
+            <th class="stt">STT</th>
+            <th>Mã hàng</th>
+            <th>Tên hàng</th>
+            <th>DVT gốc</th>
+            <th>DVT đích</th>
+            <th class="num">Tỷ lệ</th>
+            <th>Nguồn</th>
+            <th>Trạng thái</th>
+            <th>Thao tác</th>
+          </tr>
+        </thead>
+        <tbody id="dvt-rows"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="dvt-actions card">
+    <button id="dvt-add" class="primary" type="button">Thêm mapping</button>
+    <button id="dvt-import" class="secondary" type="button">Import Excel</button>
+    <button id="dvt-export" class="secondary" type="button">Export Excel</button>
+    <button id="dvt-auto-learn" class="secondary" type="button" title="Tự động tạo mapping 1:1 cho các mặt hàng CÓ mã hàng nhưng chưa có mapping">Auto-learn</button>
+  </section>
+</div>
+<div class="workspace" id="pane-mstlookup" hidden>
+  <section class="card filters">
+    <h3>Tra cứu Mã số thuế</h3>
+    <p class="hint">Dán danh sách MST — mỗi mã một dòng, hoặc ngăn cách bằng dấu phẩy, tab, dấu chấm phẩy.</p>
+    <label>Danh sách MST<textarea id="mst-input" rows="6" spellcheck="false" placeholder="0100109106&#10;0100773180&#10;0300588569" autocomplete="off"></textarea></label>
+    <p class="hint" id="mst-count-badge">Đã nhận diện: <strong>0</strong> MST</p>
+    <div class="captcha-row">
+      <div class="captcha-display"><img id="mst-captcha-img" alt="Mã xác thực" hidden><span id="mst-captcha-loading-text">Đang nạp mã…</span></div>
+      <input id="mst-captcha-input" class="captcha-input" placeholder="Mã xác thực" maxlength="10" autocomplete="off" spellcheck="false">
+      <button id="mst-btn-reload-captcha" type="button" title="Đổi mã xác thực">Đổi mã</button>
+    </div>
+    <div class="search-actions">
+      <button id="mst-btn-start" class="primary" type="button">Tra cứu</button>
+      <button id="mst-btn-stop" type="button" disabled>Ngưng</button>
+    </div>
+    <div class="actions">
+      <button id="mst-btn-sample" class="secondary" type="button">Nạp MST mẫu</button>
+      <button id="mst-btn-clear" class="secondary" type="button">Xoá danh sách</button>
+      <button id="mst-btn-export-excel" class="secondary" type="button" disabled>Xuất Excel</button>
+      <button id="mst-btn-clear-results" class="secondary" type="button" disabled>Xoá kết quả</button>
+    </div>
+    <p class="hint">Cần phiên cổng thuế trước: bấm <b>Đăng nhập</b> ở tab <b>Tra cứu &amp; tải</b> cho MST này rồi quay lại đây.</p>
+  </section>
+
+  <section class="results">
+    <div class="stats stats-5">
+      <div class="card"><span>ĐÃ TRA CỨU</span><strong id="mst-badge-total">0</strong></div>
+      <div class="card"><span>ĐANG HOẠT ĐỘNG</span><strong id="mst-badge-active" class="done">0</strong></div>
+      <div class="card"><span>NGỪNG HOẠT ĐỘNG</span><strong id="mst-badge-inactive">0</strong></div>
+      <div class="card"><span>KHÔNG TÌM THẤY</span><strong id="mst-badge-notfound">0</strong></div>
+      <div class="card"><span>LỖI</span><strong id="mst-badge-error" class="failed">0</strong></div>
+    </div>
+    <section class="card progress-card" id="mst-progress-section" hidden>
+      <div class="progress-heading"><strong id="mst-progress-text">Sẵn sàng</strong><span id="mst-progress-detail">0%</span></div>
+      <progress id="mst-progress-fill" value="0" max="100"></progress>
+    </section>
+    <section class="card table-card">
+      <div class="table-head"><h3>Kết quả tra cứu</h3><span id="mst-results-count" class="badge">0 MST</span></div>
+      <div class="table-scroll"><table><thead><tr><th class="stt">STT</th><th>Mã số thuế</th><th>Tên doanh nghiệp / NNT</th><th>Trạng thái</th><th>Cơ quan thuế</th><th>Địa chỉ</th></tr></thead><tbody id="mst-results-body"></tbody></table><div id="mst-results-empty" class="empty"><div class="empty-icon">▤</div><h3>Chưa có kết quả</h3><p>Nhập danh sách MST, lấy mã xác thực rồi bấm <b>Tra cứu</b>.</p></div></div>
+    </section>
+    <section class="card">
+      <div class="table-head"><h3>Nhật ký</h3><button id="mst-btn-clear-log" class="secondary" type="button">Xoá</button></div>
+      <div id="mst-log-container" class="log-list"><div class="log-entry log-info"><span class="log-time">--:--:--</span><span>Sẵn sàng tra cứu MST.</span></div></div>
+    </section>
+  </section>
+</div>>
+
+<div class="workspace" id="pane-tokhai" hidden>
+  <section class="card filters">
+    <h3>Tờ khai thuế &amp; dịch vụ công</h3>
+    <p class="hint">Chọn cổng, đăng nhập một lần rồi tra cứu theo khoảng ngày. Cổng <b>Thuế điện tử</b> cần mở Chrome và đăng nhập trên chính trang cổng.</p>
+
+    <div class="conn-bar">
+      <span class="status-dot" id="ttk-conn-dot"></span>
+      <span class="conn-text"><strong id="ttk-user-mst">Chưa kết nối</strong><small id="ttk-user-name">Chọn MST rồi bấm Đăng nhập</small></span>
+    </div>
+    <div class="actions">
+      <button id="ttk-btn-show-login" type="button">Đăng nhập</button>
+      <button id="ttk-btn-sync-token" type="button" title="Đọc phiên đăng nhập đang có trong cửa sổ Chrome">Đồng bộ Web</button>
+    </div>
+
+    <div id="ttk-card-direct-login" class="login-box" hidden>
+      <div class="login-box-head">
+        <h4 class="login-box-title">Đăng nhập trực tiếp</h4>
+        <button id="ttk-btn-close-login" type="button" aria-label="Đóng khung đăng nhập">×</button>
+      </div>
+      <label>Cổng<select id="ttk-login-portal"><option value="dvc">Dịch vụ công (DVC)</option><option value="tdt">Thuế điện tử (eTax)</option></select></label>
+      <label>Tài khoản / MST<input id="ttk-login-user" autocomplete="username" maxlength="64" spellcheck="false"></label>
+      <label>Mật khẩu<span class="pass-wrap"><input id="ttk-login-pass" type="password" autocomplete="off" maxlength="200"><button id="ttk-btn-toggle-pass" type="button" title="Hiện mật khẩu">👁</button></span></label>
+      <div class="captcha-row">
+        <div class="captcha-display"><img id="ttk-captcha-img" alt="Mã xác thực" hidden><span id="ttk-captcha-loading-text">Đang nạp mã…</span></div>
+        <input id="ttk-login-captcha" class="captcha-input" placeholder="Mã xác thực" maxlength="10" autocomplete="off" spellcheck="false">
+        <button id="ttk-btn-reload-captcha" type="button" title="Đổi mã xác thực">Đổi mã</button>
+      </div>
+      <label class="remember"><input type="checkbox" id="ttk-chk-remember" checked> Nhớ tài khoản và mật khẩu cho MST này</label>
+      <button id="ttk-btn-do-login" class="primary wide" type="button">Đăng nhập trực tiếp</button>
+      <button id="ttk-btn-open-portal" class="secondary wide" type="button">Mở cổng trên Chrome</button>
+    </div>
+
+    <h3 class="section-title">Hệ thống</h3>
+    <div class="data-seg" role="group" aria-label="Chọn hệ thống">
+      <button type="button" class="portal-tab active" data-portal="dvc">Dịch vụ công</button>
+      <button type="button" class="portal-tab" data-portal="tdt">Thuế điện tử</button>
+    </div>
+
+    <h3 class="section-title">Khoảng thời gian</h3>
+    <div class="date-grid">
+      <label>Từ ngày<input id="ttk-txt-tu-ngay" type="date"></label>
+      <label>Đến ngày<input id="ttk-txt-den-ngay" type="date"></label>
+    </div>
+    <div class="data-chips" role="group" aria-label="Chọn nhanh kỳ">
+      <button type="button" class="preset-btn active" data-preset="this_month">Tháng này</button>
+      <button type="button" class="preset-btn" data-preset="last_month">Tháng trước</button>
+      <button type="button" class="preset-btn" data-preset="q1">Quý 1</button>
+      <button type="button" class="preset-btn" data-preset="q2">Quý 2</button>
+      <button type="button" class="preset-btn" data-preset="q3">Quý 3</button>
+      <button type="button" class="preset-btn" data-preset="q4">Quý 4</button>
+      <button type="button" class="preset-btn" data-preset="this_year">Năm nay</button>
+    </div>
+
+    <div class="search-actions">
+      <button id="ttk-btn-search" class="primary" type="button">Tìm kiếm</button>
+      <button id="ttk-btn-bulk-download" type="button" disabled>Tải tất cả</button>
+    </div>
+  </section>
+
+  <section class="results">
+    <section class="card table-card" id="ttk-results-section" hidden>
+      <div class="table-head"><h3>Danh sách tờ khai</h3><span id="ttk-result-count" class="badge">0 hồ sơ</span></div>
+      <div class="table-scroll"><table><thead><tr><th class="stt">STT</th><th>Mã hồ sơ</th><th>Tờ khai</th><th>Kỳ tính thuế</th><th>Loại</th><th>Lần BS</th><th>Lần nộp</th><th>Ngày nộp</th><th>Trạng thái</th><th>Thao tác</th></tr></thead><tbody id="ttk-results-body"></tbody></table><div id="ttk-results-empty" class="empty"><div class="empty-icon">▤</div><h3>Chưa có kết quả</h3><p>Chọn khoảng thời gian, đăng nhập rồi bấm <b>Tìm kiếm</b>.</p></div></div>
+    </section>
+    <section class="card">
+      <div class="table-head"><h3>Nhật ký</h3><button id="ttk-btn-clear-log" class="secondary" type="button">Xoá</button></div>
+      <div id="ttk-log-container" class="log-list"><div class="log-entry log-info"><span class="log-time">--:--:--</span><span>Sẵn sàng tải tờ khai.</span></div></div>
+    </section>
+  </section>
+</div>>
+
 </section>
-<script src="mst-format.js"></script><script src="period.js"></script><script src="boot-cache.js"></script><script src="renderer.js"></script><script src="bank-pdf.js"></script><script src="data-ui.js"></script><script src="vendor/sound.js"></script><script src="app-settings.js"></script></body></html>
+<script src="mst-format.js"></script><script src="period.js"></script><script src="boot-cache.js"></script><script src="renderer.js"></script><script src="bank-pdf.js"></script><script src="data-ui.js"></script><script src="dvt-ui.js"></script><script src="mst-lookup-ui.js"></script><script src="tokhai-ui.js"></script><script src="vendor/sound.js"></script><script src="app-settings.js"></script></body></html>

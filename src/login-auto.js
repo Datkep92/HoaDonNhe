@@ -14,7 +14,9 @@ const captchaSolver = require('./captcha-solver');
 const PORTAL = 'https://hoadondientu.gdt.gov.vn';
 const MAX_ATTEMPTS = 5;
 // Nghỉ ngắn giữa các lần thử để không trông như flood (pace.js đã chặn nhịp request rồi).
-const RETRY_DELAY_MS = 600;
+// 200ms thay vì 600ms: pace.js đã giữ nhịp giữa các request tới cổng thuế rồi, nên 600ms ở đây
+// chỉ làm chậm không cần thiết. 200ms vẫn đủ để không giống flood.
+const RETRY_DELAY_MS = 200;
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 

@@ -60,11 +60,14 @@ test('buildWorkbook: đủ 7 sheet riêng theo chiều/loại, đúng header và
     seed(db);
     const { buffer, counts } = excelExport.buildWorkbook(db, {});
     const { names, rows } = open(buffer);
+    // 7 sheet — sheet 'Tra cứu PDF gốc NCC' đã BỎ theo yêu cầu người dùng: tải Excel ra
+    // rồi tự mở cổng tra cứu là vô ích. Việc đó nay ở cột "PDF gốc" của tab Danh sách.
     assert.deepEqual(names, [SHEET.buy, SHEET.sell, SHEET.productsBuy, SHEET.productsSell, SHEET.suppliers, SHEET.buyers, SHEET.bank]);
     assert.equal(counts.buy, 2, 'hai hoá đơn mua vào');
     assert.equal(counts.sell, 1, 'một hoá đơn bán ra');
     assert.equal(counts.suppliers, 1, 'một nhà cung cấp');
     assert.equal(counts.buyers, 1, 'một khách hàng');
+    assert.ok(!('lookup' in counts), 'không được dựng sheet tra cứu NCC nữa');
     assert.deepEqual(rows(SHEET.buy)[0], excelExport.INVOICE_HEADERS);
     assert.deepEqual(rows(SHEET.sell)[0], excelExport.INVOICE_HEADERS);
     assert.equal(rows(SHEET.buy).length, 3, 'header + 2 dòng');
@@ -157,9 +160,12 @@ test('xuất riêng từng bảng: chỉ đúng sheet được chọn, tên file
     assert.deepEqual(open(suppliersOnly.buffer).names, [SHEET.suppliers]);
     assert.equal(suppliersOnly.counts.suppliers, 1, 'nhà cung cấp đủ danh sách');
 
-    // Mã bảng lạ bị bỏ qua; danh sách rỗng ⇒ quay về xuất tất cả.
+    // Mã bảng lạ bị bỏ qua; danh sách rỗng ⇒ quay về xuất tất cả (7 sheet).
     assert.equal(open(excelExport.buildWorkbook(db, {}, ['khong-ton-tai']).buffer).names.length, 7);
     assert.equal(open(excelExport.buildWorkbook(db, {}, []).buffer).names.length, 7);
+    // Mã 'lookup' đã bị gỡ khỏi Excel ⇒ coi như mã lạ, bị bỏ qua chứ không tạo sheet rỗng.
+    const lookupOnly = excelExport.buildWorkbook(db, {}, ['lookup']);
+    assert.equal(open(lookupOnly.buffer).names.length, 7);
   });
 });
 

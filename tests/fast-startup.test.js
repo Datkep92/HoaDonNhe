@@ -56,17 +56,23 @@ test('danh tính máy được nhớ trong tiến trình (nhánh AES gọi mỗi
 
 // ---- kiểm tra phiên chạy nền, không chặn giao diện ---------------------------
 
-test('kiểm tra phiên lúc khởi động được trì hoãn, không chạy ngay lúc mở app', () => {
-  assert.match(serverSrc, /SESSION_CHECK_DELAY_MS\s*=\s*\d+/, 'phải có hằng số trễ');
+test('kiểm tra phiên chạy NGAY khi mở app (yêu cầu: phiên sẵn sàng cùng lúc mở ứng dụng)', () => {
+  // Yêu cầu của người dùng: login tự động phải khởi động CÙNG LÚC mở ứng dụng. Trước đây cố ý
+  // trễ 10s "để giao diện kịp vẽ" — đúng làm người dùng phải bấm nút rồi mới đăng nhập, và bấm
+  // nút lúc đó thường trúng lỗi vì engine chưa có. Nay chạy ngay (delay 0): đọc token hàng loạt
+  // chỉ spawn PowerShell, KHÔNG chặn phần vẽ giao diện.
   const delay = Number(/SESSION_CHECK_DELAY_MS\s*=\s*(\d+)/.exec(serverSrc)[1]);
-  assert.ok(delay >= 8000, `trễ ${delay}ms là quá ngắn, giao diện kịp chưa vẽ xong`);
-  assert.ok(delay <= 20000, `trễ ${delay}ms là quá dài, phiên hết hạn mà chưa ai kiểm tra`);
+  assert.equal(delay, 0, `kiểm tra phiên phải chạy ngay lúc mở app (delay 0), đang là ${delay}ms`);
+  // Và phải được gọi khi khởi động, không chỉ có hằng số nằm đó.
+  const boot = serverSrc.slice(serverSrc.indexOf('Khởi động CN Tax Tools'));
+  assert.ok(/ensureSessionCheck\(\)/.test(boot), 'phải gọi ensureSessionCheck() lúc khởi động app');
 });
 
 test('REGRESSION: nơi cần phiên sống phải chờ lần kiểm tra đang chạy', () => {
-  // Nếu không chờ: người dùng bấm Tra cứu trong 10 giây đầu sẽ bị báo "chưa đăng
-  // nhập" và phải đăng nhập lại, dù phiên vẫn còn nguyên.
-  for (const route of ['/api/search', '/api/stream']) {
+  // Nếu không chờ: người dùng bấm Tải hoá đơn trong lúc lượt kiểm tra phiên đang chạy sẽ bị báo
+  // "chưa đăng nhập" và phải đăng nhập lại, dù phiên vẫn còn nguyên.
+  // /api/download là đường của nút tải từ 1.1.2; /api/search và /api/stream còn lại cho nội bộ.
+  for (const route of ['/api/download', '/api/search', '/api/stream']) {
     const at = serverSrc.indexOf(`url.pathname === '${route}'`);
     assert.ok(at > 0, `không tìm thấy route ${route}`);
     const tail = serverSrc.slice(at, at + 400);

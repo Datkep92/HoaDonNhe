@@ -205,6 +205,30 @@ test('status đủ dữ liệu cho UI: khung giờ, đang trong khung hay không
   assert.deepEqual(status.windows.map(w => `${w.from}-${w.to}`), ['08:00-18:00']);
 });
 
+test('nhường xong thì KHÔNG tự chạy lại cho tới khi có nhịp mới', async () => {
+  // Lỗi thật đã gặp: sau khi nhường, `state.phase` là 'yielded' nhưng nếu vòng lặp vẫn gọi
+  // `start()` được thì MST đó chạy lại ngay — người dùng vừa mở cửa sổ thì app lại quét nền.
+  // Chốt ở đây: `current` phải được xoá khi lượt kết thúc, và chỉ `tick()` mới được khởi động.
+  let open = false;
+  const h = harness({ due: () => [{ mst: 'A', lastSync: 0 }], uiClosed: () => !open });
+  await h.scheduler.tick();
+  assert.equal(h.started.length, 1, 'đã bắt đầu chạy nền');
+
+  open = true;                        // người dùng mở cửa sổ
+  await h.scheduler.tick();
+  assert.deepEqual(h.paused, ['A'], 'phải yêu cầu dừng');
+  assert.equal(h.scheduler.running, true, 'lúc này lượt chưa kết thúc nên vẫn coi là đang chạy');
+
+  h.finishRun();                      // engine thoát ra theo cờ dừng
+  await flush();
+  assert.equal(h.scheduler.running, false, 'lượt đã kết thúc ⇒ current phải rỗng');
+
+  // Nhịp tiếp theo: cửa sổ vẫn mở ⇒ KHÔNG được chạy lại.
+  await h.scheduler.tick();
+  assert.equal(h.started.length, 1, 'KHÔNG tự chạy lại sau khi đã nhường');
+  assert.match(h.scheduler.status().reason, /cửa sổ app đang mở/, 'lý do phải nói rõ đã nhường vì sao');
+});
+
 test('stop() ngưng MST đang chạy và không nhận nhịp mới', async () => {
   const h = harness({ due: () => [{ mst: 'A', lastSync: 0 }] });
   await h.scheduler.tick();

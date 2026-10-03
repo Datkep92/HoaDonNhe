@@ -21,6 +21,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { buildImportRecord, parseInvoiceXml } = require('./xml-parser');
+const { samePersonName } = require('./identity-candidates');
 const { insertInvoice, upsertInvoice, findInvoiceByKey, recordImportedFile } = require('./repository');
 const { withTransaction } = require('./sqlite');
 const { isExcluded } = require('./invoice-state');
@@ -56,6 +57,30 @@ function collectXmlFiles(root) {
 }
 
 // Danh sách XML của một MST: theo thứ tự Mua_vao → Ban_ra → file rời trong thư mục MST.
+// Đọc khối `parties` (hai đầu mã + chiều đã tra) do engine ghi lúc tải. File cũ không có khối này
+// ⇒ rỗng, mọi thứ rơi về hành vi cũ (không nhận diện theo chiều).
+function readParties(mstDir) {
+  try {
+    const raw = JSON.parse(fs.readFileSync(path.join(mstDir, STATE_FILE), 'utf8'));
+    const entries = raw && typeof raw === 'object' && raw.parties && typeof raw.parties === 'object' ? raw.parties : {};
+    const list = [];
+    for (const value of Object.values(entries)) {
+      if (!value || typeof value !== 'object') continue;
+      const row = {};
+      for (const field of ['nbmst', 'nmmst', 'nbten', 'nmten']) {
+        const text = String(value[field] ?? '').trim();
+        if (text) row[field] = text;
+      }
+      const direction = String(value.direction ?? '').trim();
+      if ((direction === 'sold' || direction === 'purchase') && (row.nbmst || row.nmmst)) {
+        row.direction = direction;
+        list.push(row);
+      }
+    }
+    return list;
+  } catch { return []; }
+}
+
 function listMstXmlFiles(mstDir, folders = Object.keys(FOLDER_DIRECTION)) {
   const list = [];
   for (const folder of folders) {
@@ -101,6 +126,93 @@ function readStates(mstDir) {
   return states;
 }
 
+// ---------------------------------------------------------------------------
+// BẰNG CHỨNG CHIỀU TRA CỨU — dùng để nhận diện hoá đơn thuộc hồ sơ KHI MÃ KHÁC MST hồ sơ.
+// ---------------------------------------------------------------------------
+// Bối cảnh thật (đo trên dữ liệu của khách): hồ sơ MST 8021214462-001 nhưng hoá đơn bán ra lấy về
+// có người bán là 058183000994 — vì một chủ có NHIỀU mã (MST + CCCD, MST chi nhánh…). Cổng thuế ĐÃ
+// lọc sẵn theo MST đang đăng nhập: tra "bán ra" thì mọi hồ sơ trả về đều có hồ sơ làm người bán.
+// detectDirection() chỉ so MST trong XML với MST hồ sơ nên thành UNKNOWN ⇒ 86 file không vào kho.
+//
+// Khối `parties` trong trang-thai-hoa-don.json (engine ghi lúc tải) lưu lại hai đầu mã + chiều đã
+// tra, để ở đây đối chiếu. Cổng thuế lọc sẵn theo MST đang đăng nhập, nên:
+//   · lượt tra "bán ra"  (sold)    : hồ sơ là NGƯỜI BÁN  ⇒ mã hồ sơ ở nbmst, đối tác ở nmmst
+//   · lượt tra "mua vào" (purchase) : hồ sơ là NGƯỜI MUA   ⇒ mã hồ sơ ở nmmst, đối tác ở nbmst
+//
+// VÌ SAO MỘT CHIỀU LÀ ĐỦ (đo trên dữ liệu thật, không phải suy đoán):
+// Cổng thuế lọc sẵn theo MST đang đăng nhập, nên trong lượt tra "mua vào", MỌI hồ sơ trả về đều
+// có hồ sơ ở phía người mua (nmmst). Do đó mã nào đứng ở nmmst của lượt mua vào CHÍNH LÀ MÃ CỦA
+// HỒ SƠ — đối tác đứng ở nbmst (sai phía). Lượt tra "bán ra" đối xứng: hồ sơ ở nbmst.
+//
+// Vì vậy CHỈ CẦN CHIỀU NÀO có dữ liệu cũng đủ; không bắt buộc phải đủ cả hai. Điều kiện BẮT BUỘC:
+//   1) KHÔNG hề đứng sai phía: sold ⇒ mã ở nbmst; purchase ⇒ mã ở nmmst. Sai phía lần nào là loại
+//      tuyệt đối — đây là điều kiện CHỐNG GÁN NHẦM mạnh nhất (nhà cung cấp luôn sai phía);
+//   2) lượt quét phải xếp file này vào đúng phía hồ sơ (`ownSide`) — mã ở thư mục/file đối lập với
+//      chiều đã tra là đối tác, không phải mã hồ sơ;
+//   3) tên khớp tên hồ sơ SAU khi bỏ dấu + bỏ cụm pháp lý, HOẶC số lượng vượt ngưỡng (để tránh
+//      trùng tên cụt); và số lượng của mã lạ này phải LỚN HƠN số lần của mọi mã lạ khác.
+//
+// Hệ quả nếu thiếu điều kiện nào: hệ thống rơi về hành vi cũ (ghi mã lạ vào ma-chua-xac-dinh.json,
+// người dùng tự gán) — không đoán bừa.
+const OWN_SIDE_MIN_COUNT = 5; // ngưỡng "số lượng lớn" khi tên không khớp
+
+// Gom bằng chứng phía cho từng mã lạ, từ toàn bộ khối `parties` đã đọc.
+// Trả Map<mã, { own, wrong }> — own = số lần đứng ĐÚNG phía, wrong = số lần đứng SAI phía.
+function partyEvidence(parties, identifiers) {
+  // identifiers có thể undefined (lượt nhập từ dòng lệnh / test không truyền) ⇒ coi như chỉ có MST.
+  const own = new Set((Array.isArray(identifiers) ? identifiers : [identifiers])
+    .map(v => String(v ?? '').trim()).filter(Boolean));
+  const byCode = new Map();
+  const bump = (code, field) => {
+    const key = String(code).trim();
+    const seen = byCode.get(key) || { own: 0, wrong: 0, sold: 0, purchase: 0 };
+    seen[field] += 1;
+    byCode.set(key, seen);
+  };
+  for (const row of parties) {
+    // Chiều 'sold' ⇒ đúng phía là nbmst; 'purchase' ⇒ đúng phía là nmmst. Đầu kia là đối tác.
+    const right = String(row.direction === 'sold' ? row.nbmst : row.nmmst || '').trim();
+    const other = String(row.direction === 'sold' ? row.nmmst : row.nbmst || '').trim();
+    if (right && !own.has(right)) {
+      bump(right, 'own');
+      byCode.get(right)[row.direction === 'sold' ? 'sold' : 'purchase'] += 1;
+    }
+    if (other && !own.has(other)) bump(other, 'wrong');
+  }
+  return byCode;
+}
+
+// Mã lạ có đủ bằng chứng để coi là của hồ sơ không? Trả mã đạt, hoặc '' nếu chưa đủ.
+// `codes` = tập mã lạ thấy trong các file XML (kèm tên + số lần), `identifiers` = mã hồ sơ.
+function resolveOwnCode({ codes, parties, identifiers, profileNames }) {
+  const evidence = partyEvidence(parties, identifiers);
+  const candidates = [];
+  for (const [code, seen] of evidence) {
+    if (seen.wrong > 0) continue; // từng đứng sai phía một lần ⇒ là đối tác, tuyệt đối không gán
+    if (!seen.own) continue;
+    const info = codes.get(code) || {};
+    if (info.ownSide !== true) continue; // lượt này file nằm ở phía đối diện chiều tra
+    candidates.push({ code, seen, info });
+  }
+  // Nhiều mã cùng đạt thì lấy mã ĐỨNG ĐẦU (nhiều hồ sơ nhất) — trường hợp này hiếm và nếu có thì
+  // người dùng vẫn xem được lý do trong nhật ký để kiểm chứng.
+  candidates.sort((a, b) => b.seen.own - a.seen.own || String(a.code).localeCompare(String(b.code)));
+  const best = candidates[0];
+  if (!best) return null;
+  // Phải vượt mọi mã lạ khác một cách rõ ràng, nếu không thì bằng chứng không đủ phân biệt.
+  if (candidates.length > 1 && best.seen.own <= candidates[1].seen.own) return null;
+  const count = Number(best.info.count || 0) || best.seen.own;
+  const sameName = profileNames.some(name => samePersonName(best.info.ten, name));
+  const many = count >= OWN_SIDE_MIN_COUNT;
+  if (!sameName && !many) return null;
+  const direction = best.seen.purchase > best.seen.sold ? 'purchase' : 'sold';
+  return {
+    code: best.code,
+    direction,
+    reason: sameName ? `tên khớp hồ sơ, ${count} hồ sơ` : `${count} hồ sơ cùng chiều`,
+  };
+}
+
 function previousFile(db, filePath) {
   return db.prepare('SELECT status, file_size, modified_time, invoice_key FROM imported_files WHERE file_path = ? ORDER BY id DESC LIMIT 1').get(filePath) || null;
 }
@@ -118,7 +230,7 @@ function stateChanged(db, known, states) {
 }
 
 // Xử lý ĐÚNG MỘT file: mọi lỗi được bắt tại đây để một file hỏng không làm dừng cả lượt.
-function processFile({ db, mst, identifiers, filePath, folder, summary, states }) {
+function processFile({ db, mst, identifiers, filePath, folder, summary, states, ownCodes }) {
   const name = path.basename(filePath);
   const expected = FOLDER_DIRECTION[folder] || '';
   let stat;
@@ -188,7 +300,22 @@ function processFile({ db, mst, identifiers, filePath, folder, summary, states }
     // bình thường — ghi vết (ownSide:false) nhưng UI không đề nghị gán.
     if (error && Array.isArray(error.unknownParties) && error.unknownParties.length) {
       const expectedSide = expected === 'BUY' ? 'mua' : (expected === 'SELL' ? 'ban' : '');
-      (summary.unknownSeen ||= []).push(...error.unknownParties.map(party => ({ ...party, file: filePath, ownSide: !expectedSide || party.side === expectedSide })));
+      for (const party of error.unknownParties) {
+        const ownSide = !expectedSide || party.side === expectedSide;
+        (summary.unknownSeen ||= []).push({ ...party, file: filePath, ownSide });
+        // Dồn mã lạ theo tên + số lần + phía, để sau lượt quét mới đủ căn cứ gán (resolveOwnCode).
+        // File MỚI mới đếm: cùng một file bị quét lại không được tăng bộ đếm.
+        if (ownCodes) {
+          const code = String(party.code || '').trim();
+          if (code) {
+            const seen = ownCodes.get(code) || { ten: '', count: 0, ownSide: false, files: new Set() };
+            if (party.ten && !seen.ten) seen.ten = String(party.ten).trim();
+            if (ownSide) seen.ownSide = true;
+            if (seen.files.size < 5000) seen.files.add(filePath);
+            ownCodes.set(code, seen);
+          }
+        }
+      }
     }
     try {
       recordImportedFile(db, { ...base, status: 'error', errorMessage: message });
@@ -244,10 +371,58 @@ async function reprocessPaymentMethods({ db, mstDir, onFile, limit = 0 } = {}) {
   return result;
 }
 
-async function scanXmlFolder({ db, mst, identifiers, mstDir, folders = Object.keys(FOLDER_DIRECTION), onlyFiles, onFile, observeCandidates = defaultObserveCandidates }) {
+// ---------------------------------------------------------------------------
+// BÙ CỘT TRA CỨU NCC CHO HÓA ĐƠN ĐÃ CÓ (Mục 2 — cần thiết khi nâng schema).
+//
+// Vì sao không dùng lượt quét thường: quét gặp file đã nhập thì đánh dấu "trùng"
+// và KHÔNG cập nhật dòng đã có, nên cột mới luôn NULL với kho cũ. Hàm này đọc thẳng
+// file XML mà invoices.file_xml trỏ tới và ghi đè 6 cột tra cứu.
+//
+// Hẹn (giống reprocessPaymentMethods): chỉ xét dòng đang thiếu, tự bỏ qua dòng đã có
+// dữ liệu ⇒ chạy lại nhiều lần cho cùng kết quả (idempotent). File XML không còn thì
+// đếm `missing` và GIỮ NGUYÊN giá trị cũ — không đoán, không ghi rỗng.
+// ---------------------------------------------------------------------------
+async function backfillProviderLookup({ db, mstDir, onFile, limit = 0 } = {}) {
+  const rows = db.prepare(`SELECT id, file_xml FROM invoices
+    WHERE msttcgp IS NULL OR provider_id IS NULL
+    ORDER BY id${Number(limit) > 0 ? ` LIMIT ${Number(limit)}` : ''}`).all();
+  const result = { candidates: rows.length, updated: 0, missing: 0, failed: 0 };
+  const update = db.prepare(`UPDATE invoices SET
+    msttcgp = ?, lookup_code = ?, lookup_url = ?, provider_id = ?, provider_name = ?, provider_level = ?
+    WHERE id = ?`);
+  for (const row of rows) {
+    if (typeof onFile === 'function') onFile({ ...result, current: row.file_xml });
+    await yieldToLoop();
+    let source;
+    try {
+      if (!row.file_xml || !fs.existsSync(row.file_xml)) { result.missing += 1; continue; }
+      source = fs.readFileSync(row.file_xml, 'utf8');
+    } catch { result.missing += 1; continue; }
+    let record;
+    try { record = parseInvoiceXml(source).record; } catch { result.failed += 1; continue; }
+    update.run(
+      record.msttcgp ?? null,
+      record.lookupCode ?? null,
+      record.lookupUrl ?? null,
+      record.providerId ?? null,
+      record.providerName ?? null,
+      record.providerLevel ?? null,
+      row.id,
+    );
+    result.updated += 1;
+  }
+  return result;
+}
+
+async function scanXmlFolder({ db, mst, identifiers, mstDir, folders = Object.keys(FOLDER_DIRECTION), onlyFiles, onFile, observeCandidates = defaultObserveCandidates, profileNames }) {
   const summary = { scanned: 0, imported: 0, updated: 0, duplicates: 0, skipped: 0, errors: 0, inactive: 0, items: 0, warningCount: 0, files: [] };
   const notify = () => { if (typeof onFile === 'function') onFile(summary); };
   const states = readStates(mstDir);
+  // Nhận diện hoá đơn thuộc hồ sơ khi MÃ ghi trong XML khác MST hồ sơ (một chủ nhiều mã):
+  // dùng bằng chứng chiều tra cứu + tên/số lượng. Xem partyEvidence() và OWN_SIDE_MIN_COUNT.
+  // ownCodes = Map<mã, { ten, count, ownSide }> dồn từ chính các file XML lỗi của lượt này.
+  const ownCodes = new Map();
+  const names = Array.isArray(profileNames) ? profileNames.map(String).filter(Boolean) : [];
   let targets;
   if (Array.isArray(onlyFiles) && onlyFiles.length) {
     // Chế độ "chỉ nhập ĐÚNG các file này" (engine truyền danh sách file VỪA tải): thay vì quét lại
@@ -267,7 +442,7 @@ async function scanXmlFolder({ db, mst, identifiers, mstDir, folders = Object.ke
     withTransaction(db, () => {
       for (const { filePath, folder } of batch) {
         summary.scanned += 1;
-        processFile({ db, mst, identifiers, filePath, folder, summary, states });
+        processFile({ db, mst, identifiers, filePath, folder, summary, states, ownCodes });
         // Thông báo tiến độ TỪNG FILE: UI đọc qua /api/db/import/status (polling) nên chi phí chỉ là
         // vài phép gán trong bộ nhớ, không phải "hàng nghìn UI update". Giao dịch vẫn GỘP THEO LÔ
         // (IMPORT_BATCH_SIZE) — đó mới là chỗ tiết kiệm thời gian ghi SQLite.
@@ -285,6 +460,31 @@ async function scanXmlFolder({ db, mst, identifiers, mstDir, folders = Object.ke
       pendingRescan = observed.added.length > 0;
     } catch { /* vết phụ — không được làm hỏng kết quả quét chính */ }
   }
+  // Mã lạ đủ bằng chứng là mã của HỒ SƠ (một chủ nhiều mã) ⇒ nhập lại ngay trong lượt này.
+  // File lỗi UNKNOWN giữ status 'error' nên lượt nhập lại ĐỌC LẠI được, không bị coi là đã nhập.
+  const own = resolveOwnCode({ codes: ownCodes, parties: readParties(mstDir), identifiers, profileNames: names });
+  if (own) {
+    const retried = [...ownCodes.values()].flatMap(info => [...info.files]);
+    summary.ownCode = { code: own.code, reason: own.reason, direction: own.direction, files: retried.length };
+    try {
+      const again = await scanXmlFolder({
+        db, mst, mstDir, onlyFiles: retried, identifiers: [...identifiers, own.code],
+        profileNames: names, observeCandidates: () => ({ added: [], merged: 0 }),
+      });
+      summary.imported += again.imported;
+      summary.updated += again.updated;
+      summary.duplicates += again.duplicates;
+      summary.skipped += again.skipped;
+      summary.items += again.items;
+      summary.warningCount += again.warningCount;
+      summary.inactive += again.inactive;
+      summary.files.push(...again.files);
+      // Đã vào kho rồi thì không cần hẹn quét lại lần nữa.
+      if (again.imported || again.updated) pendingRescan = false;
+    } catch (error) {
+      summary.secondPassError = `Nhập lại với mã ${own.code} lỗi: ${error && error.message ? error.message : error}`;
+    }
+  }
   // Hóa đơn mới vào kho ⇒ kết quả đối chiếu cũ lệch → tính lại NGAY.
   // reconcile() chỉ chạy thật khi có dòng chưa có trạng thái (tức là có gì đó đổi),
   // nên lượt quét không có gì mới chỉ tốn 2 câu COUNT — không làm chậm auto sync / watcher.
@@ -292,4 +492,4 @@ async function scanXmlFolder({ db, mst, identifiers, mstDir, folders = Object.ke
   return { ...summary, pendingRescan };
 }
 
-module.exports = { scanXmlFolder, reprocessPaymentMethods, alreadyImported, previousFile, processFile, stateChanged, collectXmlFiles, listMstXmlFiles, folderOf, readStates, FOLDER_DIRECTION, IMPORT_BATCH_SIZE, STATE_FILE, LEGACY_SUPERSEDED_FILE };
+module.exports = { scanXmlFolder, reprocessPaymentMethods, backfillProviderLookup, alreadyImported, previousFile, processFile, stateChanged, collectXmlFiles, listMstXmlFiles, folderOf, readStates, readParties, partyEvidence, resolveOwnCode, OWN_SIDE_MIN_COUNT, FOLDER_DIRECTION, IMPORT_BATCH_SIZE, STATE_FILE, LEGACY_SUPERSEDED_FILE };

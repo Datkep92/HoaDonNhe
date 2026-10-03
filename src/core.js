@@ -59,16 +59,35 @@ function legacySupersededFile(output, mst) {
 }
 // Đọc trạng thái đã ghi: { states: { "khoá hoá đơn": "1".."6" } }. File hỏng/thiếu ⇒ rỗng.
 function readStates(file) {
+  return readStateFile(file).states;
+}
+// Đọc cả hai khối của sổ trạng thái: `states` (tthai) và `parties` (hai đầu mã + chiều đã tra).
+// File hỏng/thiếu ⇒ hai khối rỗng. Khối `parties` là MỚI nên file cũ chỉ có `states` vẫn đọc được.
+function readStateFile(file) {
   try {
     const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
-    const states = raw && typeof raw === 'object' && raw.states && typeof raw.states === 'object' ? raw.states : {};
-    const clean = {};
-    for (const [key, value] of Object.entries(states)) {
+    const source = raw && typeof raw === 'object' ? raw : {};
+    const states = {};
+    for (const [key, value] of Object.entries(source.states && typeof source.states === 'object' ? source.states : {})) {
       const state = String(value ?? '').trim();
-      if (key && /^[1-6]$/.test(state)) clean[String(key)] = state;
+      if (key && /^[1-6]$/.test(state)) states[String(key)] = state;
     }
-    return clean;
-  } catch { return {}; }
+    const parties = {};
+    for (const [key, value] of Object.entries(source.parties && typeof source.parties === 'object' ? source.parties : {})) {
+      if (!key || !value || typeof value !== 'object') continue;
+      // Chỉ giữ đúng 4 trường, ép chuỗi: file này do engine ghi nhưng cũng có thể do tay người dùng sửa.
+      const row = {};
+      for (const field of ['nbmst', 'nmmst', 'nbten', 'nmten']) {
+        const text = String(value[field] ?? '').trim();
+        if (text) row[field] = text;
+      }
+      const direction = String(value.direction ?? '').trim();
+      if (direction === 'sold' || direction === 'purchase') row.direction = direction;
+      // Cần ít nhất chiều đã tra + một đầu mã, thì mới đối chiếu được.
+      if (row.direction && (row.nbmst || row.nmmst)) parties[String(key)] = row;
+    }
+    return { states, parties };
+  } catch { return { states: {}, parties: {} }; }
 }
 // File cũ: mảng khoá trần hoặc { keys: [...] } ⇒ mọi khoá là '4'. Chỉ dùng khi file mới chưa có khoá đó.
 function readLegacySuperseded(file) {
@@ -80,15 +99,26 @@ function readLegacySuperseded(file) {
 }
 // Ghi trạng thái KIỂU ĐỌC–GỘP–GHI ĐỒNG BỘ (không có await ở giữa): lượt này không xoá dấu của
 // lượt trước, và hai lượt chạy song song không ghi đè lẫn nhau.
-function rememberStates(job, states) {
+// Bản ghi mỗi hoá đơn trong sổ trạng thái. `tthai` là phần CŨ (bản chuỗi trong `states`); `parties`
+// là phần MỚI, ghi ở khối riêng `parties` để không phá bản đọc cũ (src/data/xml-scanner.js).
+//
+// Vì sao cần `parties`: CỔNG THUẾ đã lọc sẵn theo MST đang đăng nhập — tra "bán ra" thì mọi hồ sơ
+// trả về đều có hồ sơ làm NGƯỜI BÁN, tra "mua vào" thì là NGƯỜI MUA. Nhưng XML tải về lại ghi MST
+// người bán/mua ở cả hai phía, và mã ghi trong XML có thể KHÁC MST hồ sơ (một chủ có nhiều mã:
+// MST + CCCD, MST chi nhánh…). Nếu chỉ dựa vào khớp mã thì hoá đơn đó thành UNKNOWN và không
+// vào kho. Ghi lại cả hai đầu mã + chiều đã tra, bộ nhập mới có căn cứ để đối chiếu thay vì đoán.
+function rememberStates(job, states, parties) {
   const mst = job.account && (job.account.mst || job.account.label);
   const file = stateFile(job.output, mst);
-  const merged = readStates(file);
+  const previous = readStateFile(file);
+  const merged = previous.states;
   for (const key of readLegacySuperseded(legacySupersededFile(job.output, mst))) {
     if (!merged[key]) merged[key] = '4';
   }
   for (const [key, value] of states) merged[String(key)] = String(value);
-  try { atomicWrite(file, JSON.stringify({ updatedAt: new Date().toISOString(), states: merged }, null, 1)); }
+  const mergedParties = previous.parties;
+  if (parties) for (const [key, value] of parties) mergedParties[String(key)] = value;
+  try { atomicWrite(file, JSON.stringify({ updatedAt: new Date().toISOString(), states: merged, parties: mergedParties }, null, 1)); }
   catch { /* không ghi được thì lần sau thử lại */ }
   return Object.keys(merged).length;
 }
@@ -164,6 +194,7 @@ function tasksFor(p) {
 // HTML hóa đơn: dùng bộ dựng giống trang tra cứu của cổng thuế (port từ luồng API của dự án
 // extension) để file .html và .pdf khớp bản chuẩn — xem src/invoice-html.js.
 const { invoiceHtml, withXmlFields } = require('./invoice-html');
+const { withProvenanceNote } = require('./data/invoice-a4');
 // Quy tắc "PDF này có rỗng không" dùng CHUNG với browser.js để chỗ sinh PDF và chỗ
 // ghi đĩa không lệch nhau — lệch một chỗ thì bản sửa tự-chữa biến mất.
 const { isBlankPdf } = require('./browser');
@@ -177,9 +208,16 @@ const excelDeadlineMs = () => { const value = Number(process.env.HOADON_EXCEL_TI
 // (`phase='download'`, `state='ready'`) VÀ mọi điều kiện tra cứu trùng khớp (từ ngày, đến ngày,
 // chiều mua/bán, nhóm/family, định dạng, trạng thái). Khác một điều kiện bất kỳ ⇒ phải chạy
 // lượt cuốn chiếu mới, tránh tải nhầm danh sách của lượt khác.
+const comparableParams = value => JSON.stringify({ ...value, formats: [...(value.formats || [])].sort() });
+// Hai bộ điều kiện tra cứu có trùng nhau không. Tách riêng (thay vì chỉ nằm trong canReuseSearch) vì
+// server.js dùng nó để QUYẾT ĐỊNH có chạy tiếp lượt cũ hay không: lượt còn dở mà người dùng đã
+// đổi khoảng ngày thì "Tải tiếp" phải chạy lượt MỚI theo khoảng ngày đang chọn, tuyệt đối không
+// lặp lại khoảng ngày cũ — cùng một luật so sánh cho cả hai nơi.
+function sameDownloadParams(job, requested) {
+  return !!job && !!job.params && !!requested && comparableParams(job.params) === comparableParams(requested);
+}
 function canReuseSearch(job, requested) {
-  const comparable = value => JSON.stringify({ ...value, formats: [...(value.formats || [])].sort() });
-  return !!job && job.phase === 'download' && job.state === 'ready' && comparable(job.params) === comparable(requested);
+  return !!job && job.phase === 'download' && job.state === 'ready' && comparableParams(job.params) === comparableParams(requested);
 }
 function classifyDownloadError(error) {
   const message = String(error?.message || error || 'Lỗi không xác định.');
@@ -189,6 +227,35 @@ function classifyDownloadError(error) {
   if (/XML|ZIP|gói tải/i.test(message)) return { type: 'invalid_xml', retryable: false, message };
   if (/ECONN|ENOTFOUND|EAI_AGAIN|socket|network/i.test(message)) return { type: 'network', retryable: true, message };
   return { type: 'portal', retryable: true, message };
+}
+
+// ---------------------------------------------------------------------------
+// TỰ THỬ LẠI — không bắt người dùng bấm "Tải tiếp" (luồng tải thủ công của nút Tải hóa đơn)
+// ---------------------------------------------------------------------------
+// Vì sao CHỈ một số loại lỗi được tự thử lại:
+//   · timeout / network / portal — lỗi TẠM THỜI của riêng hoá đơn đó (mạng chập, cổng bận
+//     vài giây). Thử lại sau vài giây là hợp lý và gần như luôn thành công.
+//   · invalid_xml — file hỏng, thử lại y hệt cũng hỏng ⇒ không lãng phí request.
+//   · auth — phải đăng nhập lại, thử lại vô ích (server tự mở form đăng nhập).
+//   · rate_limited — CỔNG đang giới hạn nhịp: cả lượt đều bị chặn, phải nghỉ dài chứ thử
+//     từng hoá đơn là dội thêm request vào cổng. Lượt này dừng như cũ; phần "tự chạy tiếp"
+//     sau khi nghỉ do server lo (xem AUTO_RESUME_* trong server.js).
+const RETRYABLE_DOWNLOAD_TYPES = new Set(['timeout', 'network', 'portal']);
+// Đọc LÚC GỌI (không phải hằng số nạp một lần) để test còn ép được giá trị nhỏ — như các
+// biến môi trường khác trong core.js (xem excelDeadlineMs).
+function downloadRetryConfig() {
+  const num = (name, fallback) => { const value = Number(process.env[name]); return Number.isFinite(value) && value > 0 ? value : fallback; };
+  return {
+    maxRetries: Math.floor(num('HOADON_DOWNLOAD_MAX_RETRIES', 3)),
+    baseDelayMs: num('HOADON_DOWNLOAD_RETRY_BASE_MS', 5000),
+    maxDelayMs: num('HOADON_DOWNLOAD_RETRY_MAX_MS', 60000),
+  };
+}
+// Lượt đang dở thì nút Tải hóa đơn hiện "Tải tiếp" thay vì "Tải hóa đơn" — dùng chung một
+// danh sách để giao diện (renderer.js) và server.js không tự chế mỗi bên một danh sách khác nhau.
+const RESUMABLE_STATES = new Set(['paused', 'failed', 'partial', 'auth_required']);
+function isResumableJob(job) {
+  return !!job && !!job.params && !!job.output && RESUMABLE_STATES.has(String(job.state || ''));
 }
 
 function xmlTag(xml, name) {
@@ -208,8 +275,14 @@ function validateInvoiceXml(xml, invoice) {
   return { ...actual, verified: !!(actual.number || actual.symbol || actual.form) };
 }
 class Engine {
-  constructor({ store, request, identity, emit, pdf, excel, shouldSkip }) {
+  constructor({ store, request, identity, emit, pdf, excel, shouldSkip, autoRetry = false, log }) {
     Object.assign(this, { store, request, identity, emit, pdf, excel, shouldSkip });
+    // autoRetry: TỰ thử lại hoá đơn lỗi TẠM THỜI ngay trong lượt chạy (không bắt người dùng
+    // bấm "Tải tiếp"). CHỈ bật cho luồng thủ công của nút Tải hóa đơn — Auto Sync và
+    // retryFailed() giữ hành vi cũ (tự quyết định lúc nào thử lượt) để test và lịch nền
+    // không đổi. `log` tuỳ chọn: ghi dòng thử lại ra nhật ký / tin nhắn trạng thái.
+    this.autoRetry = !!autoRetry;
+    this.log = typeof log === 'function' ? log : () => {};
     // Each run owns its cancellation signal; late results cannot resume an old run.
     for (const name of ['request', 'identity', 'pdf', 'excel', 'shouldSkip']) {
       const operation = this[name];
@@ -330,7 +403,11 @@ class Engine {
   async search(params, output) {
     params = validateParams(params);
     const account = await this.identity();
-    if (!account) throw new Error('Hãy đăng nhập cổng thuế trước.');
+    // Gắn cờ auth: lỗi này là "phiên không dùng được", KHÔNG phải người dùng sai. Nếu để là lỗi
+    // thường thì run() ghi state='failed' ⇒ server.js không kích hoạt tự đăng nhập nền ⇒ bấm nút
+    // lại là 400 y hệt, mãi (đúng lỗi đã gặp: token còn trong directTokens nhưng identity()
+    // không dựng được account). Cờ auth để lượt thành 'auth_required' và tự đăng nhập nền chạy.
+    if (!account) throw Object.assign(new Error('Hãy đăng nhập cổng thuế trước.'), { auth: true });
     if (!output || !path.isAbsolute(output)) throw new Error('Chọn thư mục lưu hóa đơn.');
     return this.run(async () => {
       this.job = { version: 1, id: crypto.randomUUID(), account, output, params, tasks: tasksFor(params), items: [], phase: 'search', state: 'searching', message: 'Đang tra cứu...' };
@@ -340,7 +417,7 @@ class Engine {
   async stream(params, output) {
     params = validateParams(params);
     const account = await this.identity();
-    if (!account) throw new Error('Hãy đăng nhập cổng thuế trước.');
+    if (!account) throw Object.assign(new Error('Hãy đăng nhập cổng thuế trước.'), { auth: true });
     if (!output || !path.isAbsolute(output)) throw new Error('Chọn thư mục lưu hóa đơn.');
     return this.run(async () => {
       this.job = {
@@ -367,6 +444,10 @@ class Engine {
       task.error = ''; task.warning = '';
       let seq = 0;
       const states = new Map(); // khoá hoá đơn → tthai: ghi ra MST-<mst>/trang-thai-hoa-don.json
+      // khoá hoá đơn → { nbmst, nmmst, nbten, nmten, direction }: hai đầu mã + CHIỀU ĐÃ TRA.
+      // Đây là căn cứ để bộ nhập biết hồ sơ này lấy về theo chiều nào, khi mã ghi trong XML khác
+      // MST hồ sơ (một chủ có nhiều mã). Xem xml-parser.js detectDirection().
+      const parties = new Map();
       let statesSaved = 0;
       // GỐI ĐẦU (chỉ ở "Tải ngay"): lấy trước TRANG KẾ trong lúc đang tải trang hiện tại, để không còn
       // khoảng nghỉ giữa hai trang. Nhịp cổng vẫn xếp hàng tuần tự ⇒ KHÔNG tăng áp lực lên cổng thuế.
@@ -392,11 +473,22 @@ class Engine {
               try { states.set(buildInvoiceKey({ mstBan: inv.nbmst, khmshDon: inv.khmshdon, khhDon: inv.khhdon, shDon: inv.shdon }), state); }
               catch { /* cổng trả thiếu trường ⇒ không ghi được khoá */ }
             }
+            // Ghi hai đầu mã + chiều đã tra cho MỌI hồ sơ cổng trả về (không phụ thuộc tthai có hợp lệ
+            // hay không): đây là dữ liệu đối chiếu, thiếu nó thì lượt nhập không có căn cứ.
+            try {
+              const partyKey = buildInvoiceKey({ mstBan: inv.nbmst, khmshDon: inv.khmshdon, khhDon: inv.khhdon, shDon: inv.shdon });
+              const row = { direction: j.params.direction === 'purchase' ? 'purchase' : 'sold' };
+              if (inv.nbmst) row.nbmst = String(inv.nbmst).trim();
+              if (inv.nmmst) row.nmmst = String(inv.nmmst).trim();
+              if (inv.nbten) row.nbten = String(inv.nbten).trim();
+              if (inv.nmten) row.nmten = String(inv.nmten).trim();
+              if (row.nbmst || row.nmmst) parties.set(partyKey, row);
+            } catch { /* cổng trả thiếu trường ⇒ không ghi được khoá */ }
             // KHÔNG chặn theo trạng thái: hoá đơn bị thay thế/điều chỉnh/huỷ vẫn được tải về và vào
             // kho. Chỉ lọc khi người dùng chủ động chọn đúng một trạng thái ở ô "Trạng thái hóa đơn".
             if (!keys.has(key) && (!j.params.status || state === j.params.status)) { keys.add(key); j.items.push({ invoice: inv, state: 'queued', files: [] }); order.set(key, [index, seq]); seq += 1; }
           }
-          if (states.size > statesSaved) { rememberStates(j, states); statesSaved = states.size; }
+          if (states.size > statesSaved) { rememberStates(j, states, parties); statesSaved = states.size; }
           const count = task.count + data.datas.length;
           const cursor = data.state === undefined || data.state === null ? '' : String(data.state);
           // Cổng thuế trả `total` KHÔNG nhất quán (đo thực tế: 295 vs 287 cho cùng một tháng;
@@ -497,7 +589,10 @@ class Engine {
       ? `Tra cứu chưa xong: ${j.items.length} hóa đơn đã lấy. Còn ${unfinished.length} tháng chưa hoàn tất (${unfinished.map(t => t.from.slice(0, 7)).join(', ')}). Bấm "Tải tiếp" để chạy nốt từ chỗ đã dừng.`
       : `Tra cứu xong theo cursor: ${j.items.length} hóa đơn.`)
       + (notes.length ? ` CHƯA XÁC NHẬN ĐỦ: ${notes.join('; ')} — xem chi tiết trong file job (mục tasks).` : '')
-      + (unfinished.length ? '' : ' Bấm Tải hóa đơn.');
+      // Không còn dòng "Bấm Tải hóa đơn": từ 1.1.2 lượt thủ công chạy thẳng stream (quét + tải
+      // cùng lúc) nên khi quét xong thì đã tải luôn. Lượt search() thuần chỉ còn trong Auto Sync
+      // / quét lần đầu, nơi bước tải do chính lịch gọi tiếp — nhắc "bấm nút" ở đó là sai.
+      + (unfinished.length ? '' : '');
     this.save();
   }
   async resume(download = false) {
@@ -566,7 +661,7 @@ class Engine {
       this.downloadFiles = this.scanFolder(root, jobDirection);
     }
     const onDisk = this.downloadFiles;
-    if (!incremental || !j.stats) j.stats = { total: j.items.length, existed: 0, queued: 0, downloaded: 0, skipped: 0, failed: 0 };
+    if (!incremental || !j.stats) j.stats = { total: j.items.length, existed: 0, queued: 0, downloaded: 0, skipped: 0, failed: 0, retrying: 0 };
     else j.stats.total = j.items.length;
     const recount = () => {
       const count = state => j.items.filter(item => item.state === state).length;
@@ -578,12 +673,17 @@ class Engine {
         downloaded: count('done'),
         skipped,
         failed: count('failed'),
+        // Hoá đơn đang CHỜ thử lại: không tính vào failed (chưa hỏng hẳn) và không tính vào
+        // queued (đang nghỉ) — hiện riêng để giao diện nói rõ "đang thử lại" thay vì im lặng.
+        retrying: count('retrying'),
       });
     };
     recount();
     this.save();
     const pendingItems = j.items.filter(item => !incremental || ['queued', 'failed'].includes(item.state));
-    const processItem = async item => {
+    // MỘT LẦN THỬ cho một hoá đơn. Tách riêng khỏi vòng tự thử lại (processItem bên dưới) để
+    // phần "gọi cổng + ghi đĩa" giữ nguyên một khối, không bị rẽ nhánh lồng vào nhau.
+    const attemptItem = async item => {
       await this.checkAccount();
       const inv = item.invoice;
       const suffix = crypto.createHash('sha256').update(invoiceKey(inv)).digest('hex').slice(0, 10);
@@ -691,20 +791,64 @@ class Engine {
               item.warning = 'Không lấy được XML gốc nên hóa đơn in thiếu mã tra cứu (MCCQT).';
             }
           }
-          const html = invoiceHtml(inv, withXmlFields(detail, sourceXml));
+          // Dải cảnh báo nguồn gốc: bản A4 này DỰNG LẠI từ JSON cổng thuế, không có chữ ký số
+          // của nhà cung cấp. In ra đính kèm hồ sơ dễ bị hiểu nhầm là bản gốc nên phải có dải
+          // cảnh báo ở mọi trang. Sau này tải được PDF gốc NCC thì đổi 'portal' → 'supplier'.
+          const html = withProvenanceNote(invoiceHtml(inv, withXmlFields(detail, sourceXml)), 'portal');
           if (j.params.formats.includes('html')) write('html', '.html', html);
           if (j.params.formats.includes('pdf')) write('pdf', '.pdf', await this.pdf(html));
         }
-        item.state = 'done'; item.errorType = ''; item.retryable = false; recount();
+        item.state = 'done'; item.errorType = ''; item.retryable = false; item.attempt = 0; recount();
       } catch (e) {
         if (e.paused) { item.state = 'queued'; item.error = ''; recount(); throw e; }
         const failure = classifyDownloadError(e);
         item.state = 'failed'; item.error = failure.message; item.errorType = failure.type; item.retryable = failure.retryable; recount();
         if (failure.type === 'rate_limited') { this.downloadConcurrency = 1; e.paused = true; }
         if (e.auth || e.paused) throw e;
+        // Tự thử lại (chỉ khi engine bật autoRetry): ném ra để vòng bọc ở dưới bắt và thử lại
+        // sau khi nghỉ. Các lượt KHÔNG bật (Auto Sync, retryFailed, test) nuốt lỗi như cũ —
+        // hành vi của chúng không đổi một chút nào.
+        if (this.autoRetry && RETRYABLE_DOWNLOAD_TYPES.has(failure.type)) throw Object.assign(e, { retryFailure: failure });
       }
       j.message = `Đã xử lý ${j.items.filter(x => ['done', 'failed'].includes(x.state)).length}/${j.items.length}`;
       this.save();
+    };
+    // Vòng TỰ THỬ LẠI cho một hoá đơn: nghỉ luỹ tiến rồi thử lại tối đa `maxRetries` lần.
+    // Chỉ bọc khi engine bật autoRetry — còn lại gọi thẳng attemptItem (hành vi cũ).
+    // Nghỉ phải ngắt được: nếu lượt đang chạy thì bấm Ngưng là dừng NGAY, không chờ hết thời gian
+    // nghỉ rồi mới đáp ứng (lỗi thật: 60 giây nghỉ mà bấm Ngưng phải chờ 60 giây).
+    const sleepInterruptible = ms => new Promise((resolve, reject) => {
+      const timer = setTimeout(() => { cleanup(); resolve(); }, ms);
+      const signal = this.runController && this.runController.signal;
+      function cleanup() { clearTimeout(timer); if (signal) signal.removeEventListener('abort', onAbort); }
+      function onAbort() { cleanup(); reject(signal.reason); }
+      if (!signal) return;
+      if (signal.aborted) return onAbort();
+      signal.addEventListener('abort', onAbort, { once: true });
+    });
+    const processItem = async item => {
+      // attempt = số lần đã thử (1 = lần đầu). Số lần thử lại TỐI ĐA = maxRetries - 1.
+      if (!this.autoRetry) return attemptItem(item);
+      const config = downloadRetryConfig();
+      for (let attempt = 1; ; attempt += 1) {
+        try { return await attemptItem(item); }
+        catch (e) {
+          // Hết lượt thử, hoặc lỗi không thuộc loại tự thử ⇒ giữ item ở 'failed' và NUỐT lỗi
+          // (giống hệt attemptItem khi không bật autoRetry) để phần còn lại của lượt chạy tiếp.
+          if (attempt >= config.maxRetries) { recount(); this.save(); return; }
+          const failure = e.retryFailure || classifyDownloadError(e);
+          const delay = Math.min(config.baseDelayMs * 3 ** (attempt - 1), config.maxDelayMs);
+          item.state = 'retrying'; item.attempt = attempt; item.error = failure.message; item.errorType = failure.type;
+          j.message = `Cổng thuế bận hoặc mạng chập — thử lại sau ${Math.round(delay / 1000)} giây (lần ${attempt}/${config.maxRetries - 1})…`;
+          this.log(`Tự thử lại hoá đơn ${(item.invoice || {}).shdon || ''} lần ${attempt}/${config.maxRetries - 1} sau ${delay}ms: ${failure.message}`);
+          this.save();
+          try { await sleepInterruptible(delay); }
+          catch (pause) { item.state = 'queued'; item.error = ''; item.attempt = 0; recount(); this.save(); throw pause; }
+          // Về 'queued' để attemptItem chạy lại đúng từ đầu (nó tự bỏ qua file đã có sẵn).
+          item.state = 'queued'; item.error = ''; item.attempt = attempt;
+          this.save();
+        }
+      }
     };
     // Hai worker giúp che độ trễ phản hồi của cổng. Mọi request vẫn đi qua pace.wait(), vì vậy
     // thời điểm bắt đầu request luôn cách nhau theo nhịp an toàn chung và không tạo burst.
@@ -773,7 +917,7 @@ class Engine {
   // Xuất 01 file Excel ĐÚNG theo mẫu MISA, từ chính kết quả tra cứu (không gọi API chi tiết, không tải XML/PDF).
   async exportList() {
     const j = this.job;
-    if (!j) throw new Error('Chưa có lượt tra cứu nào. Bấm “Tra cứu hóa đơn” trước.');
+    if (!j) throw new Error('Chưa có lượt tải nào. Bấm “Tải hóa đơn” trước.');
     if (!j.items.length) throw new Error('Lượt tra cứu này không có hóa đơn nào để xuất Excel.');
     const root = path.join(j.output, `MST-${safeName(j.account.mst || j.account.label)}`);
     const sold = j.params.direction === 'sold';
@@ -785,4 +929,4 @@ class Engine {
     return { file, rows: j.items.length, columns: invoiceExport.columnNames().length };
   }
 }
-module.exports = { Engine, itemRow, companyNameFromItems, safeName, atomicWrite, dates, invoiceKey, tasksFor, searchExpression, validateParams, invoiceHtml, canReuseSearch, classifyDownloadError, validateInvoiceXml };
+module.exports = { Engine, itemRow, companyNameFromItems, safeName, atomicWrite, dates, invoiceKey, tasksFor, searchExpression, validateParams, invoiceHtml, canReuseSearch, sameDownloadParams, classifyDownloadError, validateInvoiceXml, isResumableJob, readStateFile, RETRYABLE_DOWNLOAD_TYPES };

@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const JSZip = require('jszip');
-const { Engine, dates, safeName, invoiceHtml, canReuseSearch, classifyDownloadError, validateInvoiceXml, companyNameFromItems } = require('../src/core');
+const { Engine, dates, safeName, invoiceHtml, canReuseSearch, sameDownloadParams, classifyDownloadError, validateInvoiceXml, companyNameFromItems, isResumableJob, RETRYABLE_DOWNLOAD_TYPES } = require('../src/core');
 const account = { key: '123|user', mst: '0123456789', label: 'user' };
 const params = { from: '2026-01-01', to: '2026-01-31', direction: 'sold', family: 'query', formats: ['xml'], status: '' };
 function setup(t, request) {
@@ -14,6 +14,28 @@ function setup(t, request) {
   return { dir, options, engine: new Engine(options) };
 }
 const invoice = n => ({ shdon: String(n), nbmst: '0123456789', khhdon: 'C26TAA', khmshdon: '1', tthai: 1 });
+
+test('REGRESSION: không có phiên thì lỗi phải mang cờ auth để tự đăng nhập nền bật', async t => {
+  // Lỗi thật đã gặp: token còn nằm trong directTokens (nên /api/state báo authenticated:true và
+  // log ghi "token đã lưu còn hiệu lực") nhưng identity() không dựng được account. stream()/search()
+  // ném lỗi TRẦN trước lúc run() tạo job ⇒ job.state không thành 'auth_required' ⇒
+  // server.js không kích hoạt maybeAutoRelogin ⇒ bấm nút lại là 400 y hệt, mãi.
+  // Cờ auth là thứ để lượt thành 'auth_required' và tự đăng nhập nền chạy.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hoadon-noauth-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  for (const method of ['stream', 'search']) {
+    const engine = new Engine({
+      store: path.join(dir, `${method}.json`), identity: async () => null,
+      request: async () => ({ items: [] }), emit: () => {},
+      pdf: async () => Buffer.from('%PDF'), excel: async () => Buffer.from('PK'),
+    });
+    // assert.rejects trả về undefined, nên phải tự bắt lỗi để kiểm tra cờ .auth.
+    const thrown = await engine[method](params, path.join(dir, 'out')).then(() => null, error => error);
+    assert.ok(thrown, `${method}() phải ném lỗi khi chưa có phiên`);
+    assert.match(thrown.message, /Hãy đăng nhập cổng thuế trước/, `${method}() phải nói rõ cần đăng nhập`);
+    assert.equal(thrown.auth, true, `${method}(): lỗi thiếu phiên phải có .auth = true để tự đăng nhập nền`);
+  }
+});
 
 test('companyNameFromItems: lấy tên công ty NGAY từ kết quả tra cứu (chưa cần nhập XML)', t => {
   const items = [
@@ -107,6 +129,135 @@ test('download errors are classified for safe retry handling', () => {
   assert.equal(classifyDownloadError(new Error('TCT trả HTTP 429.')).retryable, true);
   assert.equal(classifyDownloadError(new Error('Gói tải không có XML.')).retryable, false);
   assert.equal(classifyDownloadError(Object.assign(new Error('Hết phiên'), { auth: true })).type, 'auth');
+});
+
+// ---- Tự thử lại: chỉ loại lỗi TẠM THỜI của riêng hoá đơn, không mở rộng ra 429/auth ----
+// Danh sách loại được tự thử lại là HỢP ĐỒNG, không phải chi tiết cài đặt: 429 = cổng đang
+// giới hạn nhịp (thử lại từng hoá đơn chỉ là dội thêm request), invalid_xml = file hỏng,
+// auth = phải đăng nhập lại. Ba loại đó có đường xử lý riêng, không được lọt vào vòng thử lại.
+test('tự thử lại: chỉ timeout/network/portal, KHÔNG phải 429, XML hỏng hay hết phiên', () => {
+  for (const type of ['timeout', 'network', 'portal']) {
+    assert.ok(RETRYABLE_DOWNLOAD_TYPES.has(type), `${type} phải được tự thử lại (lỗi tạm thời của riêng hoá đơn)`);
+  }
+  for (const type of ['rate_limited', 'invalid_xml', 'auth']) {
+    assert.ok(!RETRYABLE_DOWNLOAD_TYPES.has(type), `${type} KHÔNG được tự thử lại từng hoá đơn`);
+  }
+});
+
+test('tự thử lại: hoá đơn lỗi mạng lần 1 được thử lại và THÀNH CÔNG — không cần bấm "Tải tiếp"', async t => {
+  const good = Buffer.from('<HDon><DLHDon><TTChung><KHMSHDon>1</KHMSHDon><KHHDon>C26TAA</KHHDon><SHDon>1</SHDon></TTChung></DLHDon></HDon>');
+  let attempts = 0;
+  const previous = { max: process.env.HOADON_DOWNLOAD_MAX_RETRIES, base: process.env.HOADON_DOWNLOAD_RETRY_BASE_MS };
+  // Nghỉ rất ngắn để test chạy nhanh — cấu hình đọc LÚC CHẠY (xem downloadRetryConfig trong core).
+  process.env.HOADON_DOWNLOAD_MAX_RETRIES = '3';
+  process.env.HOADON_DOWNLOAD_RETRY_BASE_MS = '1';
+  t.after(() => {
+    if (previous.max === undefined) delete process.env.HOADON_DOWNLOAD_MAX_RETRIES; else process.env.HOADON_DOWNLOAD_MAX_RETRIES = previous.max;
+    if (previous.base === undefined) delete process.env.HOADON_DOWNLOAD_RETRY_BASE_MS; else process.env.HOADON_DOWNLOAD_RETRY_BASE_MS = previous.base;
+  });
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hoadon-retry-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const engine = new Engine({
+    store: path.join(dir, 'job.json'), identity: async () => account, emit: () => {},
+    excel: async () => Buffer.from('PK'), pdf: async () => Buffer.from('%PDF'),
+    autoRetry: true,
+    request: async route => {
+      if (!route.includes('export-xml')) return Buffer.from(JSON.stringify({ datas: [invoice(1)], total: 1 }));
+      attempts += 1;
+      if (attempts === 1) throw new Error('network timeout');   // lần 1 hỏng do mạng
+      return good;                                             // lần 2 thành công
+    },
+  });
+  await engine.search(params, dir);
+  await engine.resume(true);
+  assert.equal(engine.job.items[0].state, 'done', 'phải tự thử lại tới khi thành công, KHÔNG để lỗi lại');
+  assert.equal(engine.job.stats.failed, 0, 'không còn hóa đơn lỗi');
+  assert.equal(engine.job.state, 'completed', 'lượt xong hoàn toàn trong một lần bấm');
+  assert.ok(attempts >= 2, `phải thử lại ít nhất 2 lần, thực tế ${attempts}`);
+});
+
+test('tự thử lại: hết lượt thì đánh dấu lỗi, KHÔNG lặp vô hạn', async t => {
+  const previous = { max: process.env.HOADON_DOWNLOAD_MAX_RETRIES, base: process.env.HOADON_DOWNLOAD_RETRY_BASE_MS };
+  process.env.HOADON_DOWNLOAD_MAX_RETRIES = '2';   // 1 lần thử + 1 lần thử lại
+  process.env.HOADON_DOWNLOAD_RETRY_BASE_MS = '1';
+  t.after(() => {
+    if (previous.max === undefined) delete process.env.HOADON_DOWNLOAD_MAX_RETRIES; else process.env.HOADON_DOWNLOAD_MAX_RETRIES = previous.max;
+    if (previous.base === undefined) delete process.env.HOADON_DOWNLOAD_RETRY_BASE_MS; else process.env.HOADON_DOWNLOAD_RETRY_BASE_MS = previous.base;
+  });
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hoadon-retry2-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  let attempts = 0;
+  const engine = new Engine({
+    store: path.join(dir, 'job.json'), identity: async () => account, emit: () => {},
+    excel: async () => Buffer.from('PK'), pdf: async () => Buffer.from('%PDF'),
+    autoRetry: true,
+    request: async route => {
+      if (!route.includes('export-xml')) return Buffer.from(JSON.stringify({ datas: [invoice(1)], total: 1 }));
+      attempts += 1;
+      throw new Error('network timeout');   // lần nào cũng hỏng
+    },
+  });
+  await engine.search(params, dir);
+  await engine.resume(true);
+  assert.equal(engine.job.items[0].state, 'failed', 'hết lượt thử thì đánh dấu lỗi');
+  assert.equal(engine.job.stats.failed, 1);
+  assert.equal(attempts, 2, `phải dừng đúng số lần thử đã cấu hình, thực tế ${attempts}`);
+});
+
+test('KHÔNG bật autoRetry thì hành vi cũ giữ nguyên: lỗi đánh dấu ngay, không tự thử lại', async t => {
+  // Auto Sync và retryFailed() dựng Engine KHÔNG bật cờ này — test và lịch nền phải y hệt cũ.
+  const good = Buffer.from('<HDon><DLHDon><TTChung><KHMSHDon>1</KHMSHDon><KHHDon>C26TAA</KHHDon><SHDon>1</SHDon></TTChung></DLHDon></HDon>');
+  let attempts = 0;
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hoadon-noretry-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const engine = new Engine({
+    store: path.join(dir, 'job.json'), identity: async () => account, emit: () => {},
+    excel: async () => Buffer.from('PK'), pdf: async () => Buffer.from('%PDF'),
+    request: async route => {
+      if (!route.includes('export-xml')) return Buffer.from(JSON.stringify({ datas: [invoice(1)], total: 1 }));
+      attempts += 1;
+      if (attempts === 1) throw new Error('network timeout');
+      return good;
+    },
+  });
+  await engine.search(params, dir);
+  await engine.resume(true);
+  assert.equal(attempts, 1, 'không tự thử lại');
+  assert.equal(engine.job.items[0].state, 'failed', 'lỗi được ghi ngay, phải chạy lượt nữa mới thử');
+});
+
+test('isResumableJob: đúng các trạng thái mà nút "Tải tiếp" hiện — dùng chung cho server và giao diện', () => {
+  const base = { params, output: 'C:\\tmp', items: [] };
+  for (const state of ['paused', 'failed', 'partial', 'auth_required']) {
+    assert.equal(isResumableJob({ ...base, state }), true, `${state} phải hiện "Tải tiếp"`);
+  }
+  // Đã xong / đang chạy / chưa có lượt thì KHÔNG phải "Tải tiếp" — bấm là chạy lượt mới.
+  for (const state of ['completed', 'searching', 'downloading', 'ready', 'idle', '']) {
+    assert.equal(isResumableJob({ ...base, state }), false, `${state} không được hiện "Tải tiếp"`);
+  }
+  assert.equal(isResumableJob(null), false, 'chưa có lượt');
+  // Lượt không đủ dữ liệu để chạy tiếp (không params/output) thì coi như chạy lượt mới.
+  assert.equal(isResumableJob({ state: 'paused', output: 'C:\\tmp' }), false, 'thiếu params ⇒ chạy lượt mới');
+  assert.equal(isResumableJob({ state: 'paused', params }), false, 'thiếu thư mục lưu ⇒ chạy lượt mới');
+});
+
+test('sameDownloadParams: chỉ chạy tiếp được khi điều kiện tra cứu KHỚP, lệch là chạy lượt mới', () => {
+  // Nền của "Tải tiếp": lượt còn dở mà người dùng đã đổi khoảng ngày thì phải chạy lượt MỚI theo
+  // khoảng ngày đang chọn. Nếu không chặn, "Tải tiếp" tải nhầm khoảng ngày cũ và người dùng
+  // không có cách nào bắt đầu lại (nút chỉ có một nhãn).
+  const job = { params };
+  assert.equal(sameDownloadParams(job, params), true, 'trùng hoàn toàn ⇒ chạy tiếp');
+  assert.equal(sameDownloadParams(job, { ...params, formats: [...params.formats].reverse() }), true, 'thứ tự định dạng không quan trọng');
+  // params mẫu là sold/query — mỗi giá trị thay thế phải KHÁC hẳn giá trị đang có.
+  for (const [key, value] of [['from', '2026-09-01'], ['to', '2026-09-30'], ['direction', 'purchase'], ['family', 'sco-query'], ['status', '1']]) {
+    assert.equal(sameDownloadParams(job, { ...params, [key]: value }), false, `đổi ${key} ⇒ phải chạy lượt mới`);
+  }
+  // params mẫu chỉ có ['xml'] nên thêm/bớt phải khác hẳn: thêm 'pdf' và bỏ hết.
+  assert.equal(sameDownloadParams(job, { ...params, formats: ['xml', 'pdf'] }), false, 'thêm định dạng ⇒ phải chạy lượt mới');
+  assert.equal(sameDownloadParams(job, { ...params, formats: [] }), false, 'bỏ hết định dạng ⇒ phải chạy lượt mới');
+  assert.equal(sameDownloadParams(null, params), false, 'chưa có lượt');
+  assert.equal(sameDownloadParams({ params: null }, params), false, 'lượt không có tham số');
+  assert.equal(sameDownloadParams(job, null), false, 'chưa có điều kiện mới');
 });
 test('downloaded XML must identify the requested invoice', () => {
   const xml = '<HDon><DLHDon><TTChung><KHMSHDon>1</KHMSHDon><KHHDon>C26TAA</KHHDon><SHDon>9</SHDon></TTChung></DLHDon></HDon>';

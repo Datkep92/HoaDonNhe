@@ -237,6 +237,36 @@ function write(mst, patch) {
   fs.mkdirSync(path.dirname(file(mst)), { recursive: true });
   const temp = file(mst) + '.part'; fs.writeFileSync(temp, JSON.stringify(raw, null, 2)); fs.renameSync(temp, file(mst));
 }
+
+// GHI BẤT ĐỒNG BỘ — dành cho đường đăng nhập nền khi N MST chạy SONG SONG.
+//
+// Vì sao cần: `write()` gọi `protect()` mỗi blob, mà `protect()` spawn `powershell.exe`
+// bằng execFileSync (~500 ms, CHẶN event loop của cả server). 10 MST đăng nhập song song
+// ⇒ 10 lần spawn × 3 blob (token + cookies + password) = chặn ~15 s, trong khi giao diện
+// poll `/api/state` mỗi 800 ms nên người dùng thấy app đứng hình.
+//
+// Cách sửa KHÔNG phải "ghi sau" (mất dữ liệu khi app tắt) mà là GOM các lần ghi vào một
+// hàng đợi rồi xử lý từng lô khi event loop rảnh: dữ liệu vẫn được ghi, chỉ là không chặn
+// các request khác trong lúc đợi. `flushWrites()` được gọi khi app thoát (`stop()`) để
+// không mất gì.
+const WRITE_QUEUE = new Map();   // mst -> patch (gộp nhiều lần ghi cùng MST)
+let writeTimer = null;
+function scheduleWrite(mst, patch) {
+  const previous = WRITE_QUEUE.get(mst) || {};
+  WRITE_QUEUE.set(mst, { ...previous, ...patch });
+  if (writeTimer) return;
+  // setImmediate chạy ở lượt kế của event loop — chờ các request hiện tại xử lý xong rồi mới ghi.
+  writeTimer = setImmediate(() => { writeTimer = null; flushWrites(); });
+}
+function flushWrites() {
+  const entries = [...WRITE_QUEUE.entries()];
+  WRITE_QUEUE.clear();
+  for (const [mst, patch] of entries) {
+    try { write(mst, patch); }
+    catch { /* lỗi ghi secrets không được làm hỏng cả lượt đăng nhập */ }
+  }
+}
+function flushWritesSync() { if (writeTimer) { clearImmediate(writeTimer); writeTimer = null; } flushWrites(); }
 function clear(mst, keys) {
   const raw = readRaw(mst); if (!raw) return;
   for (const key of keys) delete raw[key];
@@ -253,6 +283,9 @@ const api = {
   read: (mst, keys) => { guard(); return read(mst, keys); },
   readMany: (msts, keys) => { guard(); return readMany(msts, keys); },
   write: (mst, patch) => { guard(); return write(mst, patch); },
+  // Ghi bất đồng bộ — đường đăng nhập nền song song dùng để không chặn event loop ~500ms/blob.
+  writeAsync: (mst, patch) => { guard(); scheduleWrite(mst, patch); },
+  flushWrites: flushWritesSync,
   clear: (mst, keys = KEYS) => { guard(); return clear(mst, keys); },
   protect, unprotect,
   unprotectBatch,   // để test chặn hồi quy "định dạng lạ phải ném lỗi"

@@ -2360,7 +2360,8 @@ async function endpoint(req, res, url) {
           ok: true,
           value: {
             ...value,
-            rows: value.rows.map(row => {
+              rows: value.rows.map(row => {
+                row = data.providerRegistry.resolveInvoice(row);
               const dirName = row.direction === 'SELL' ? 'Ban_ra' : 'Mua_vao';
               const original = data.originalPdf.findOriginalPdf(dir, dirName, row, index[dirName]);
               const badge = data.originalPdf.badgeFor(row, original);
@@ -2698,26 +2699,68 @@ async function endpoint(req, res, url) {
         return reply(res, 200, { ok: true, value: { attached: true, file: found } });
       });
     }
+    if (req.method === 'POST' && url.pathname === '/api/db/provider/lookup') {
+      const input = await readBody(req);
+      return withDatabase((db, dir) => {
+        const row = db.prepare('SELECT * FROM invoices WHERE invoice_key = ?').get(String(input.key || ''));
+        if (!row) throw new Error('Không tìm thấy hóa đơn.');
+        const recovered = require('./data/lookup-code').recoverLookup(db, dir, row);
+        return reply(res, 200, { ok: true, value: { lookup_code: recovered.lookup_code, lookup_url: recovered.lookup_url,
+          provider_id: recovered.provider_id, provider_name: recovered.provider_name } });
+      });
+    }
+    if (req.method === 'POST' && url.pathname === '/api/db/provider/download') {
+      const input = await readBody(req);
+      const context = withDatabase((db, dir) => {
+        const row = db.prepare('SELECT * FROM invoices WHERE invoice_key = ?').get(String(input.key || ''));
+        if (!row) throw new Error('Không tìm thấy hóa đơn.');
+        return { row: input.session ? row : require('./data/lookup-code').recoverLookup(db, dir, row), dir };
+      });
+      const download = require('./provider-download');
+      const value = input.cancel && input.session
+        ? await download.cancel(browser, String(input.session), context.row, context.dir)
+        : input.session
+        ? await download.scan(browser, String(input.session), context.row, context.dir)
+        : await download.start(browser, context.row, context.dir);
+      if (value.downloaded) {
+        const db = readDatabase(path.join(context.dir, 'data.db'));
+        db.prepare('UPDATE invoices SET original_pdf = ? WHERE invoice_key = ?').run(value.relative, context.row.invoice_key);
+      }
+      return reply(res, 200, { ok: true, value });
+    }
     // Mở cổng tra cứu của NCC trong CHÍNH Chromium của app (browser.js), không mở
     // trình duyệt hệ thống. Cửa sổ hiện ra để người dùng tự nhập CAPTCHA/mã rỒi tải.
     if (req.method === 'POST' && url.pathname === '/api/db/provider/open-portal') {
       const input = await readBody(req);
-      return withDatabase(db => {
+      // PHẢI async + await openPortal. Bản đầu viết `opened: openPortal(url)` — hàm async
+      // trả về Promise, JSON hoá thành `{}`, mà `{}` là truthy nên giao diện LUÔN báo
+      // "Đã mở …" kể cả khi hỏng. Người dùng bấm xong không thấy gì mà vẫn tin là đã mở.
+      return withDatabase(async (db, dir) => {
         const key = String(input.key || '').trim();
         const row = db.prepare('SELECT * FROM invoices WHERE invoice_key = ?').get(key);
         if (!row) throw new Error('Không tìm thấy hóa đơn.');
-// LÀM SẠCH trước khi kiểm tra: URL kiểu `…vnpt-invoice.com.vn;817503;` (VNPT
+        // LÀM SẠCH trước khi kiểm tra: URL kiểu `…vnpt-invoice.com.vn;817503;` (VNPT
         // ghi cổng dính vào tên miền) không mở được và tên miền của nó không khớp
         // biểu thức kiểm tra bên dưới ⇒ 15 hóa đơn VNPT trong kho thật bị từ chối.
-        const url = data.originalPdf.cleanPortalUrl(input.url || row.lookup_url || '');
+        const resolved = require('./data/lookup-code').recoverLookup(db, dir, row);
+        const url = data.originalPdf.cleanPortalUrl(input.url || resolved.lookup_url || '');
         if (!url) throw new Error('Hóa đơn này không có cổng tra cứu dùng được nào.');
         const host = data.originalPdf.portalHost(url);
-        if (!/^[a-z0-9.-]+\.vn$/i.test(host) && !/^[a-z0-9.-]+\.com\.vn$/i.test(host)) {
+        if (!/^[a-z0-9.-]+\.[a-z]{2,}$/i.test(host) || /\.(local|internal|localhost)$/i.test(host)) {
           throw new Error(`Tên miền lạ (${host}) – không mở tự động. Hãy tự mở cổng tra cứu.`);
         }
-        return reply(res, 200, { ok: true, value: { url, host, opened: openPortal(url) } });
+        const result = await openPortal(url, resolved);
+        return reply(res, 200, { ok: true, value: {
+          url, host,
+          opened: result.opened,
+          error: result.error,
+          filled: result.filled,
+          missing: result.missing,
+          supported: result.supported,
+        } });
       });
     }
+﻿
 // LƯU mã tra cứu / URL cổng mà người dùng nhập tay (mục 3). Nhập một lần, lần sau
     // bấm là có, không hỏi lại — cùng cách bản tham chiếu đánh dấu nguồn là "user-entered".
     // CHỈ cho sửa đúng hai cột này: không nhận tên cột tùy ý từ phía trình duyệt, nếu
@@ -3692,14 +3735,28 @@ async function endpoint(req, res, url) {
     // Mở cổng tra cứu NCC trong CHÍNH Chromium của app (Mục 3) – không mở trình duyệt hệ
 // thống, để người dùng nhập CAPTCHA/mã rỒi tải PDF gốc trong một cửa sổ duy nhất.
 // Trả về false nếu không mở được – UI cần báo để người dùng tự mở bằng trình duyệt.
-async function openPortal(url) {
+// Mở cổng tra cứu NCC trong cửa sổ Chrome RIÊNG của app (mục 3) — không mở trình
+// duyệt hệ thống, không đụng tới cửa sổ Chrome của cổng thuế đang chạy.
+// Mở cổng tra cứu NCC trong cửa sổ Chrome RIÊNG của app (mục 3), rồi TỰ ĐIỀN biểu mẫu.
+// Không mở trình duyệt hệ thống, không đụng cửa sổ Chrome của cổng thuế đang chạy.
+//
+// Trả về kết quả trung thực: đã điền được gì, còn thiếu gì, và lý do hỏng nếu hỏng.
+// Giao diện dựa vào đây để nói thật với người dùng — bản đầu trả Promise chưa await nên
+// JSON hoá thành {} và luôn báo "Đã mở" dù không mở được gì.
+async function openPortal(url, invoice) {
   try {
-    await browser.openAuxPortal(url);
-    await browser.show();
-    return true;
+    const result = await browser.openPortalAndFill(url, invoice || {});
+    return {
+      opened: true,
+      error: '',
+      filled: result.filled || [],
+      missing: result.missing || [],
+      supported: result.supported !== false,
+    };
   } catch (error) {
-    log(`Không mở được cổng tra cứu (${url}): ${(error && error.message) || error}`);
-    return false;
+    const message = (error && error.message) || String(error);
+    log(`Không mở được cổng tra cứu (${url}): ${message}`);
+    return { opened: false, error: message, filled: [], missing: [], supported: false };
   }
 }
     // Mở 1 file (hoặc thư mục) bằng ứng dụng mặc định của Windows – chỉ cho phép trong thư mục lưu.
@@ -4437,7 +4494,19 @@ server.listen(0, '127.0.0.1', async () => {
         const reply = await localGet(port, '/' + asset.replace(/^\.?\//, ''));
         if (reply.status !== 200 || !reply.body) broken.push(`${asset} (HTTP ${reply.status})`);
       }
-      if (broken.length) throw new Error(`EXE thiếu file giao diện: ${broken.join(', ')}`);
+if (broken.length) throw new Error(`EXE thiếu file giao diện: ${broken.join(', ')}`);
+      // ĐỌC THẬT 4 script runner tải PDF gốc. Đây là kiểm DUY NHẤT đáng tin cho phần này:
+      // pkg nhúng asset theo đường dẫn nhưng bảng tên trong EXE lưu phẳng, nên quét byte
+      // theo "provider-reference/x.js" sẽ kết luận thiếu dù file CÓ trong gói (đã xảy ra:
+      // build xoá mất bản phát hành hai lần rồi mới phát hiện ra). Ở đây ta gọi đúng đường
+      // dẫn mà provider-download.js gọi lúc chạy — đọc hỏng thì tính năng chết âm thầm.
+      const runnerFiles = ['generic-runner.js', 'misa-runner.js', 'misa-adapter.js', 'captcha-panel.js'];
+      const unreadable = [];
+      for (const name of runnerFiles) {
+        try { require('node:fs').readFileSync(path.join(__dirname, 'provider-reference', name)); }
+        catch { unreadable.push(name); }
+      }
+      if (unreadable.length) throw new Error(`EXE không đọc được script tải PDF gốc: ${unreadable.join(', ')} — tính năng sẽ chết lúc chạy.`);
       console.log(JSON.stringify({ ok: true, packed, port, browser: browserPath() || null, ui: true, api: true, assets: assets.length })); server.close(() => process.exit(0));
     } catch (error) { console.error(error.message); server.close(() => process.exit(1)); }
   }

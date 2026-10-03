@@ -20,6 +20,7 @@ const { buildInvoiceKey } = require('./invoice-key');
 const providerRegistry = require('./provider-registry');
 const { normalizePaymentMethod } = require('./payment-method');
 const vnDate = require('../vn-date');
+const { findLookupCode } = require('./lookup-code');
 
 const blockRe = tag => new RegExp(`<${tag}>([\\s\\S]*?)</${tag}>`);
 
@@ -208,8 +209,9 @@ function parseInvoiceXml(xml) {
   });
 
   const ngayLapRaw = textIn(ttchung, 'NLap');
-  const lookup = extractLookup(ttchung);
   const solution = providerRegistry.resolve(textIn(ttchung, 'MSTTCGP'));
+  const lookup = extractLookup(ttchung);
+  lookup.code = lookup.code || findLookupCode(source, solution?.id || '');
   // Tách ra trước vì lookupUrl cần MST người bán (cổng VNPT là tenant riêng theo
   // từng người bán) mà bản ghi chưa dựng xong.
   const mstBan = textIn(nban, 'MST') || null;
@@ -219,7 +221,7 @@ function parseInvoiceXml(xml) {
   // kiểm tra tên miền về sau đều dính rác. cleanPortalUrl() trả '' nếu URL không dùng
   // được ⇒ lưu null, thành "chưa biết" còn hơn lưu một URL bị hỏng.
   const rawLookupUrl = lookup.url
-    || providerRegistry.sellerPortal(mstBan)
+    || providerRegistry.sellerPortal(mstBan, solution?.id || '')
     || (solution ? solution.portalUrl : '')
     || '';
   const cleaned = require('./original-pdf').cleanPortalUrl(rawLookupUrl);
@@ -292,5 +294,3 @@ function buildImportRecord(xml, { currentMst, fileXml } = {}) {
 }
 
 module.exports = { parseInvoiceXml, buildImportRecord, detectDirection, unknownParties, normalizeIdentifiers, toVietnamDate, readTTKhac, extractLookup, isLookupUrl };
-
-

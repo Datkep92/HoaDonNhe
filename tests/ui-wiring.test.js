@@ -949,9 +949,17 @@ test('header: tên tab đứng chung hàng với dãy nút, mô tả chuyển sa
   assert.ok(/button\.title = `\$\{tabInfo\[1\]\}/.test(ui), 'phải đưa mô tả tab vào tooltip nút tab');
   for (const key of ['overview:', 'download:', 'data:', 'bank:']) assert.ok(ui.includes(key), `thiếu nội dung header cho ${key}`);
   assert.ok(/\.header-context[\s\S]*text-align:right/.test(style), 'thông tin tab phải căn sát phải');
-  // Tiêu đề phải nằm CÙNG hàng với dãy nút (header là flex, không có hàng riêng).
-  assert.ok(/app-top > header\{[^}]*flex-wrap:wrap/.test(style) && /\.view-switch\{flex:0 1 auto/.test(style)
-    && /\.header-context\{flex:1 1 auto;[^}]*text-align:right/.test(style), 'tiêu đề phải co lại cạnh dãy nút');
+// Tiêu đề phải nằm CÙNG hàng với dãy nút (header là flex, không có hàng riêng).
+  // KHÔNG khóa cứng con số flex cũ: layout đã đổi có chủ ý (nút tab được `flex:1 1 auto`
+  // chiếm chỗ, tiêu đề `flex:0 1 auto` + `max-width:34%` nên co lại và chặn trên 1/3 bề ngang
+  // thay vì đẩy dãy nút ra mép). Test bám vào BỐ CỤC, không bám vào cách viết CSS.
+  const viewSwitch = (style.match(/\.app-top > header > \.view-switch\{([^}]*)\}/) || ['', ''])[1];
+  const headerCtx = (style.match(/\.app-top > header > \.header-context\{([^}]*)\}/) || ['', ''])[1];
+  assert.ok(/app-top > header\{[^}]*flex-wrap:wrap/.test(style), 'header phải là hàng flex có xuống dòng');
+  assert.ok(/flex:\s*\d+ 1 auto/.test(viewSwitch) && /min-width:\s*0/.test(viewSwitch),
+    'dãy nút tab phải co được và không giữ chiều rộng tối thiểu');
+  assert.ok(/flex:\s*0 1 auto/.test(headerCtx) && /max-width:/.test(headerCtx) && /text-align:right/.test(headerCtx),
+    'tiêu đề phải co lại, chặn trên 34% và căn sát phải');
   assert.ok(/<div class="view-switch"[^>]*>(?:(?!<\/header>)[\s\S])*?<div class="header-context"/.test(html),
     'header chỉ được có MỘT hàng: dãy nút + tiêu đề, không có khối tiêu đề riêng');
 });
@@ -1070,3 +1078,4 @@ test('MỌI tab trong index.html đều được NỐI đủ: có onclick, có p
     assert.ok(ui.includes(`${name}: ['`), `showView thiếu tiêu đề cho tab ${name}`);
   }
 });
+

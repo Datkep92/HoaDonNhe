@@ -51,13 +51,13 @@ test('data-ui.js: hộp thoại bổ sung mã/URL có đủ phần tử như b�
     'không đóng modal bằng onclick ở thẻ ngoài');
 });
 
-test('data-ui.js: chỉ hỏi mã tra cứu cho hóa đơn MUA VÀO, không hỏi cho hóa đơn BÁN RA', () => {
+test('data-ui.js: chỉ hỏi mã khi bộ tra cứu NCC yêu cầu, giống 1.4.20', () => {
   // Hỏi mã cho 72 hóa đơn bán ra là hỏi thừa: cổng nhà cung cấp tra bằng số hóa đơn.
   const body = source.slice(source.indexOf('async function ensureLookupInfo'));
   const end = body.indexOf('\n}');
   const fn = body.slice(0, end);
-  assert.ok(/inv\.direction\s*!==\s*'BUY'\)\s*return inv;/.test(fn),
-    'phải bỏ qua bước hỏi mã với hóa đơn bán ra');
+  assert.ok(fn.includes('needsCode = false') && fn.includes('if (needsCode &&'), 'không hỏi mã trước khi NCC yêu cầu');
+  assert.ok(source.includes('if (result.needsCode)'), 'phải xử lý yêu cầu thiếu mã từ bộ tra cứu');
   assert.ok(fn.includes("requestOrigInput") && fn.includes('lookup_code'), 'phải hỏi mã cho hóa đơn mua vào');
   assert.ok(fn.includes('lookup_url'), 'phải hỏi URL cổng khi thiếu');
 });

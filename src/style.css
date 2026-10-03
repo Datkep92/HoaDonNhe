@@ -99,7 +99,9 @@ body.chat-resizing{cursor:col-resize;user-select:none}
 body.chat-resizing iframe{pointer-events:none}
 body.chat-open{--app-sidebar-width:250px}
 body.chat-open main{width:calc(100% - var(--app-sidebar-width) - var(--chat-width,420px));min-width:0;container-type:inline-size;container-name:chat-work}
-body.chat-open .app-top .view-switch{flex-wrap:wrap}
+/* Chat mở ⇒ vùng làm việc hẹp lại. Dãy nút vẫn GIỮ MỘT HÀNG + cuộn ngang (không
+   xuống hàng) để gạch dưới trượt luôn bám đúng nút đang chọn. */
+body.chat-open .app-top .view-switch{flex-wrap:nowrap}
 body.chat-open .notice-stack{right:calc(var(--chat-width,420px) + 12px);max-width:calc(100vw - var(--chat-width,420px) - 24px)}
 body.chat-open #support-toggle{visibility:hidden;pointer-events:none}
 @media(max-width:1100px){body.chat-open{--app-sidebar-width:214px}body.chat-open main .workspace{grid-template-columns:minmax(0,1fr)}}
@@ -207,11 +209,15 @@ body.chat-open #support-toggle{visibility:hidden;pointer-events:none}
    cùng một hàng. Không còn hàng "nhãn + tên + mô tả" riêng (108px) — mô tả đã chuyển sang
    tooltip của nút tab. Cả khối co lại được và xuống hàng khi thật hẹp. */
 .app-top > header{display:flex;align-items:center;justify-content:space-between;position:static;background:none;padding:0;margin:0;flex-wrap:wrap;row-gap:6px}
-.app-top > header > .view-switch{flex:0 1 auto;min-width:0}
-/* 5 nút + tên tab không vừa bề rộng nội dung 744px (sidebar 250px) nên tên tab rớt hàng.
-   Giảm đệm ngang của nút 6px mỗi bên ⇒ tiết 60px, đủ để tên tab vừa CHUNG một hàng. */
-.app-top > header > .view-switch button{padding:9px 13px}
-.app-top > header > .header-context{flex:1 1 auto;min-width:0;text-align:right;align-self:center}
+/* Dãy nút KHÔNG bao giờ xuống hàng: luôn 1 hàng + cuộn ngang (xem .view-switch ở
+   data-view.css). Nếu xuống hàng, gạch dưới trượt tính theo đáy container sẽ không
+   trùng nút đang chọn ở hàng trên. `flex:1 1 auto` cho nó ăn hết bề rộng trống. */
+.app-top > header > .view-switch{flex:1 1 auto;min-width:0}
+/* 8 nút (thêm Chuyển đổi DVT | Tra cứu MST | Tải tờ khai) không vừa bề rộng nội dung
+   ~744px (sidebar 250px) như 5 nút trước đây. Thu gọn đệm ngang + cỡ chữ để dãy
+   vừa thoải mái hơn và dành chỗ cho tiêu đề tab bên phải. */
+.app-top > header > .view-switch button{padding:9px 11px;font-size:11.5px;letter-spacing:-.1px}
+.app-top > header > .header-context{flex:0 1 auto;min-width:0;max-width:34%;text-align:right;align-self:center}
 .app-top > header > .header-context h1{margin:0;font-size:15px;line-height:1.25}
 .app-top > .account{margin:6px 0 10px;align-items:center;gap:10px;flex-wrap:nowrap}
 /* MST bên trái được co lại (kẹp dấu ba chấm khi tên dài), bộ lọc kỳ bên phải giữ nguyên
@@ -362,11 +368,12 @@ dialog::backdrop{background:#12283fb0}
 .mst-row.active{box-shadow:inset 3px 0 0 #2bd4ae}
 
 /* ============================================================================
-   TOAST GÓC PHẢI TRÊN (2026-09) — xếp chồng, rõ - gọn - mượt.
+   TOAST GÓC PHẢI DƯỚI (2026-09) — xếp chồng, rõ - gọn - mượt.
    Thay cho #notice cũ (một ô duy nhất ở góc phải dưới, thông báo sau đè thông báo trước).
+   Đặt ở ĐÁY để không đè lên dãy nút tab (nay đã có 8 nút, nằm sát mép phải).
    ========================================================================== */
 .notice-stack {
-  position: fixed; top: 14px; right: 18px; z-index: 60;
+  position: fixed; top: auto; bottom: 132px; right: 18px; z-index: 60;
   display: flex; flex-direction: column; gap: 8px; align-items: flex-end;
   width: min(440px, calc(100vw - 40px));
   pointer-events: none; /* chỉ các toast con bấm được — không che vùng làm việc */
@@ -507,7 +514,8 @@ aside { z-index: 20; }
    badge gói licence rời xuống dòng riêng khi hẹp, side-bottom thành hàng ngang.
    ========================================================================== */
 main > header { min-width: 0; gap: 22px; flex-wrap: nowrap; align-items:center; }
-main > header .view-switch { flex: 0 0 auto; }
+/* Dãy nút 8 tab co + cuộn ngang bên trong, không ép chiếm chiều rộng tối thiểu. */
+main > header .view-switch { flex: 1 1 auto; min-width: 0; }
 main > header > div { min-width: 0; flex: 1 1 auto; }
 main > header h1 {
   font-size: clamp(17px, 2.2vw, 24px);       /* co chữ theo bề rộng, không đùn tràn */

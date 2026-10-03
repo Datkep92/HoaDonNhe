@@ -69,6 +69,7 @@ const DEFAULT_PORTAL = {
   easyinvoice: 'https://tracuu.easyinvoice.vn/',
   fpt: 'https://fpt.einvoice.vn/',
   cyberbill: 'https://tracuuhoadon1.xcyber.vn/#/tracuuhoadon/tracuu',
+  viettel: 'https://vinvoice.viettel.vn/utilities/invoice-search',
 };
 
 // Cổng riêng theo MST NGƯỜI BÁN. Chỉ dùng cho cổng VNPT, vì mỗi người bán một tenant
@@ -91,7 +92,7 @@ function resolve(solutionTaxCode) {
   const key = normalizeTaxCode(solutionTaxCode);
   if (!key) return null;
   const hit = BY_SOLUTION_TAX_CODE[key];
-  if (!hit) return null;
+  if (!hit) return require('./provider-reference').solution(key);
   return {
     id: hit.id,
     name: hit.name,
@@ -102,8 +103,17 @@ function resolve(solutionTaxCode) {
 }
 
 // Cổng riêng của người bán (xem BY_SELLER_TAX_CODE). Rỗng nếu không có trong bảng.
-function sellerPortal(sellerTaxCode) {
-  return BY_SELLER_TAX_CODE[normalizeTaxCode(sellerTaxCode)] || '';
+function sellerPortal(sellerTaxCode, providerId = '') {
+  const key = normalizeTaxCode(sellerTaxCode);
+  const ref = require('./provider-reference');
+  const telecom = (!providerId || providerId === 'viettel') && (ref.core.VIETTEL_PORTAL_BY_TAX_CODE[key] || ref.core.VIETTEL_PORTAL_BY_TAX_CODE[key.slice(0, 10)]);
+  const local = (!providerId || providerId === 'vnpt') && BY_SELLER_TAX_CODE[key];
+  const record = ref.registry.sellers[key] || ref.registry.sellers[key.slice(0, 10)];
+  return telecom || local || (record && (!providerId || record.providerId === providerId) ? record.lookupUrl : '') || '';
+}
+
+function resolveInvoice(row) {
+  return require('./provider-reference').invoice(row, resolve(row.msttcgp));
 }
 
 // Lý do cụ thể khi chưa tải được PDF gốc. Nguyên tắc của EXT-B app.js:658-674:
@@ -130,4 +140,4 @@ function levelHint(level) {
   return LEVEL_HINT[String(level || '')] || '';
 }
 
-module.exports = { LEVELS, BY_SOLUTION_TAX_CODE, BY_SELLER_TAX_CODE, resolve, sellerPortal, reasonMissing, levelLabel, levelHint, normalizeTaxCode };
+module.exports = { LEVELS, BY_SOLUTION_TAX_CODE, BY_SELLER_TAX_CODE, resolve, sellerPortal, resolveInvoice, reasonMissing, levelLabel, levelHint, normalizeTaxCode };

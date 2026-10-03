@@ -27,6 +27,7 @@ module.exports = {
   vatSummary: require('./vat-summary'),
   // Mục 3 — PDF GỐC của nhà cung cấp (khác bản app dựng lại trong pdf\).
   originalPdf: require('./original-pdf'),
+  providerRegistry: require('./provider-registry'),
   bankStatement: require('./bank-statement'),
   reconciliation: require('./reconciliation'),
   identityCandidates: require('./identity-candidates'),

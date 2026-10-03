@@ -79,7 +79,7 @@ function jwtAccount(token) {
   } catch { return null; }
 }
 class TaxBrowser {
-  constructor(root) { this.root = path.resolve(root); this.client = null; this.mst = ''; this.process = null; this.port = 0; this.visible = false; this.auxTabs = new Set(); }
+  constructor(root) { this.root = path.resolve(root); this.client = null; this.mst = ''; this.process = null; this.port = 0; this.visible = false; this.auxTabs = new Set(); this.portalProcess = null; this.portalPort = 0; }
   // Đóng trình duyệt CÓ GIỚI THỜI GIAN: nếu Chrome/CDP treo thì Browser.close() chờ VĨNH VIỄN,
   // request /api/stream (giữ mở suốt lượt tải) không bao giờ trả lời ⇒ UI kẹt nút "Đang tải" dù
   // dữ liệu đã về hết — phải bấm Ngưng thủ công mới thoát (triệu chứng người dùng báo). Sau 5s
@@ -139,29 +139,147 @@ class TaxBrowser {
   }
 
   /**
-   * Mở một cổng tra cứu của NHÀ CUNG CẤP trong chính Chromium này (Mục 3).
+   * Mở cổng tra cứu của NHÀ CUNG CẤP (Mục 3) trong một cửa sổ Chrome RIÊNG.
    *
-   * Vì sao không mở trình duyệt hệ thống: người dùng phải nhập CAPTCHA/mã tra cứu rồi
-   * tải PDF gốc. Mở tab trong Chromium của app giữ mọi thứ trong một cửa sổ, và khi
-   * đóng app thì tab cũng đi luôn — không sót lại cửa sổ Chrome lơ lửng.
+   * VÌ SAO PHẢI RIÊNG — bản đầu mở tab trong Chrome của cổng thuế và hỏng vì ba lý do:
+   *   1. Chrome cổng thuế chỉ được dựng khi người dùng đăng nhập MST. Người chỉ muốn tra
+   *      cứu PDF của NCC thì chưa có phiên đó ⇒ this.client null ⇒ ném lỗi ⇒ KHÔNG MỞ
+   *      ĐƯỢC GÌ, trong khi giao diện vẫn báo "Đã mở" (vì route trả về Promise chưa await,
+   *      JSON hoá thành {} và {} là truthy — đã sửa ở server.js).
+   *   2. Trộn cookie của bên thứ ba vào profile cổng thuế của một MST là rủi ro: lượt tải
+   *      đang chạy giật theo, và ensureOpen() từ chối đổi MST khi đang bận.
+   *   3. show() đưa tab CỔNG THUẾ lên trước, nên người dùng thấy tab cũ chứ không phải
+   *      trang vừa mở.
    *
-   * Trả về target id để (nếu cần) điều khiển tiếp. Đăng ký vào auxTabs nên close() dọn sạch.
+   * Nay: một Chrome riêng, profile riêng (profiles/ncc-portal), LUÔN hiện (không
+   * --start-minimized), và đưa đúng tab vừa mở lên trước. Dùng lại được cho lần sau.
+   *
+   * Trả về target id. Đăng ký vào auxTabs để close() dọn sạch khi đóng app.
    */
   async openAuxPortal(url) {
     const target = String(url || '').trim();
     if (!/^https?:\/\//i.test(target)) throw new Error('Đường dẫn cổng tra cứu không hợp lệ.');
-    if (!this.client) throw new Error('Chưa có phiên trình duyệt. Bấm "Lấy CAPTCHA" hoặc đăng nhập trước.');
-    const created = await CDP.New({ host: '127.0.0.1', port: this.port, url: target });
+    const executablePath = browserPath();
+    if (!executablePath) throw new Error('Không tìm thấy Google Chrome hoặc Microsoft Edge. Cài một trong hai trình duyệt rồi thử lại.');
+
+    if (!this.portalPort) this.portalPort = await availablePort();
+    if (!this.portalProcess || this.portalProcess.killed) {
+      const profile = path.join(this.root, 'profiles', 'ncc-portal');
+      fs.mkdirSync(profile, { recursive: true });
+      disablePasswordManager(profile);
+      const args = [`--remote-debugging-port=${this.portalPort}`, '--remote-debugging-address=127.0.0.1',
+        '--remote-allow-origins=http://127.0.0.1', `--user-data-dir=${profile}`, '--no-first-run',
+        '--no-default-browser-check', '--disable-background-networking', '--disable-component-update',
+        '--disable-sync', '--new-window', target];
+      // KHÔNG dùng --start-minimized và windowsHide:false → cửa sổ hiện ra luôn. Thiếu đúng
+      // hai thứ này là lý do nút "Mở cổng tra cứu" trước đây không mở được gì cả.
+      this.portalProcess = spawn(executablePath, args, { windowsHide: false, stdio: 'ignore' });
+      this.portalProcess.on('exit', () => { this.portalProcess = null; this.portalPort = 0; });
+      // Chờ Chrome dựng xong: CDP.List chỉ trả về khi cổng debug đã sẵn sàng.
+      let error; let ready = false;
+      for (let n = 0; n < 80 && !ready; n += 1) {
+        try { ready = (await CDP.List({ host: '127.0.0.1', port: this.portalPort })).some(t => t.type === 'page'); }
+        catch (caught) { error = caught; }
+        if (!ready) await sleep(250);
+      }
+      if (!ready) throw new Error(`Không khởi động được cửa sổ trình duyệt: ${(error && error.message) || 'unknown error'}`);
+    }
+
+    // Tái dùng tab đang đứng đúng cổng đó (chỉ đổi hoá đơn cần tra), nếu không thì tạo tab mới.
+    const wanted = new URL(target).origin;
+    const tabs = await CDP.List({ host: '127.0.0.1', port: this.portalPort });
+    const sameOrigin = tabs.find(t => {
+      try { return t.type === 'page' && new URL(t.url).origin === wanted; } catch { return false; }
+    });
+    let created = sameOrigin || null;
+    if (sameOrigin) {
+      const client = await CDP({ host: '127.0.0.1', port: this.portalPort, target: sameOrigin.id });
+      try {
+        const misaReady = /^https:\/\/www\.meinvoice\.vn\/tra-cuu\/?$/i.test(target) &&
+          sameOrigin.url.replace(/\/$/, '') === target.replace(/\/$/, '') &&
+          (await client.Runtime.evaluate({ expression: "!!document.querySelector('#txtCode') && !!document.querySelector('#btnSearchInvoice')", returnByValue: true })).result.value;
+        if (!misaReady) await client.Page.navigate({ url: target });
+      } finally { await client.close(); }
+    } else {
+      created = await CDP.New({ host: '127.0.0.1', port: this.portalPort, url: target });
+    }
+    if (!created || !created.id) throw new Error('Trình duyệt không tạo được tab cho cổng tra cứu.');
     this.auxTabs = this.auxTabs || new Set();
     this.auxTabs.add(created.id);
-    // Đưa tab lên trước: tab tự tạo có thể mở ở nền, người dùng tưởng cửa sổ không mở.
+
+    // ĐƯA ĐÚNG TAB VỪA MỞ lên trước và bảo đảm cửa sổ không bị thu nhỏ. Bản đầu gọi
+    // this.show() — hàm đó đưa tab CỔNG THUẾ lên trước, nên người dùng không thấy trang
+    // cổng tra cứu dù tab đã mở.
     try {
-      const client = await CDP({ host: '127.0.0.1', port: this.port, target: created.id });
+      const client = await CDP({ host: '127.0.0.1', port: this.portalPort, target: created.id });
       await client.Page.enable();
+      const { windowId } = await client.Browser.getWindowForTarget();
+      await client.Browser.setWindowBounds({ windowId, bounds: { windowState: 'normal' } });
       await client.Page.bringToFront();
       await client.close();
-    } catch { /* vẫn mở được cửa sổ, chỉ không ép lên trước */ }
+    } catch { /* tab đã mở, chỉ không ép cửa sổ lên trước được */ }
     return created.id;
+  }
+
+  /** Đóng Chrome cổng tra cứu. Gọi khi thoát app. */
+  async closePortalBrowser() {
+    const proc = this.portalProcess;
+    this.portalProcess = null;
+    this.portalPort = 0;
+    this.auxTabs = new Set();
+    try { if (proc && !proc.killed) proc.kill(); } catch { /* đã đóng */ }
+﻿  }
+  /**
+   * Chạy một biểu thức trong TAB CỔNG TRA CỨU (khác evalInTab — cái đó gắn với
+   * Chrome của cổng thuế). Dùng để tự điền biểu mẫu NCC sau khi mở cổng.
+   */
+  async evalInPortalTab(tabId, expression, timeoutMs = 20000) {
+    if (!this.portalPort) throw new Error('Chưa mở cửa sổ cổng tra cứu.');
+    let targetClient = null;
+    try {
+      targetClient = await CDP({ host: '127.0.0.1', port: this.portalPort, target: tabId });
+      return await withTimeout(
+        () => targetClient.Runtime.evaluate({ expression, awaitPromise: true, returnByValue: true }),
+        timeoutMs,
+        'Trang cổng tra cứu không phản hồi.',
+      );
+    } finally {
+      if (targetClient) { try { await targetClient.close(); } catch {} }
+    }
+  }
+
+  /**
+   * Mở cổng tra cứu rồi TỰ ĐIỀN biểu mẫu (Mục 3).
+   *
+   * Trả về cả phần đã điền lẫn phần còn thiếu. Phần còn thiếu thường là CAPTCHA —
+   * thứ máy không tự làm thay được; người dùng tự nhập rồi bấm nút tra cứu trên cổng.
+   */
+  async openPortalAndFill(url, invoice) {
+    const tabId = await this.openAuxPortal(url);
+    const portalFill = require('./data/portal-fill');
+    const plan = portalFill.planFor(invoice && invoice.provider_id, invoice || {});
+    if (!plan.supported) {
+      return { tabId, filled: [], missing: [], supported: false, ready: false, reason: 'Cổng này chưa có bảng điền trường — hãy tự điền.' };
+    }
+    // Trang cổng cần thời gian dựng form; thử lại vài lần thay vì điền vào trang trắng.
+    let result = { filled: [], missing: plan.missing };
+    for (let attempt = 1; attempt <= 20; attempt += 1) {
+      try {
+        const raw = await this.evalInPortalTab(tabId, portalFill.FILL_SCRIPT(plan));
+        const parsed = JSON.parse(String((raw && raw.result && raw.result.value) || ''));
+        result = { filled: parsed.filled || [], missing: parsed.missing || plan.missing };
+        if (result.filled.length) break;
+        if (!plan.fields.length) break;
+      } catch { /* trang chưa sẵn sàng — thử lại */ }
+      await sleep(700);
+    }
+    return {
+      tabId,
+      filled: result.filled,
+      missing: result.missing,
+      supported: true,
+      ready: result.filled.length > 0,
+    };
   }
   // Chạy một lệnh CDP có CHẾ GIỚI THỜI GIAN phía Node. Trước đây Runtime.evaluate(awaitPromise)
   // chờ VĨNH VIỄN nếu tab cổng thuế bị treo (Chrome đóng băng tab nền, hộp thoại chặn trang…) —

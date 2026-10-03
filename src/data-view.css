@@ -23,7 +23,20 @@
   background: #e9f5f2;
   border: 1px solid #d4ebe6;
   border-radius: 11px;
+  /* 8 nút tab KHÔNG vừa một hàng ở cửa sổ bình thường (nội dung ~744px khi có
+     sidebar 250px). Trước đây để `flex-wrap:wrap` ⇒ nút rớt hàng và gạch dưới
+     trượt (position:absolute; bottom:0 so với container) rơi xuống đáy HÀNG
+     CUỐI, không trùng nút đang chọn ở hàng trên. Nay giữ MỘT hàng và cho
+     cuộn ngang — luôn đúng vị trí gạch dưới, không tốn thêm chiều cao. */
+  flex-wrap: nowrap;
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;          /* Firefox: ẩn thanh cuộn */
+  -ms-overflow-style: none;       /* Edge cũ */
+  scroll-padding-inline: 3px;
 }
+.view-switch::-webkit-scrollbar { display: none; }   /* Chrome/Edge: ẩn thanh cuộn */
 /* Gạch dưới trượt — renderer.js showView() tạo và cập nhật left+width */
 .view-switch .tab-indicator {
   position: absolute;
@@ -503,6 +516,7 @@ button.overview-kpi:hover { transform:translateY(-2px); border-color:#c9ddd8; bo
 .orig-badge { display: inline-block; padding: 2px 9px; border-radius: 999px; border: 1px solid transparent;
   font-size: 12px; font-weight: 700; line-height: 1.5; white-space: nowrap; cursor: pointer; }
 .orig-badge:hover { filter: brightness(.96); }
+.orig-provider { display: block; max-width: 220px; white-space: normal; overflow-wrap: anywhere; margin: 3px 0; font-size: 11px; color: #53635d; }
 .orig-have { background: #ecfdf5; border-color: #86efac; color: #146c43; }
 .orig-lookup { background: #fffbeb; border-color: #fcd34d; color: #92400e; }
 .orig-none { background: #f1f5f4; border-color: #d7dedb; color: #5b6b66; }

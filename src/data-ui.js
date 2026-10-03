@@ -421,6 +421,15 @@ const OVERVIEW_CACHE_IDS = [
           indicator.style.left = (activeBtn.offsetLeft - padLeft) + 'px';
           indicator.style.width = activeBtn.offsetWidth + 'px';
           indicator.hidden = false;
+          // Dãy nút dài hơn cửa sổ thì cuộn ngang (xem .view-switch ở data-view.css):
+          // tab đang chọn phải luôn nằm trong khung nhìn, không kẹp ở mép ngoài.
+          const padRight = parseFloat(getComputedStyle(switchEl).paddingRight) || 0;
+          const view = { left: activeBtn.offsetLeft - padLeft, right: activeBtn.offsetLeft + activeBtn.offsetWidth + padRight - switchEl.scrollLeft };
+          if (view.left < switchEl.scrollLeft) {
+            switchEl.scrollLeft = Math.max(0, view.left - 12);   // lệch 12px cho dễ thấy nút kề
+          } else if (view.right > switchEl.clientWidth) {
+            switchEl.scrollLeft += (view.right - switchEl.clientWidth) + 12;
+          }
         });
       } else {
         indicator.hidden = true;
@@ -2869,11 +2878,8 @@ async function saveLookupField(inv, field, value) {
 // Thiếu gì hỏi nấy, đúng thứ tự người dùng cần: cổng trước (để mở), mã sau.
 // Trả null nghĩa là người dùng bấm Hủy — hàm gọi phải dừng, không mở tiếp hộp sau.
 //
-// CHỈ hỏi mã tra cứu cho hóa đơn MUA VÀO. Hóa đơn bán ra là hóa đơn của chính hồ sơ
-// này, cổng của nhà cung cấp tra bằng SỐ HÓA ĐƠN chứ không cần mã bí mật — hỏi mã ở đó
-// là hỏi thừa, bắt người dùng điền một thứ không tồn tại, rồi lại hỏi tiếp 71 lần nữa
-// cho các hóa đơn còn lại.
-async function ensureLookupInfo(inv) {
+// Hỏi mã khi bộ tra cứu báo cần; không suy đoán theo chiều mua/bán.
+async function ensureLookupInfo(inv, needsCode = false) {
   const providerName = inv.provider_name || 'nhà cung cấp';
   if (!/^https?:\/\//i.test(String(inv.lookup_url || ''))) {
     const url = await requestOrigInput({
@@ -2884,8 +2890,7 @@ async function ensureLookupInfo(inv) {
     if (!url) return null;
     await saveLookupField(inv, 'lookup_url', url);
   }
-  if (inv.direction !== 'BUY') return inv;
-  if (!String(inv.lookup_code || '').trim()) {
+  if (needsCode && !String(inv.lookup_code || '').trim()) {
     const code = await requestOrigInput({
       title: `Cần mã tra cứu ${providerName}`,
       help: 'Nhập mã tra cứu, mã nhận hóa đơn hoặc mã số bí mật của đúng hóa đơn này. Mã chỉ được dùng để tra cứu chính hóa đơn đó.',
@@ -2922,22 +2927,123 @@ let pickTarget = null;
 
 function originalCell(inv) {
   const cell = document.createElement('td');
+  const provider = document.createElement('small');
+  provider.className = 'orig-provider';
+  provider.textContent = inv.provider_name || 'Chưa rõ NCC';
+  cell.append(provider);
+  const evidence = document.createElement('small');
+  evidence.className = 'orig-provider';
+  evidence.textContent = `${inv.provider_source || 'Chưa đủ dữ liệu nhận diện'} · Mã tra cứu: ${inv.lookup_code || 'Chưa có mã'}`;
+  evidence.style.overflowWrap = 'anywhere';
+  evidence.style.userSelect = 'text';
+  cell.append(evidence);
+  if (inv.solution_provider_name && inv.solution_provider_name !== inv.provider_name) {
+    const solution = document.createElement('small');
+    solution.className = 'orig-provider'; solution.textContent = `NCC giải pháp: ${inv.solution_provider_name}`;
+    cell.append(solution);
+  }
+  if (inv.lookup_url) {
+    const link = document.createElement('button');
+    link.type = 'button'; link.className = 'orig-badge'; link.textContent = 'Mở cổng NCC';
+    link.title = `${inv.provider_source || ''}: ${inv.lookup_url}`;
+    link.onclick = async event => {
+      event.stopPropagation();
+      try {
+        if (inv.provider_id === 'misa') { await onOriginalClick(inv, link); return; }
+        const result = await post('/api/db/provider/open-portal', { key: inv.invoice_key });
+        if (!result.opened) throw new Error(result.error || 'Không mở được cổng NCC.');
+        const filled = Array.isArray(result.filled) ? result.filled : [];
+        const missing = Array.isArray(result.missing) ? result.missing : [];
+        window.notice(filled.length ? `Đã mở cổng NCC và điền ${filled.join(', ')}.` : missing.length ? `Đã mở cổng NCC. Dữ liệu hóa đơn còn thiếu: ${missing.join(', ')}.` : 'Đã mở cổng NCC. Chưa tìm thấy ô nhập phù hợp; bạn có thể tra cứu trực tiếp trên cổng.');
+      } catch (error) { fail(error); }
+    };
+    cell.append(link);
+  }
   const kind = String(inv.original_state || 'none');
   const button = document.createElement('button');
   button.type = 'button';
   button.className = `orig-badge orig-${kind}`;
-  button.textContent = kind === 'have' ? 'Có PDF gốc' : (kind === 'lookup' ? 'Tra cứu NCC' : 'Chỉ có bản dựng');
+  button.textContent = kind === 'have' ? 'Có PDF gốc · Xem' : (kind === 'lookup' ? 'Tải PDF gốc' : 'Chưa có PDF gốc');
   button.title = kind === 'have'
     ? 'Bấm để xem PDF gốc do nhà cung cấp phát hành (có chữ ký số).'
     : String(inv.original_reason || '');
-  button.onclick = event => { event.stopPropagation(); onOriginalClick(inv); };
+  button.onclick = event => { event.stopPropagation(); onOriginalClick(inv, button); };
   cell.append(button);
+  if (kind !== 'have') {
+    const status = document.createElement('small');
+    status.className = 'orig-provider';
+    status.textContent = 'Chưa lưu PDF gốc';
+    cell.append(status);
+    const choose = document.createElement('button');
+    choose.type = 'button';
+    choose.className = 'orig-badge';
+    choose.textContent = 'Chọn file…';
+    choose.title = 'Liên kết PDF đã tải từ nhà cung cấp';
+    choose.onclick = event => { event.stopPropagation(); pickTarget = inv; $('orig-pick-subtitle').textContent = inv.original_reason || ''; $('orig-pick-dialog').showModal(); };
+    cell.append(choose);
+  }
   return cell;
 }
 
-function onOriginalClick(inv) {
-  if (String(inv.original_state) === 'have') openOriginalPdf(inv.invoice_key);
-  else openOriginalPick(inv);
+async function onOriginalClick(inv, button) {
+  if (originalDownloads.has(inv.invoice_key)) { originalDownloads.get(inv.invoice_key).cancelled = true; return; }
+  const label = button?.textContent;
+  if (button && String(inv.original_state) !== 'have') {
+    button.textContent = 'Hủy tra cứu';
+    button.setAttribute('aria-busy', 'true');
+  }
+  try {
+    if (String(inv.original_state) === 'have') openOriginalPdf(inv.invoice_key);
+    else await downloadOriginal(inv);
+  } catch (error) { fail(error); }
+  finally { if (button) { button.textContent = label; button.removeAttribute('aria-busy'); } }
+}
+
+const originalDownloads = new Map();
+async function downloadOriginal(inv) {
+  const key = inv.invoice_key;
+  if (originalDownloads.has(key)) return;
+  const active = { cancelled: false, session: '' };
+  originalDownloads.set(key, active);
+  try {
+    for (const [previousKey, previous] of originalDownloads) {
+      if (previousKey === key) continue;
+      previous.cancelled = true;
+      if (previous.session) await post('/api/db/provider/download', { key: previousKey, session: previous.session, cancel: true });
+    }
+    const recovered = await post('/api/db/provider/lookup', { key });
+    inv.lookup_code = recovered.lookup_code || '';
+    inv.lookup_url = recovered.lookup_url || '';
+    inv.provider_id = recovered.provider_id || inv.provider_id;
+    inv.provider_name = recovered.provider_name || inv.provider_name;
+    if (!await ensureLookupInfo(inv)) return;
+    let result = await post('/api/db/provider/download', { key });
+    if (result.needsCode) {
+      if (!await ensureLookupInfo(inv, true)) return;
+      result = await post('/api/db/provider/download', { key });
+    }
+    if (!result.session) throw new Error(result.error || 'Không khởi tạo được phiên tra cứu NCC.');
+    active.session = result.session;
+    window.notice('Đã mở cổng NCC và điền dữ liệu. Nhập CAPTCHA nếu có, rồi bấm tra cứu trên cổng; ứng dụng sẽ lấy PDF gốc và mở hóa đơn.');
+    const deadline = Date.now() + 9 * 60 * 1000;
+    while (Date.now() < deadline) {
+      if (active.cancelled) { window.notice('Đã hủy phiên tra cứu PDF gốc.'); return; }
+      const status = await post('/api/db/provider/download', { key, session: result.session });
+      if (active.cancelled || status.cancelled) return;
+      if (status.downloaded) {
+        await refreshAll();
+        openOriginalPdf(key);
+        window.notice('Đã tải và lưu PDF gốc của nhà cung cấp.');
+        return;
+      }
+      await new Promise(resolve => setTimeout(resolve, inv.provider_id === 'misa' ? 500 : 2500));
+    }
+    window.notice('Phiên tra cứu đã hết thời gian. Chưa lấy được PDF gốc; có thể thử lại hoặc chọn file đã tải trên cổng NCC.');
+  } catch (error) { fail(error); }
+  finally {
+    if (active.session) await post('/api/db/provider/download', { key, session: active.session, cancel: true }).catch(() => {});
+    originalDownloads.delete(key);
+  }
 }
 
 function openOriginalPdf(key) {
@@ -2961,16 +3067,8 @@ bindOrig('orig-pick-close', 'click', () => { $('orig-pick-dialog').close(); });
 bindOrig('orig-pick-cancel', 'click', () => { $('orig-pick-dialog').close(); });
 bindOrig('orig-pick-portal', 'click', async () => {
   if (!pickTarget) return;
-  const button = $('orig-pick-portal');
-  const restore = busyButton(button, 'Đang mở…');
-  try {
-    const result = await post('/api/db/provider/open-portal', { key: pickTarget.invoice_key });
-    restore();
-    $('orig-pick-dialog').close();
-    window.notice(result.opened
-      ? `Đã mở ${result.host}. Nhập CAPTCHA/mã tra cứu, tải PDF gốc về rồi bấm "Chọn file PDF…" để liên kết.`
-      : `Không mở được cửa sổ tự động. Cổng tra cứu: ${result.host}`);
-  } catch (error) { restore(); fail(error); }
+  $('orig-pick-dialog').close();
+  await downloadOriginal(pickTarget);
 });
 bindOrig('orig-pick-open', 'click', async () => {
   if (!pickTarget) return;
@@ -3061,13 +3159,14 @@ async function loadVat() {
   const body = $('vat-body');
   if (!select || !body) return;
   const parts = String(select.value || '').split('-');
-  if (parts.length !== 2) { body.innerHTML = '<p class="hint">Kho chưa có hóa đơn nào để tổng hợp.</p>'; return; }
   body.innerHTML = '<p class="hint">Đang tính…</p>';
-  const query = `?year=${encodeURIComponent(parts[0])}&quarter=${encodeURIComponent(parts[1])}`
-    + `&deduction=${encodeURIComponent(Number($('vat-deduction').value) || 0)}`;
+  const query = `?deduction=${encodeURIComponent(Number($('vat-deduction').value) || 0)}`
+    + (parts.length === 2 ? `&year=${encodeURIComponent(parts[0])}&quarter=${encodeURIComponent(parts[1])}` : '');
   try {
     const replyValue = await api(`/api/db/vat/quarter${query}`);
     vatPeriods = replyValue.periods || vatPeriods;
+    syncVatPeriods(vatPeriods);
+    if (!vatPeriods.length) { body.innerHTML = '<p class="hint">Kho chưa có hóa đơn nào để tổng hợp.</p>'; $('vat-export').disabled = true; return; }
     renderVat(replyValue);
   } catch (error) {
     body.innerHTML = '';
@@ -3209,8 +3308,3 @@ $('invoice-close').onclick = closeInvoice;
 
   window.HD_DATA_VIEW = { show: showView, refresh: refreshAll, openAutoSync };
 })();
-
-
-
-
-

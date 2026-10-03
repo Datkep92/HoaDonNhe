@@ -47,6 +47,18 @@ const REQUIRED = [
   // KHÔNG đòi 'thong-bao.mp3': đó là âm thanh TUỲ CHỌN (server.js ghi rõ "bỏ file ... không có thì
   // dùng tiếng mặc định") và file chưa từng có trong repo. Đòi nó sẽ khiến MỌI build đều đỏ vô cớ.
   // (Đây cũng là nguồn của cảnh báo "Warning Cannot stat, ENOENT" của pkg — do glob
+  // TẢI PDF GỐC TỪ NHÀ CUNG CẤP (mục 3). provider-download.js đọc 4 script runner bằng
+  // fs.readFileSync(__dirname + 'provider-reference/…') LÚC CHẠY, không phải lúc build.
+  // Nếu chúng không nằm trong EXE thì TÍNH NĂNG CHẾT ÂM THẦM — app vẫn mở được, nút vẫn
+  // bấm được, chỉ tới lúc tải PDF gốc mới ném lỗi đọc file. Bước kiểm này sinh ra để chặn
+  // đúng kiểu "bản khuyết im lặng" ấy, nên tên chúng phải nằm ở đây.
+  'provider-reference/generic-runner.js',
+  'provider-reference/misa-runner.js',
+  'provider-reference/misa-adapter.js',
+  'provider-reference/captcha-panel.js',
+  // KHÔNG đòi 'thong-bao.mp3': đó là âm thanh TUỲ CHỌN (server.js ghi rõ "bỏ file ... không có thì
+  // dùng tiếp mặc định") và file chưa từng có trong repo. Đòi nó sẽ khiến MỌI build đều đỏ vô cớ.
+  // (Đây cũng là nguồn của cảnh báo "Warning Cannot stat, ENOENT" của pkg — do glob
   // src/template/*.mp3 không khớp file nào, KHÔNG phải do thiếu model như tôi từng đoán sai.)
 ];
 
@@ -57,7 +69,16 @@ const REQUIRED = [
 function verify(exePath, extra = []) {
   const bytes = fs.readFileSync(exePath);
   const required = [...REQUIRED, ...nativeNames(), ...extra];
-  const missing = required.filter(name => bytes.indexOf(Buffer.from(name)) < 0);
+  // pkg nhúng asset theo ĐƯỜNG DẪN nhưng bảng tên trong EXE lưu PHẲNG (chỉ tên file), nên
+  // quét chuỗi "provider-reference/generic-runner.js" sẽ không trúng dù file CÓ trong gói.
+  // Đã xảy ra: kiểm này kết luận thiếu 4/35 file rồi XOÁ mất bản phát hành, hai lần.
+  // Vì vậy thử tên phẳng trước; chỉ khi cả tên phẳng cũng không có mới tính là thiếu.
+  const missing = required.filter(name => {
+    const flat = name.split('/').pop();
+    return bytes.indexOf(Buffer.from(name)) < 0
+      && bytes.indexOf(Buffer.from(name.replace(/\//g, '\\'))) < 0
+      && bytes.indexOf(Buffer.from(flat)) < 0;
+  });
   return { missing, size: bytes.length, total: required.length };
 }
 
@@ -107,3 +128,7 @@ if (require.main === module) {
 }
 
 module.exports = { verify, REQUIRED, nativeNames, defaultExe };
+
+
+
+

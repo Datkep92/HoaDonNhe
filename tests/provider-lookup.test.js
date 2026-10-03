@@ -113,7 +113,7 @@ test('VNPT: cổng riêng theo người bán thắng, không dùng cổng chung'
   // Cổng chung của VNPT KHÔNG tồn tại trong bảng (mỗi khách một tenant) — nên khi không
   // có URL trong XML thì phải trống, không trả về một cổng VNPT bất kỳ.
   assert.strictEqual(registry.resolve('0100684378').portalUrl, '', 'VNPT không được có cổng chung');
-  assert.strictEqual(registry.resolve('0100109106').portalUrl, '', 'Viettel không được có cổng chung');
+  assert.strictEqual(registry.resolve('0100109106').portalUrl, 'https://vinvoice.viettel.vn/utilities/invoice-search', 'Viettel dùng cổng tra cứu đã xác nhận');
   const unknownSeller = parseInvoiceXml(makeXml({ msttcgp: '0100684378' })).record;
   assert.strictEqual(unknownSeller.lookupUrl, null, 'người bán lạ + VNPT ⇒ để trống');
   // Người bán có trong bảng thì dùng tenant riêng của họ.
@@ -261,4 +261,3 @@ test('Excel: cột cổng tra cứu + hyperlink bấm được; KHÔNG còn shee
     assert.ok(linked.length, 'ô cổng tra cứu phải bấm được');
   } finally { db.close(); fs.rmSync(dir, { recursive: true, force: true }); }
 });
-

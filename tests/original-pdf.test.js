@@ -166,7 +166,7 @@ test('UI: cột PDF gốc, hộp thoại xem, và không mở trình duyệt ngo
   assert.ok(/\/api\/db\/invoice-original\?key=/.test(ui), 'UI phải xem PDF gốc qua route của app');
   assert.ok(/\/api\/db\/invoice-original\/attach/.test(ui));
   assert.ok(/\/api\/db\/invoice-original\/pick/.test(ui));
-  assert.ok(/\/api\/db\/provider\/open-portal/.test(ui));
+  assert.ok(/\/api\/db\/provider\/download/.test(ui));
   // KHÔNG được spawn trình duyệt hệ thống từ luồng xem PDF gốc.
   assert.ok(!/explorer\.exe|shell\.openExternal/.test(ui), 'không được mở ứng dụng ngoài cho PDF gốc');
 

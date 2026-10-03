@@ -383,12 +383,14 @@ async function reprocessPaymentMethods({ db, mstDir, onFile, limit = 0 } = {}) {
 // đếm `missing` và GIỮ NGUYÊN giá trị cũ — không đoán, không ghi rỗng.
 // ---------------------------------------------------------------------------
 async function backfillProviderLookup({ db, mstDir, onFile, limit = 0 } = {}) {
-  const rows = db.prepare(`SELECT id, file_xml FROM invoices
-    WHERE msttcgp IS NULL OR provider_id IS NULL
+  const rows = db.prepare(`SELECT id, file_xml, provider_id FROM invoices
+    WHERE msttcgp IS NULL OR provider_id IS NULL OR COALESCE(lookup_code, '') = ''
     ORDER BY id${Number(limit) > 0 ? ` LIMIT ${Number(limit)}` : ''}`).all();
   const result = { candidates: rows.length, updated: 0, missing: 0, failed: 0 };
   const update = db.prepare(`UPDATE invoices SET
-    msttcgp = ?, lookup_code = ?, lookup_url = ?, provider_id = ?, provider_name = ?, provider_level = ?
+    msttcgp = COALESCE(msttcgp, ?), lookup_code = COALESCE(NULLIF(lookup_code, ''), ?),
+    lookup_url = COALESCE(NULLIF(lookup_url, ''), ?), provider_id = COALESCE(provider_id, ?),
+    provider_name = COALESCE(provider_name, ?), provider_level = COALESCE(provider_level, ?)
     WHERE id = ?`);
   for (const row of rows) {
     if (typeof onFile === 'function') onFile({ ...result, current: row.file_xml });
@@ -402,7 +404,7 @@ async function backfillProviderLookup({ db, mstDir, onFile, limit = 0 } = {}) {
     try { record = parseInvoiceXml(source).record; } catch { result.failed += 1; continue; }
     update.run(
       record.msttcgp ?? null,
-      record.lookupCode ?? null,
+      record.lookupCode || require('./lookup-code').findLookupCode(source, row.provider_id || '') || null,
       record.lookupUrl ?? null,
       record.providerId ?? null,
       record.providerName ?? null,

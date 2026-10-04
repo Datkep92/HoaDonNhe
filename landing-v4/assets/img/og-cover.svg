@@ -1,0 +1,135 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630" role="img" aria-label="CN Tax Tools — kéo hóa đơn từ Tổng cục Thuế, đối chiếu sao kê cho kế toán">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0b1a2b"/>
+      <stop offset="100%" stop-color="#16324e"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.18" cy="0.06" r="0.62">
+      <stop offset="0%" stop-color="#2bd4ae" stop-opacity="0.34"/>
+      <stop offset="100%" stop-color="#2bd4ae" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="glow2" cx="0.9" cy="0.95" r="0.5">
+      <stop offset="0%" stop-color="#087f70" stop-opacity="0.30"/>
+      <stop offset="100%" stop-color="#087f70" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="mint" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#7df3d5"/>
+      <stop offset="55%" stop-color="#2bd4ae"/>
+      <stop offset="100%" stop-color="#7fd4ff"/>
+    </linearGradient>
+    <linearGradient id="barOn" x1="0" y1="1" x2="0" y2="0">
+      <stop offset="0%" stop-color="#087f70"/>
+      <stop offset="100%" stop-color="#2bd4ae"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="1200" height="630" fill="url(#bg)"/>
+  <rect width="1200" height="630" fill="url(#glow)"/>
+  <rect width="1200" height="630" fill="url(#glow2)"/>
+
+  <!-- ================= CỘT TRÁI ================= -->
+  <g font-family="'Segoe UI','Segoe UI Variable Text',Inter,DejaVu Sans,sans-serif">
+
+    <!-- Logo -->
+    <rect x="72" y="62" width="46" height="46" rx="12" fill="#0e2a3f" stroke="#2a5570" stroke-width="1.5"/>
+    <text x="95" y="93" font-size="20" font-weight="800" fill="#7df3d5" text-anchor="middle">CN</text>
+    <text x="132" y="93" font-size="23" font-weight="800" fill="#ffffff" letter-spacing="-0.4">Tax Tools</text>
+
+    <!-- Nhãn đối tượng -->
+    <rect x="72" y="140" width="466" height="38" rx="19" fill="#ffffff" fill-opacity="0.08" stroke="#ffffff" stroke-opacity="0.18"/>
+    <circle cx="94" cy="159" r="4.5" fill="#2bd4ae"/>
+    <text x="110" y="165" font-size="16" font-weight="600" fill="#d5e4f0">Kế toán dịch vụ · Hộ kinh doanh · Công ty</text>
+
+    <!-- Tiêu đề -->
+    <text x="72" y="256" font-size="46" font-weight="800" fill="#ffffff" letter-spacing="-1.4">Kéo hóa đơn từ Tổng cục</text>
+    <text x="72" y="316" font-size="46" font-weight="800" fill="#ffffff" letter-spacing="-1.4">Thuế, <tspan fill="url(#mint)">đối chiếu sao kê</tspan></text>
+
+    <!-- Mô tả -->
+    <text x="72" y="366" font-size="20" font-weight="400" fill="#a9c0d5">Tự giải CAPTCHA · Kéo hàng loạt, không giới hạn MST</text>
+    <text x="72" y="398" font-size="20" font-weight="400" fill="#a9c0d5">Kho hàng &amp; tồn kho · Công nợ · Xuất Excel mẫu MISA</text>
+
+    <!-- Nút -->
+    <rect x="72" y="440" width="196" height="54" rx="27" fill="#ffffff"/>
+    <text x="170" y="474" font-size="18" font-weight="700" fill="#0b1a2b" text-anchor="middle">Tải ứng dụng</text>
+    <rect x="284" y="440" width="196" height="54" rx="27" fill="#ffffff" fill-opacity="0.10" stroke="#ffffff" stroke-opacity="0.30"/>
+    <text x="382" y="474" font-size="18" font-weight="700" fill="#ffffff" text-anchor="middle">Xem giao diện</text>
+
+    <!-- Đường dẫn -->
+    <line x1="72" y1="546" x2="540" y2="546" stroke="#ffffff" stroke-opacity="0.13" stroke-width="1.5"/>
+    <text x="72" y="580" font-size="17" font-weight="600" fill="#8fa8c0">Windows 10 / 11 — 64-bit · Chạy trên máy của bạn</text>
+  </g>
+
+  <!-- ================= ẢNH GIAO DIỆN (bên phải) ================= -->
+  <g>
+    <rect x="628" y="112" width="500" height="406" rx="16" fill="#0e2033" stroke="#ffffff" stroke-opacity="0.14" stroke-width="1.5"/>
+
+    <!-- Thanh tiêu đề cửa sổ -->
+    <circle cx="654" cy="136" r="5" fill="#ff5f57"/>
+    <circle cx="672" cy="136" r="5" fill="#febc2e"/>
+    <circle cx="690" cy="136" r="5" fill="#28c840"/>
+    <text x="878" y="142" font-size="14" font-weight="600" fill="#7e97ad" text-anchor="middle" font-family="'Segoe UI',Inter,sans-serif">CN Tax Tools</text>
+    <line x1="628" y1="160" x2="1128" y2="160" stroke="#ffffff" stroke-opacity="0.10"/>
+
+    <!-- Cột bên -->
+    <rect x="628" y="160" width="150" height="358" fill="#12283d"/>
+    <text x="646" y="192" font-size="12" font-weight="700" fill="#8fa8c0" font-family="'Segoe UI',Inter,sans-serif">DANH SÁCH MST</text>
+    <g font-family="'Segoe UI',Inter,sans-serif" font-size="12" font-weight="600">
+      <rect x="638" y="204" width="130" height="30" rx="8" fill="#1d3a52"/>
+      <circle cx="653" cy="219" r="4" fill="#2bd4ae"/>
+      <text x="665" y="223" fill="#ffffff">MST 4500677693</text>
+      <circle cx="653" cy="253" r="4" fill="#2bd4ae"/>
+      <text x="665" y="257" fill="#a9c0d5">MST 2100482615</text>
+      <circle cx="653" cy="287" r="4" fill="#e5c266"/>
+      <text x="665" y="291" fill="#a9c0d5">MST 0312649981</text>
+      <circle cx="653" cy="321" r="4" fill="#6f8aa4"/>
+      <text x="665" y="325" fill="#a9c0d5">MST 4011228455</text>
+    </g>
+    <rect x="638" y="352" width="130" height="30" rx="8" fill="#087f70"/>
+    <text x="703" y="371" font-size="12" font-weight="700" fill="#ffffff" text-anchor="middle" font-family="'Segoe UI',Inter,sans-serif">＋ Thêm MST</text>
+
+    <!-- KPI -->
+    <g font-family="'Segoe UI',Inter,sans-serif">
+      <rect x="794" y="180" width="106" height="74" rx="10" fill="#ffffff" stroke="#e2e9f1"/>
+      <text x="806" y="203" font-size="10" font-weight="700" fill="#7b8ca1">TỔNG MST</text>
+      <text x="806" y="234" font-size="27" font-weight="800" fill="#0e1f33" letter-spacing="-0.8">24</text>
+
+      <rect x="910" y="180" width="106" height="74" rx="10" fill="#ffffff" stroke="#e2e9f1"/>
+      <text x="922" y="203" font-size="10" font-weight="700" fill="#7b8ca1">CÒN PHIÊN</text>
+      <text x="922" y="234" font-size="27" font-weight="800" fill="#087f70" letter-spacing="-0.8">18</text>
+
+      <rect x="1026" y="180" width="86" height="74" rx="10" fill="#ffffff" stroke="#e2e9f1"/>
+      <text x="1038" y="203" font-size="10" font-weight="700" fill="#7b8ca1">LỆCH</text>
+      <text x="1038" y="234" font-size="27" font-weight="800" fill="#9a6414" letter-spacing="-0.8">9</text>
+    </g>
+
+    <!-- Biểu đồ -->
+    <rect x="794" y="270" width="318" height="176" rx="10" fill="#ffffff" stroke="#e2e9f1"/>
+    <text x="810" y="294" font-size="11" font-weight="700" fill="#5a6e85" font-family="'Segoe UI',Inter,sans-serif">DÒNG TIỀN VÀO — RA THEO KỲ</text>
+    <g>
+      <rect x="812" y="368" width="16" height="58" rx="3" fill="url(#barOn)" opacity="0.38"/>
+      <rect x="834" y="392" width="16" height="34" rx="3" fill="url(#barOn)" opacity="0.9"/>
+      <rect x="862" y="350" width="16" height="76" rx="3" fill="url(#barOn)" opacity="0.38"/>
+      <rect x="884" y="378" width="16" height="48" rx="3" fill="url(#barOn)" opacity="0.9"/>
+      <rect x="912" y="336" width="16" height="90" rx="3" fill="url(#barOn)" opacity="0.38"/>
+      <rect x="934" y="362" width="16" height="64" rx="3" fill="url(#barOn)" opacity="0.9"/>
+      <rect x="962" y="322" width="16" height="104" rx="3" fill="url(#barOn)" opacity="0.38"/>
+      <rect x="984" y="354" width="16" height="72" rx="3" fill="url(#barOn)" opacity="0.9"/>
+      <rect x="1012" y="310" width="16" height="116" rx="3" fill="url(#barOn)" opacity="0.38"/>
+      <rect x="1034" y="344" width="16" height="82" rx="3" fill="url(#barOn)" opacity="0.9"/>
+      <rect x="1062" y="296" width="16" height="130" rx="3" fill="url(#barOn)" opacity="0.38"/>
+      <rect x="1084" y="330" width="16" height="96" rx="3" fill="url(#barOn)" opacity="0.9"/>
+    </g>
+    <line x1="806" y1="428" x2="1100" y2="428" stroke="#e2e9f1"/>
+    <text x="806" y="440" font-size="9" font-weight="600" fill="#7b8ca1" font-family="'Segoe UI',Inter,sans-serif">T1</text>
+    <text x="944" y="440" font-size="9" font-weight="600" fill="#7b8ca1" text-anchor="middle" font-family="'Segoe UI',Inter,sans-serif">T6</text>
+    <text x="1100" y="440" font-size="9" font-weight="600" fill="#7b8ca1" text-anchor="end" font-family="'Segoe UI',Inter,sans-serif">T12</text>
+
+    <!-- Dải trạng thái -->
+    <rect x="794" y="462" width="318" height="42" rx="10" fill="#e6f6f2" stroke="#b9e6d9"/>
+    <circle cx="812" cy="483" r="4" fill="#0a7d5f"/>
+    <text x="826" y="488" font-size="12" font-weight="700" fill="#06594e" font-family="'Segoe UI',Inter,sans-serif">Đã đối chiếu 1.284 dòng khớp</text>
+  </g>
+
+  <!-- Chân ảnh -->
+  <text x="72" y="614" font-size="13" font-weight="600" fill="#6b8399" font-family="'Segoe UI',Inter,sans-serif">github.com/Datkep92/HoaDonNhe/releases/latest</text>
+</svg>

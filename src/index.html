@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-src 'self' https://*.easytool.dev; object-src 'none'; base-uri 'none'; form-action 'self'"><title>CN Tax Tools</title><link rel="icon" type="image/png" href="icon.png"><link rel="stylesheet" href="style.css"><link rel="stylesheet" href="login.css"><link rel="stylesheet" href="data-view.css"><link rel="preload" as="script" href="renderer.js"><link rel="preload" as="script" href="data-ui.js"><script src="ai-providers.js" defer></script><script src="ai-bridge.js" defer></script><script src="ai-chat.js" defer></script></head>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; connect-src 'self'; frame-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'"><title>CN Tax Tools</title><link rel="icon" type="image/png" href="icon.png"><link rel="stylesheet" href="style.css"><link rel="stylesheet" href="login.css"><link rel="stylesheet" href="data-view.css"><link rel="preload" as="script" href="renderer.js"><link rel="preload" as="script" href="data-ui.js"><script src="ai-providers.js" defer></script><script src="ai-chat.js" defer></script></head>
 <body><div id="boot-splash" class="boot-splash">
   <div class="boot-aurora" aria-hidden="true"></div>
   <div class="boot-panel">
@@ -22,7 +22,7 @@
   <div class="side-actions"><button id="add-mst" class="primary">＋ Thêm MST</button><button id="sync-all" class="secondary" title="Chạy Auto Sync cho tất cả MST cùng lúc — 3 luồng song song, xong cái nào rút cái kế tiếp">Đồng bộ tất cả</button></div>
   <div class="side-license"><strong id="side-license-state">Activate</strong></div>
   <div class="side-bottom"><button id="settings-open" class="link" type="button">Cài đặt</button><br><small id="app-version"><b>CN</b> Tax Tools</small> <button id="update-available" class="link" type="button" hidden></button></div></aside>
-<main id="main-content"><div class="app-top"><header><div class="view-switch" id="view-switch" role="tablist" aria-label="Khu vực làm việc"><button id="view-overview" class="active" type="button" role="tab" aria-selected="true">Tổng quan</button><button id="view-download" type="button" role="tab" aria-selected="false">Tra cứu &amp; tải</button><button id="view-data" type="button" role="tab" aria-selected="false">Kho dữ liệu</button><button id="view-bank" type="button" role="tab" aria-selected="false">Sao kê ngân hàng</button><button id="view-accounting" type="button" role="tab" aria-selected="false">Hỗ trợ kế toán</button><button id="view-dvt" type="button" role="tab" aria-selected="false">Chuyển đổi DVT</button><button id="view-mstlookup" type="button" role="tab" aria-selected="false">Tra cứu MST</button><button id="view-tokhai" type="button" role="tab" aria-selected="false">Tải tờ khai</button></div><!-- Tiêu đề tab gộp CHUNG hàng với dãy nút: trước có hàng riêng (nhãn TỔNG QUAN +
+<main id="main-content"><div class="app-top"><header><div class="view-switch" id="view-switch" role="tablist" aria-label="Khu vực làm việc"><button id="view-overview" class="active" type="button" role="tab" aria-selected="true">Tổng quan</button><button id="view-download" type="button" role="tab" aria-selected="false">Tra cứu &amp; tải</button><button id="view-data-products" type="button" role="tab" aria-selected="false">Hàng hóa</button><button id="view-data-list" type="button" role="tab" aria-selected="false">Hóa đơn</button><button id="view-data-partners" type="button" role="tab" aria-selected="false">Đối tác</button><button id="view-data-vat" type="button" role="tab" aria-selected="false">Phần thuế</button><button id="view-bank" type="button" role="tab" aria-selected="false">Sao kê ngân hàng</button><button id="view-accounting" type="button" role="tab" aria-selected="false">Hỗ trợ kế toán</button><button id="view-dvt" type="button" role="tab" aria-selected="false">Chuyển đổi DVT</button><button id="view-mstlookup" type="button" role="tab" aria-selected="false">Tra cứu MST</button><button id="view-tokhai" type="button" role="tab" aria-selected="false">Tải tờ khai</button></div><!-- Tiêu đề tab gộp CHUNG hàng với dãy nút: trước có hàng riêng (nhãn TỔNG QUAN +
      tên tab + mô tả) chiếm 108px ở trên màn hình. Nay chỉ còn tên tab căn phải. Mô tả (ghi chú)
      không xoá hẳn mà chuyển sang tooltip của nút tab đang bật — vẫn tra được, không tốn chiều cao.
      #view-eyebrow cũng bỏ: nó chỉ lặp lại chính tên nút tab đang được tô đậm. -->
@@ -161,8 +161,8 @@
 </div>
 </section>
 <section class="card data-toolbar"><button id="data-import" class="primary" type="button">Nhập / cập nhật từ XML</button><button id="data-refresh" class="secondary" type="button">Tải lại</button><button id="backfill-open" class="secondary" type="button">Tải lịch sử</button><button id="data-backfill-lookup" class="secondary" type="button" title="Đọc lại file XML gốc để điền cổng tra cứu và mã tra cứu của nhà cung cấp cho hóa đơn nhập trước khi có các cột này">Bổ sung cột tra cứu</button><details class="data-export" id="data-export-menu"><summary class="secondary" id="data-export" title="Xuất kho dữ liệu ra Excel — theo đúng bộ lọc đang xem">Xuất Excel</summary><div class="data-export-list" id="data-export-list" role="menu"><button type="button" data-part="all" role="menuitem" class="all">Tải toàn bộ (7 bảng)</button><details class="group"><summary>Hóa đơn</summary><div class="sub"><button type="button" data-part="buy" role="menuitem">Mua vào</button><button type="button" data-part="sell" role="menuitem">Bán ra</button></div></details><details class="group"><summary>Hàng hóa</summary><div class="sub"><button type="button" data-part="productsBuy" role="menuitem">Mua vào</button><button type="button" data-part="productsSell" role="menuitem">Bán ra</button></div></details><details class="group"><summary>Đối tác</summary><div class="sub"><button type="button" data-part="suppliers" role="menuitem">Nhà cung cấp</button><button type="button" data-part="buyers" role="menuitem">Khách hàng</button></div></details><details class="group"><summary>Ngân hàng</summary><div class="sub"><button type="button" data-part="bank" role="menuitem">Sao kê ngân hàng</button></div></details></div></details><div class="data-job"><progress id="data-import-bar" max="100" value="0" hidden></progress><span class="hint" id="data-import-status">Chưa nhập lần nào trong phiên này.</span></div></section>
-<section class="card data-content">
-<div class="data-tabs" role="tablist" aria-label="Nội dung kho dữ liệu"><button id="data-tab-products-btn" class="active" type="button" role="tab" aria-selected="true">Hàng hóa</button><button id="data-tab-list-btn" type="button" role="tab" aria-selected="false">Danh sách hóa đơn</button><button id="data-tab-partners-btn" type="button" role="tab" aria-selected="false">Đối tác</button></div>
+<section class="card data-content" id="data-content">
+<div class="data-tabs" id="data-tabs" role="tablist" aria-label="Nội dung kho dữ liệu" hidden><button id="data-tab-products-btn" class="active" type="button" role="tab" aria-selected="true">Hàng hóa</button><button id="data-tab-list-btn" type="button" role="tab" aria-selected="false">Danh sách hóa đơn</button><button id="data-tab-partners-btn" type="button" role="tab" aria-selected="false">Đối tác</button></div>
 <div id="data-tab-products">
 <div class="data-subbar"><div class="data-seg" id="data-seg-products" role="group" aria-label="Chiều hóa đơn của bảng hàng hóa"><button type="button" data-dir="all" class="active">Tất cả</button><button type="button" data-dir="BUY">Mua vào</button><button type="button" data-dir="SELL">Bán ra</button></div><div class="data-subbar-right"><span class="badge" id="data-products-count">0 mặt hàng</span></div></div>
 <div class="table-scroll data-table-scroll"><table><thead><tr><th>Mã hàng</th><th>Tên hàng</th><th>ĐVT</th><th class="num">SL</th><th class="num">Thuế suất</th><th class="num">Tiền thuế</th><th class="num">Thành tiền</th></tr></thead><tbody id="data-products"></tbody></table></div>
@@ -308,89 +308,6 @@
     <p class="hint" id="mia-empty">Bấm <b>Xem trước &amp; kiểm lỗi</b> để dọc dữ liệu và kiểm trước khi xuất.</p>
   </section>
 </div>
-<footer>Đây là công cụ hỗ trợ Kế toán được thiết kế dựa trên dữ liệu Tổng Cục Thuế</footer></main>
-<!-- #notice-stack (toast) nằm NGOÀI <main> — BẮT BUỘC. <main> có animation vào app
-     (`app-enter`, translateY). Theo đặc tả CSS, một <main> đang có transform sẽ trở thành
-     containing block cho mọi `position: fixed` bên trong. Nếu animation bị throttling và
-     dừng ở frame đầu (tab nền, cửa sổ bị che), transform kẹt lại ⇒ toast bị định vị theo
-     khung cao của <main> thay vì khung nhìn ⇒ rơi xuống dưới màn hình, không thấy.
-     Đặt ở cấp <body> (không transform) thì position:fixed luôn bám khung nhìn. -->
-<div id="notice-stack" class="notice-stack" aria-live="polite"></div>
-<button id="app-lock-button" class="lock-floating" type="button" title="Khóa giao diện">🔒</button>
-<dialog id="update-dialog" aria-labelledby="update-title">
-  <div class="login-heading"><div><h2 id="update-title">Có phiên bản mới</h2><p>Bản cập nhật được tải từ GitHub Releases của CN Tax Tools.</p></div><button id="update-close" type="button" aria-label="Đóng">×</button></div>
-  <p class="hint">Phiên bản hiện tại: <b id="update-current">—</b><br>Phiên bản mới: <b id="update-latest">—</b></p>
-  <div id="update-progress" hidden><p id="update-status">Đang tải bản cập nhật…</p><progress id="update-bar" max="100" value="0"></progress> <small id="update-percent"></small></div>
-  <p id="update-note" class="hint" hidden></p>
-  <p id="update-error" role="alert" hidden></p>
-  <div class="login-actions"><button id="update-now" class="primary" type="button">Cập nhật ngay</button><button id="update-later" type="button">Để sau</button></div>
-</dialog>
-<div id="lock-screen" class="lock-screen" hidden>
-  <div class="unlock-card">
-    <form id="unlock-form"><h2>Ứng dụng đã khóa</h2><p>Nhập mã PIN 4 số để tiếp tục.</p><input id="unlock-pin" type="password" inputmode="numeric" maxlength="4" pattern="[0-9]{4}" autocomplete="off" placeholder="••••"><button class="primary" type="submit">Mở khóa</button><small id="unlock-error" role="alert"></small></form>
-    <details class="unlock-recovery">
-      <summary>Quên mã PIN? ·<br>Dùng mã khôi phục</summary>
-      <form id="unlock-recovery-form">
-        <p>Mã khôi phục là <b>License Key đã kích hoạt</b> trên máy này. Không còn key thì nhắn Zalo để được cấp lại.</p>
-        <label>Mã khôi phục (License Key)<input id="unlock-recovery-key" maxlength="160" autocomplete="off" placeholder="XXXX-XXXX-XXXX"></label>
-        <label>PIN mới (4 số)<input id="unlock-recovery-pin" type="password" inputmode="numeric" maxlength="4" pattern="[0-9]{4}" autocomplete="off" placeholder="••••"></label>
-        <button class="primary" type="submit">Đặt lại PIN và mở khoá</button>
-        <a class="link" href="https://zalo.me/0395995035" target="_blank" rel="noopener noreferrer">Liên hệ hỗ trợ để cấp lại mã · Zalo 039.599.5035</a>
-        <small id="unlock-recovery-error" role="alert"></small>
-      </form>
-    </details>
-    <small class="unlock-hardware">Hardware ID gửi cho hỗ trợ: <code id="unlock-hardware-id">—</code></small>
-  </div>
-</div>
-<div id="license-lock" class="lock-screen" hidden>
-  <div class="unlock-card"><h2>Activate đã bị khóa</h2><p id="license-lock-text">Thiết bị này đã bị quản trị viên khóa. Vui lòng liên hệ hỗ trợ để mở lại.</p><button id="license-lock-recheck" class="primary" type="button">Kiểm tra lại</button><small id="license-lock-note">Chỉ quản trị viên mở lại được · Zalo 039.599.5035</small></div>
-</div>
-<div id="license-expired" class="lock-screen" hidden>
-  <div class="unlock-card">
-    <h2 id="license-expired-title">Trial đã hết hạn</h2>
-    <p id="license-expired-text">Gửi thông tin để được cấp License Key, hoặc nhập key nếu bạn đã có.</p>
-    <p id="license-expired-meta">Gói — · hạn —</p>
-    <button id="license-expired-buy" class="primary" type="button">Mua bản quyền</button>
-    <button id="license-expired-key" class="link" type="button">Nhập License Key</button>
-    <small>Hỗ trợ · Zalo 039.599.5035</small>
-  </div>
-</div>
-<section class="support-widget" aria-label="Hỗ trợ khách hàng">
-  <button id="support-toggle" class="support-toggle" type="button" aria-expanded="false" aria-controls="support-panel">💬 Hỗ trợ<span id="support-badge" class="support-badge" hidden aria-hidden="true"></span></button>
-  <div id="support-panel" class="support-panel" hidden>
-    <div id="chat-resize" class="chat-resize" role="separator" aria-orientation="vertical" aria-label="Độ rộng khung chat" tabindex="0" aria-valuemin="280" aria-valuemax="800" aria-valuenow="420"></div>
-    <header class="support-header"><div><strong><span class="support-label">Hỗ trợ</span> <span class="brand-mark"><b>CN</b> Tax Tools</span></strong><small id="support-mode">Kết nối máy chủ/ Ngắt kết nối máy chủ</small></div><div class="chat-window-actions"><button id="chat-minimize" type="button" title="Thu gọn chat" aria-label="Thu gọn chat">−</button><button id="support-close" type="button" aria-label="Đóng hỗ trợ">×</button></div></header>
-    <small id="ai-mode-label" class="ai-mode-label" hidden></small>
-    <nav id="chat-modes" class="chat-modes" aria-label="Chế độ trò chuyện">
-      <button type="button" data-mode="support" aria-pressed="true">Hỗ trợ</button>
-      <button id="ai-add" type="button" title="Thêm chế độ AI" aria-label="Thêm chế độ AI">+</button>
-    </nav>
-    <section id="ai-workspace" class="ai-workspace" hidden>
-      <div class="ai-tools"><button id="ai-edit" type="button" title="Cấu hình chế độ">Cấu hình</button><button id="ai-new" type="button" title="Cuộc trò chuyện mới">Chat mới</button><button id="ai-retry" type="button">Thử lại</button></div>
-      <div id="ai-frame-host" class="ai-frame-host" hidden><iframe id="ai-frame" title="Trò chuyện AI" sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox" referrerpolicy="no-referrer" allow="clipboard-write"></iframe></div>
-      <div id="ai-thread" class="ai-thread" aria-live="polite" hidden></div>
-      <form id="ai-form" class="support-compose" hidden><input id="ai-input" aria-label="Tin nhắn AI" maxlength="16000" autocomplete="off" placeholder="Nhập tin nhắn AI…"><button id="ai-send" type="submit" class="primary">Gửi</button><button id="ai-stop" type="button" hidden>Dừng</button></form>
-    </section>
-    <p id="ai-error" class="support-error" role="status" hidden></p>
-    <div class="support-context"><span id="support-room"></span><span id="support-license"></span></div>
-    <div id="support-messages" class="support-messages" aria-live="polite"></div>
-    <div class="support-quick" role="group" aria-label="Lệnh nhanh" hidden><!-- Tạm ẩn: bỏ thuộc tính hidden để bật lại nút /check --><button id="support-check" type="button">/check — Xem thông tin bản quyền của máy này</button></div>
-    <form id="support-form" class="support-compose"><input id="support-input" maxlength="2000" autocomplete="off" placeholder="Nhập tin nhắn hỗ trợ…"><button id="support-send" class="primary" type="submit">Gửi</button></form>
-    <details class="support-license"><summary>Nhập License Key</summary><form id="support-license-form"><input id="support-key" maxlength="160" autocomplete="off" placeholder="XXXX-XXXX-XXXX"><button type="submit">Kích hoạt</button></form></details>
-    <p id="support-error" class="support-error" role="status"></p>
-  </div>
-<dialog id="ai-provider-dialog" aria-labelledby="ai-provider-title">
-  <form id="ai-provider-form">
-    <div class="login-heading"><h2 id="ai-provider-title">Cấu hình AI</h2><button id="ai-provider-close" type="button" aria-label="Đóng">×</button></div>
-    <label>Tên<input id="ai-provider-label" maxlength="80" required></label>
-    <label>Loại<select id="ai-provider-type"><option value="web">AI web miễn phí</option><option value="openai">API key riêng</option><option value="local">Ollama trên máy</option></select></label>
-    <label>Địa chỉ<input id="ai-provider-url" type="url" required></label>
-    <div id="ai-provider-api"><label>Model<input id="ai-provider-model" list="ai-model-list" maxlength="200"><datalist id="ai-model-list"></datalist></label><button id="ai-models" type="button">Lấy danh sách model</button></div>
-    <label id="ai-key-label">API key<input id="ai-provider-key" type="password" autocomplete="off"><span><input id="ai-clear-key" type="checkbox"> Xoá key đã lưu</span></label>
-    <p id="ai-provider-error" class="support-error" role="status"></p>
-    <div class="login-actions"><button id="ai-provider-save" type="submit" class="primary">Lưu</button><button id="ai-provider-delete" type="button">Xoá chế độ</button><button id="ai-provider-cancel" type="button">Huỷ</button></div>
-  </form>
-</dialog>
 <div class="workspace" id="pane-dvt" hidden>
   <section class="card filters dvt-filters">
     <h3>Quản lý quy tắc đơn vị tính</h3>
@@ -412,36 +329,38 @@
     </div>
   </section>
 
-  <section class="dvt-table-card card">
-    <div class="table-head">
-      <h3>Danh sách mapping DVT</h3>
-      <span class="badge" id="dvt-count">0 mapping</span>
-    </div>
-    <div class="table-scroll">
-      <table>
-        <thead>
-          <tr>
-            <th class="stt">STT</th>
-            <th>Mã hàng</th>
-            <th>Tên hàng</th>
-            <th>DVT gốc</th>
-            <th>DVT đích</th>
-            <th class="num">Tỷ lệ</th>
-            <th>Nguồn</th>
-            <th>Trạng thái</th>
-            <th>Thao tác</th>
-          </tr>
-        </thead>
-        <tbody id="dvt-rows"></tbody>
-      </table>
-    </div>
-  </section>
+  <section class="results">
+    <section class="dvt-table-card card">
+      <div class="table-head">
+        <h3>Danh sách mapping DVT</h3>
+        <span class="badge" id="dvt-count">0 mapping</span>
+      </div>
+      <div class="table-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th class="stt">STT</th>
+              <th>Mã hàng</th>
+              <th>Tên hàng</th>
+              <th>DVT gốc</th>
+              <th>DVT đích</th>
+              <th class="num">Tỷ lệ</th>
+              <th>Nguồn</th>
+              <th>Trạng thái</th>
+              <th>Thao tác</th>
+            </tr>
+          </thead>
+          <tbody id="dvt-rows"></tbody>
+        </table>
+      </div>
+    </section>
 
-  <section class="dvt-actions card">
-    <button id="dvt-add" class="primary" type="button">Thêm mapping</button>
-    <button id="dvt-import" class="secondary" type="button">Import Excel</button>
-    <button id="dvt-export" class="secondary" type="button">Export Excel</button>
-    <button id="dvt-auto-learn" class="secondary" type="button" title="Tự động tạo mapping 1:1 cho các mặt hàng CÓ mã hàng nhưng chưa có mapping">Auto-learn</button>
+    <section class="dvt-actions card">
+      <button id="dvt-add" class="primary" type="button">Thêm mapping</button>
+      <button id="dvt-import" class="secondary" type="button">Import Excel</button>
+      <button id="dvt-export" class="secondary" type="button">Export Excel</button>
+      <button id="dvt-auto-learn" class="secondary" type="button" title="Tự động tạo mapping 1:1 cho các mặt hàng CÓ mã hàng nhưng chưa có mapping">Auto-learn</button>
+    </section>
   </section>
 </div>
 <div class="workspace" id="pane-mstlookup" hidden>
@@ -489,7 +408,7 @@
       <div id="mst-log-container" class="log-list"><div class="log-entry log-info"><span class="log-time">--:--:--</span><span>Sẵn sàng tra cứu MST.</span></div></div>
     </section>
   </section>
-</div>>
+</div>
 
 <div class="workspace" id="pane-tokhai" hidden>
   <section class="card filters">
@@ -560,7 +479,99 @@
       <div id="ttk-log-container" class="log-list"><div class="log-entry log-info"><span class="log-time">--:--:--</span><span>Sẵn sàng tải tờ khai.</span></div></div>
     </section>
   </section>
-</div>>
+</div>
 
+
+<footer>Đây là công cụ hỗ trợ Kế toán được thiết kế dựa trên dữ liệu Tổng Cục Thuế</footer></main>
+<!-- #notice-stack (toast) nằm NGOÀI <main> — BẮT BUỘC. <main> có animation vào app
+     (`app-enter`, translateY). Theo đặc tả CSS, một <main> đang có transform sẽ trở thành
+     containing block cho mọi `position: fixed` bên trong. Nếu animation bị throttling và
+     dừng ở frame đầu (tab nền, cửa sổ bị che), transform kẹt lại ⇒ toast bị định vị theo
+     khung cao của <main> thay vì khung nhìn ⇒ rơi xuống dưới màn hình, không thấy.
+     Đặt ở cấp <body> (không transform) thì position:fixed luôn bám khung nhìn. -->
+<div id="notice-stack" class="notice-stack" aria-live="polite"></div>
+<button id="app-lock-button" class="lock-floating" type="button" title="Khóa giao diện">🔒</button>
+<dialog id="update-dialog" aria-labelledby="update-title">
+  <div class="login-heading"><div><h2 id="update-title">Có phiên bản mới</h2><p>Bản cập nhật được tải từ GitHub Releases của CN Tax Tools.</p></div><button id="update-close" type="button" aria-label="Đóng">×</button></div>
+  <p class="hint">Phiên bản hiện tại: <b id="update-current">—</b><br>Phiên bản mới: <b id="update-latest">—</b></p>
+  <div id="update-progress" hidden><p id="update-status">Đang tải bản cập nhật…</p><progress id="update-bar" max="100" value="0"></progress> <small id="update-percent"></small></div>
+  <p id="update-note" class="hint" hidden></p>
+  <p id="update-error" role="alert" hidden></p>
+  <div class="login-actions"><button id="update-now" class="primary" type="button">Cập nhật ngay</button><button id="update-later" type="button">Để sau</button></div>
+</dialog>
+<div id="lock-screen" class="lock-screen" hidden>
+  <div class="unlock-card">
+    <form id="unlock-form"><h2>Ứng dụng đã khóa</h2><p>Nhập mã PIN 4 số để tiếp tục.</p><input id="unlock-pin" type="password" inputmode="numeric" maxlength="4" pattern="[0-9]{4}" autocomplete="off" placeholder="••••"><button class="primary" type="submit">Mở khóa</button><small id="unlock-error" role="alert"></small></form>
+    <details class="unlock-recovery">
+      <summary>Quên mã PIN? ·<br>Dùng mã khôi phục</summary>
+      <form id="unlock-recovery-form">
+        <p>Mã khôi phục là <b>License Key đã kích hoạt</b> trên máy này. Không còn key thì nhắn Zalo để được cấp lại.</p>
+        <label>Mã khôi phục (License Key)<input id="unlock-recovery-key" maxlength="160" autocomplete="off" placeholder="XXXX-XXXX-XXXX"></label>
+        <label>PIN mới (4 số)<input id="unlock-recovery-pin" type="password" inputmode="numeric" maxlength="4" pattern="[0-9]{4}" autocomplete="off" placeholder="••••"></label>
+        <button class="primary" type="submit">Đặt lại PIN và mở khoá</button>
+        <a class="link" href="https://zalo.me/0395995035" target="_blank" rel="noopener noreferrer">Liên hệ hỗ trợ để cấp lại mã · Zalo 039.599.5035</a>
+        <small id="unlock-recovery-error" role="alert"></small>
+      </form>
+    </details>
+    <small class="unlock-hardware">Hardware ID gửi cho hỗ trợ: <code id="unlock-hardware-id">—</code></small>
+  </div>
+</div>
+<div id="license-lock" class="lock-screen" hidden>
+  <div class="unlock-card"><h2>Activate đã bị khóa</h2><p id="license-lock-text">Thiết bị này đã bị quản trị viên khóa. Vui lòng liên hệ hỗ trợ để mở lại.</p><button id="license-lock-recheck" class="primary" type="button">Kiểm tra lại</button><small id="license-lock-note">Chỉ quản trị viên mở lại được · Zalo 039.599.5035</small></div>
+</div>
+<div id="license-expired" class="lock-screen" hidden>
+  <div class="unlock-card">
+    <h2 id="license-expired-title">Trial đã hết hạn</h2>
+    <p id="license-expired-text">Gửi thông tin để được cấp License Key, hoặc nhập key nếu bạn đã có.</p>
+    <p id="license-expired-meta">Gói — · hạn —</p>
+    <button id="license-expired-buy" class="primary" type="button">Mua bản quyền</button>
+    <button id="license-expired-key" class="link" type="button">Nhập License Key</button>
+    <small>Hỗ trợ · Zalo 039.599.5035</small>
+  </div>
+</div>
+<section class="support-widget" aria-label="Hỗ trợ khách hàng">
+  <button id="support-toggle" class="support-toggle" type="button" aria-expanded="false" aria-controls="support-panel">💬 Hỗ trợ<span id="support-badge" class="support-badge" hidden aria-hidden="true"></span></button>
+  <div id="support-panel" class="support-panel" hidden>
+    <div id="chat-resize" class="chat-resize" role="separator" aria-orientation="vertical" aria-label="Độ rộng khung chat" tabindex="0" aria-valuemin="280" aria-valuemax="800" aria-valuenow="420"></div>
+    <header class="support-header"><div><strong><span class="support-label">Hỗ trợ</span> <span class="brand-mark"><b>CN</b> Tax Tools</span></strong><small id="support-mode">Kết nối máy chủ/ Ngắt kết nối máy chủ</small></div><div class="chat-window-actions"><button id="chat-expand" type="button" title="Mở rộng chat" aria-label="Mở rộng chat" aria-pressed="false">⤢</button><button id="chat-minimize" type="button" title="Thu gọn chat" aria-label="Thu gọn chat">−</button><button id="support-close" type="button" aria-label="Đóng hỗ trợ">×</button></div></header>
+    <small id="ai-mode-label" class="ai-mode-label" hidden></small>
+    <nav id="chat-modes" class="chat-modes" aria-label="Chế độ trò chuyện">
+      <button type="button" data-mode="support" aria-pressed="true">Hỗ trợ</button>
+      <button id="ai-add" type="button" title="Thêm cấu hình AI" aria-label="Thêm cấu hình AI">+ AI</button>
+    </nav>
+    <section id="ai-workspace" class="ai-workspace" hidden>
+      <div class="ai-tools"><button id="ai-edit" type="button" title="Cấu hình chế độ">Cấu hình</button><button id="ai-new" type="button" title="Cuộc trò chuyện mới">Chat mới</button><button id="ai-permissions" type="button">Quyền AI</button><button id="ai-legacy" type="button" hidden>Chat cũ</button><button id="ai-retry" type="button">Thử lại</button></div>
+      <div class="ai-capabilities"><label title="Tra cứu web qua OpenRouter; tính phí theo dịch vụ"><input id="ai-web" type="checkbox" checked> Tra cứu web</label><label title="Chưa bật: cần executor Python/Shell local có enforcement và sandbox theo master"><input id="ai-python" type="checkbox" disabled> Python / Shell local</label><small>Thuế · Kế toán · Phân tích tài liệu</small></div>
+      <p id="ai-status" class="ai-status" role="status" aria-live="polite"></p>
+      <div id="ai-thread" class="ai-thread" aria-live="polite" hidden></div>
+      <div id="ai-attachments" class="ai-attachments"></div>
+      <form id="ai-form" class="support-compose" hidden><textarea id="ai-input" aria-label="Tin nhắn AI" maxlength="16000" rows="3" placeholder="Nhập yêu cầu… Enter để gửi, Shift+Enter xuống dòng"></textarea><div class="ai-compose-actions"><button id="ai-attach" type="button" title="Đính kèm tối đa 4 file, mỗi file 12 MB">📎 Ảnh / File</button><input id="ai-files" type="file" hidden multiple accept=".xlsx,.xls,.csv,.pdf,.docx,.txt,.md,.json,.xml,.png,.jpg,.jpeg,.webp"><span id="ai-upload-note">File được gửi cho AI khi bạn bấm Gửi.</span><button id="ai-send" type="submit" class="primary">Gửi</button><button id="ai-stop" type="button" hidden>Dừng</button></div></form>
+    </section>
+    <dialog id="ai-legacy-dialog"><h3>Chat cũ — chưa xác định công ty</h3><p>Lịch sử được giữ nguyên và không đưa vào ngữ cảnh công ty mới.</p><pre id="ai-legacy-text"></pre><button id="ai-legacy-close" type="button">Đóng</button></dialog>
+    <dialog id="ai-permissions-dialog"><h3>Quyền AI trong công ty hiện tại</h3><p>Mỗi quyền chỉ áp dụng cho đúng hành động, tham số và phạm vi đã duyệt. Bản quyền và policy luôn được kiểm tra lại.</p><div id="ai-permissions-list"></div><button id="ai-permissions-close" type="button">Đóng</button></dialog>
+    <p id="ai-error" class="support-error" role="status" hidden></p>
+    <div class="support-context"><span id="support-room"></span><span id="support-license"></span></div>
+    <div id="support-messages" class="support-messages" aria-live="polite"></div>
+    <div class="support-quick" role="group" aria-label="Lệnh nhanh" hidden><!-- Tạm ẩn: bỏ thuộc tính hidden để bật lại nút /check --><button id="support-check" type="button">/check — Xem thông tin bản quyền của máy này</button></div>
+    <form id="support-form" class="support-compose"><input id="support-input" maxlength="2000" autocomplete="off" placeholder="Nhập tin nhắn hỗ trợ…"><button id="support-send" class="primary" type="submit">Gửi</button></form>
+    <details class="support-license"><summary>Nhập License Key</summary><form id="support-license-form"><input id="support-key" maxlength="160" autocomplete="off" placeholder="XXXX-XXXX-XXXX"><button type="submit">Kích hoạt</button></form></details>
+    <p id="support-error" class="support-error" role="status"></p>
+  </div>
+<dialog id="ai-provider-dialog" aria-labelledby="ai-provider-title">
+  <form id="ai-provider-form">
+    <div class="login-heading"><h2 id="ai-provider-title">Cấu hình AI</h2><button id="ai-provider-close" type="button" aria-label="Đóng">×</button></div>
+    <label>Tên<input id="ai-provider-label" maxlength="80" required></label>
+    <label>Loại<select id="ai-provider-type"><option value="openai">API key riêng</option><option value="local">Ollama trên máy</option></select></label>
+    <label>Địa chỉ<input id="ai-provider-url" type="url" required></label>
+    <div id="ai-provider-api"><label>Model<input id="ai-provider-model" list="ai-model-list" maxlength="200"><datalist id="ai-model-list"></datalist></label><button id="ai-models" type="button">Lấy danh sách model</button></div>
+    <label id="ai-key-label">API key<input id="ai-provider-key" type="password" autocomplete="off"><span><input id="ai-clear-key" type="checkbox"> Xoá key đã lưu</span></label>
+    <p id="ai-provider-error" class="support-error" role="status"></p>
+    <div class="login-actions"><button id="ai-provider-save" type="submit" class="primary">Lưu</button><button id="ai-provider-delete" type="button">Xoá chế độ</button><button id="ai-provider-cancel" type="button">Huỷ</button></div>
+  </form>
+</dialog>
+<dialog id="ai-file-dialog" aria-labelledby="ai-file-title">
+  <div class="login-heading"><h2 id="ai-file-title">Kết quả AI</h2><button id="ai-file-close" type="button" aria-label="Đóng dữ liệu">×</button></div>
+  <p id="ai-file-count"></p><div class="ai-file-scroll"><table id="ai-file-table"></table></div>
+</dialog>
 </section>
 <script src="mst-format.js"></script><script src="period.js"></script><script src="boot-cache.js"></script><script src="renderer.js"></script><script src="bank-pdf.js"></script><script src="data-ui.js"></script><script src="dvt-ui.js"></script><script src="mst-lookup-ui.js"></script><script src="tokhai-ui.js"></script><script src="vendor/sound.js"></script><script src="app-settings.js"></script></body></html>

@@ -101,7 +101,8 @@ test('server: tra cứu/tải TRẢ LỜI NGAY — tác vụ chạy nền, app t
   // Nhánh DỪNG của /api/download cố tình không dùng runDetached: pause là thao tác tức thì
   // (engine.pause() chỉ đặt cờ hủy), không phải tác vụ dài — xem mst-lanes "bấm Ngưng tới
   // được nhánh dừng" ở ui-wiring.test.js.
-  assert.equal((server.replace('function runDetached(target, jobId, label, fn)', '').match(/runDetached\(target/g) || []).length, 6, 'search/stream/resume + 2 nhánh download + quét lần đầu đều phải chạy nền');
+  // AI Agent adds one download entry point and must share the same shutdown tracking.
+  assert.equal((server.replace('function runDetached(target, jobId, label, fn)', '').match(/runDetached\(target/g) || []).length, 7, 'search/stream/resume + 2 nhánh download + quét lần đầu + AI tải đều phải chạy nền');
   assert.ok(server.includes('for (const item of detachedTasks) { try { item.target.pause(); } catch {} }'), 'thoát app phải tạm dừng mọi tác vụ nền');
 });
 

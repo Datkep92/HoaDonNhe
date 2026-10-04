@@ -3,6 +3,9 @@ release/
 .npm-cache/
 du_lieu/
 support-gateway/.env
+.env
+.env.*
+!.env.example
 
 # One-off setup instructions
 setup-github.md.txt

@@ -76,7 +76,7 @@ test('index.html nhẹ: KHÔNG nhúng ảnh base64, logo thương hiệu là fil
 });
 
 test('giao diện Kho dữ liệu có đủ các vùng chính', () => {
-  for (const id of ['pane-download', 'pane-data', 'data-tiles', 'data-rows', 'data-products', 'data-partners', 'data-tab-list', 'data-tab-products', 'data-tab-partners', 'data-count', 'data-products-count', 'autosync-dialog', 'backfill-dialog', 'invoice-dialog', 'invoice-frame', 'data-new-badge', 'view-download', 'view-data']) {
+  for (const id of ['pane-download', 'pane-data', 'data-tiles', 'data-rows', 'data-products', 'data-partners', 'data-tab-list', 'data-tab-products', 'data-tab-partners', 'data-count', 'data-products-count', 'autosync-dialog', 'backfill-dialog', 'invoice-dialog', 'invoice-frame', 'data-new-badge', 'view-download', 'view-data-products', 'view-data-list', 'view-data-partners', 'view-data-vat']) {
     assert.ok(ids.has(id), `thiếu vùng #${id}`);
   }
 });

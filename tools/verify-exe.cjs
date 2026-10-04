@@ -27,6 +27,12 @@ const REQUIRED = [
   // Mã chạy trong cửa sổ app
   'renderer.js', 'tax-login.js', 'chat-widget.js', 'app-settings.js', 'update-ui.js',
   'app-lock.js', 'support.js', 'period.js', 'mst-format.js', 'data-ui.js',
+  'ai-chat.js', 'ai-providers.js', 'ai-service.js', 'agent.js', 'openrouter-client.js',
+  'tool-registry.js', 'tool-router.js', 'dataset-store.js', 'safe-js.js', 'audit-log.js',
+  'attachments.js', 'cloud-tools.js',
+  'identity.js', 'model-provider.js', 'session-store.js', 'access-policy.js',
+  'data-minimizer.js', 'context-manager.js', 'permission-engine.js',
+  'emscripten-module.cjs', 'emscripten-module.wasm',
   // SAO KÊ NGÂN HÀNG — CẢ MỘT TAB. Đã xảy ra thật: bản 1.0.7 phát hành trên GitHub KHÔNG có tab này
   // (quét thẳng file EXE 1.0.7: thiếu bank-pdf.js, bank-statement.js, pdf.min.mjs, pdf.worker.min.mjs
   // và cả chuỗi "Sao kê ngân hàng") vì các file mới chưa được khai vào pkg.assets / chưa vào git.
@@ -128,7 +134,3 @@ if (require.main === module) {
 }
 
 module.exports = { verify, REQUIRED, nativeNames, defaultExe };
-
-
-
-

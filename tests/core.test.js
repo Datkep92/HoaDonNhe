@@ -14,6 +14,21 @@ function setup(t, request) {
   return { dir, options, engine: new Engine(options) };
 }
 const invoice = n => ({ shdon: String(n), nbmst: '0123456789', khhdon: 'C26TAA', khmshdon: '1', tthai: 1 });
+test('AI start hooks authorize before mutation and report a persisted native job before remote download', async t => {
+  let authorized = 0, validated = 0, started = 0;
+  const { dir, engine } = setup(t, async () => { assert.equal(started, 1); return Buffer.from(JSON.stringify({ datas: [] })); });
+  engine.job = { id: 'old', state: 'done', account, params, tasks: [], items: [], message: 'original' };
+  const original = JSON.stringify(engine.job);
+  await assert.rejects(engine.stream(params, path.join(dir, 'out'), { authorizeStart: () => { throw Error('license denied'); } }), /license denied/);
+  assert.equal(JSON.stringify(engine.job), original); assert.equal(started, 0);
+  await assert.rejects(engine.stream(params, path.join(dir, 'out'), { validateStart: () => { throw Error('company changed'); } }), /company changed/);
+  assert.equal(JSON.stringify(engine.job), original);
+  await engine.stream(params, path.join(dir, 'out'), {
+    authorizeStart: () => { authorized++; }, validateStart: () => { validated++; },
+    onStarted: value => { started++; const stored = JSON.parse(fs.readFileSync(path.join(dir, 'job.json'), 'utf8')); assert.equal(stored.id, value.jobId); assert.equal(stored.mode, 'stream'); assert.equal(stored.state, 'searching'); },
+  });
+  assert.equal(authorized, 1); assert.equal(validated, 1); assert.equal(started, 1); assert.notEqual(engine.job.id, 'old');
+});
 
 test('REGRESSION: không có phiên thì lỗi phải mang cờ auth để tự đăng nhập nền bật', async t => {
   // Lỗi thật đã gặp: token còn nằm trong directTokens (nên /api/state báo authenticated:true và

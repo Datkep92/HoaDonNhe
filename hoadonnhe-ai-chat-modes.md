@@ -1,3 +1,5 @@
+> Tài liệu khảo sát cũ. AI web miễn phí đã được bỏ theo `chatai.md`; triển khai hiện tại xem `AI_SETUP.md` và `AI_INTEGRATION_MAP.md`.
+
 # AI Chat Hub — Biến EXE Thành Trung Tâm Chat AI (Miễn Phí + Tự Gán API Key)
 
 > **Bản hoàn chỉnh** — gộp mọi khảo sát đã làm và mọi quyết định đã chốt.

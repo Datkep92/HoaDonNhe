@@ -8,7 +8,11 @@
 // gắn window.BankPdf. pdfjs nạp ESM động qua import() — được phép vì 'self'.
 // ---------------------------------------------------------------------------
 
-(function () {
+(function (root, factory) {
+  const api = factory();
+  if (typeof module === 'object' && module.exports) module.exports = api;
+  else root.BankPdf = api;
+})(typeof globalThis === 'object' ? globalThis : this, function () {
   // ---- 1. PHÂN LOẠI -------------------------------------------------------
   // 'excel' = Excel/CSV (JS local); 'pdf-text' = PDF có chữ (pdfjs local);
   // 'pdf-scan' = PDF không có chữ (AI); 'image' = ảnh (AI).
@@ -237,8 +241,10 @@
   }
 
   // ---- 4. ĐỌC PDF: trả { kind, grid, chars, pages } ------------------------
-  async function readPdf(arrayBuffer) {
-    const lib = await loadPdfjs();
+  // `loadLib` cho phép nơi gọi (vd. Node trong AI tool) tự cấp pdfjs; mặc định
+  // dùng bản vendor của giao diện nên hành vi trên UI KHÔNG đổi.
+  async function readPdf(arrayBuffer, loadLib) {
+    const lib = await (loadLib ? loadLib() : loadPdfjs());
     const pdf = await lib.getDocument({ data: arrayBuffer }).promise;
     const grid = [];
     let chars = 0;
@@ -270,19 +276,21 @@
   // ---- 5. API CHÍNH --------------------------------------------------------
   // Đọc file theo loại: Excel/CSV/PDF-chữ trả grid NGAY (local, offline).
   // PDF-scan/ảnh trả { kind } để UI gửi nguyên buffer lên server gọi AI.
-  async function readAny(file) {
+  async function readAny(file, loadLib) {
     const kind = classify(file.name);
     if (kind === 'excel') return { kind: 'excel' }; // UI gửi thẳng cho server đường cũ/mới
     if (kind === 'image') return { kind: 'image' };
     if (kind === 'pdf-unknown') {
       let buffer;
       try { buffer = await file.arrayBuffer(); } catch (error) { throw new Error('Đọc file không được: ' + error.message); }
-      const result = await readPdf(buffer);
+      const result = await readPdf(buffer, loadLib);
       if (result.kind === 'pdf-scan') return { kind: 'pdf-scan' }; // không có chữ → AI
       return { kind: 'pdf-text', grid: result.grid, pages: result.pages };
     }
     throw new Error('Chỉ nhận file .xlsx, .xls, .csv, .pdf, .png hoặc .jpg.');
   }
 
-  window.BankPdf = { classify, readAny, readPdf };
-})();
+  // Xuất cả hàm dựng lưới thuần (không phụ thuộc pdfjs) để AI tool tại Node
+  // tái dùng ĐÚNG logic đang chạy trên UI — một nguồn sự thật, không viết bản hai.
+  return { classify, readAny, readPdf, pageToGrid, clusterIntoRows, detectColumnAnchors, assignToColumns, mergeSparseColumns, trimEmptyRows, trimEmptyColumns };
+});

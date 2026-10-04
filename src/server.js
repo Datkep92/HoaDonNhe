@@ -1,4 +1,4 @@
-﻿'use strict';
+'use strict';
 const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -61,6 +61,8 @@ if (process.argv.includes('--apply-update')) {
 const packed = !!process.pkg;
 const appDir = packed ? path.dirname(process.execPath) : path.resolve(__dirname, '..');
 const testServer = process.argv.includes('--test-server');
+// Local packaging checks must not contact the gateway or start its stream.
+const localSelfCheck = process.argv.includes('--smoke-test') || process.argv.includes('--ocr-check');
 const dataDir = testServer && process.env.HOADON_TEST_DATA ? path.resolve(process.env.HOADON_TEST_DATA) : path.join(appDir, 'du_lieu');
 // PHASE 1 ‒ Data Core: tự kiểm tra tầng dữ liệu (node:sqlite + schema + repository) rỒi thoát.
 // Dùng để xác minh BÊN TRONG EXE đã đóng gói:  CN-Tax-Tools.exe --data-core-check
@@ -107,7 +109,7 @@ process.on('uncaughtException', error => {
 // Mở app: MỘT lần gọi /v1/sync lấy về bản quyền + thông báo + token phiên.
 // Trước đây là register() rỒi notice() thành hai chuyến vào Apps Script.
 // sync() trả Promise nên bọc Promise.resolve để không chết ở bước khởi động.
-Promise.resolve(support.sync('mo-app')).catch(error => { log('Không đỒng bộ được lúc mở app: ' + (error && error.message ? error.message : String(error))); })
+if (!localSelfCheck) Promise.resolve(support.sync('mo-app')).catch(error => { log('Không đỒng bộ được lúc mở app: ' + (error && error.message ? error.message : String(error))); })
   .then(() => { ensureSupportStream(); startSupportChecks(); });
 
 // ---- KIỂM TRA ĐỊNH KỲ KHI APP CHẠY NỀN ----------------------------------
@@ -184,7 +186,7 @@ const updater = new Updater({
 // Kiểm tra bản mới MỘT LẦN khi mở app (không polling). Tắt bằng HOADON_NO_UPDATE_CHECK=1.
 // HOADON_FORCE_UPDATE_CHECK=1 để bật cả khi chạy --test-server (dùng cho test tự động).
 const updateCheckEnabled = process.env.HOADON_NO_UPDATE_CHECK !== '1'
-  && (!testServer || process.env.HOADON_FORCE_UPDATE_CHECK === '1');
+  && !localSelfCheck && (!testServer || process.env.HOADON_FORCE_UPDATE_CHECK === '1');
 if (updateCheckEnabled) updater.check().catch(() => {});
 // Dọn thư mục tạm của lần tự cập nhật trước (file đang bị khoá sẽ được dọn ở lần mở sau).
 cleanupUpdateTemp();
@@ -2240,6 +2242,118 @@ function catchupStatus() {
   };
 }
 
+// Agent adapter wraps existing services; no model-generated SQL, shell or page JS.
+function getAgentServices() {
+  const clean = row => Object.fromEntries(Object.entries(row).filter(([key]) => !/file|path|url|lookup|token|password|secret/i.test(key)));
+  const withAgentDb = fn => {
+    if (!selected) throw Object.assign(new Error('Chưa chọn MST. Chọn MST rồi thử lại.'), { code: 'MST_REQUIRED' });
+    if (!output) throw new Error('Chưa chọn thư mục lưu dữ liệu.');
+    const data = dataLayer(), dir = data.mst.mstDirectory(output, selected), file = path.join(dir, 'data.db');
+    if (!fs.existsSync(file)) throw Object.assign(new Error('MST này chưa có kho dữ liệu. Tải hoặc nhập XML trước.'), { code: 'DATA_NOT_READY' });
+    return fn(readDatabase(file), data);
+  };
+  const context = () => ({
+    app: { name: 'CNTaxTools', version: require('../package.json').version, today: new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Ho_Chi_Minh' }) },
+    currentUser: { selectedMst: selected, accountStatus: !!selected && !!(authAccount || directTokens.has(selected)) ? 'authenticated' : 'unauthenticated' },
+    accounts: activeAccounts().map(account => ({ mst: account.mst, label: account.label || '' })),
+    download: downloadStatus(),
+  });
+  const downloadStatus = () => {
+    const target = engineOf(selected), state = target?.snapshot() || {};
+    return { mst: selected, jobId: target?.job?.id || null, busy: !!target?.busy, state: state.state || 'idle', total: state.total || 0, done: state.done || 0, failed: state.failed || 0, message: state.message || '' };
+  };
+  return {
+    context, downloadStatus,
+    permissionContext: () => ({ deviceId: support.data.device.machineId,
+      fingerprint: crypto.createHash('sha256').update(JSON.stringify({ selected, output, accounts: activeAccounts().map(a => a.mst), jobId: engineOf(selected)?.job?.id || '' })).digest('hex') }),
+    openExport: file => new Promise((resolve, reject) => {
+      // Called only by a user's file button; service resolves the export ID, never model paths.
+      const child = spawn('explorer.exe', [file], { detached: true, stdio: 'ignore', windowsHide: true });
+      child.once('error', reject); child.once('spawn', () => { child.unref(); resolve(); });
+    }),
+    search: args => withAgentDb((db, data) => {
+      const first = data.queries.listInvoices(db, { ...args, limit: 200, offset: 0 });
+      if (first.total > 20000) throw new Error('Có hơn 20.000 hóa đơn. Chọn khoảng ngày hẹp hơn hoặc dùng tổng hợp.');
+      const rows = first.rows;
+      for (let offset = 200; offset < first.total; offset += 200) rows.push(...data.queries.listInvoices(db, { ...args, limit: 200, offset }).rows);
+      return rows.map(clean);
+    }),
+    latest: args => withAgentDb((db, data) => {
+      const first = data.queries.listInvoices(db, { ...args, limit: 1, offset: 0 });
+      const invoice = first.rows[0];
+      const sameDateCount = invoice ? data.queries.listInvoices(db, { ...args, from: invoice.ngay_lap, to: invoice.ngay_lap, limit: 1, offset: 0 }).total : 0;
+      return { invoice: invoice ? clean(invoice) : null, sameDateCount, note: 'Ngày lập mới nhất; cùng ngày ưu tiên hóa đơn được nhập kho sau. Ngày lập không xác định thứ tự thời gian trong ngày.' };
+    }),
+    goods: args => withAgentDb((db, data) => {
+      const value = data.queries.products(db, { ...args, limit: 500 });
+      if (value.rows.length >= 500) throw new Error('Có ít nhất 500 nhóm hàng; lọc theo tên/chiều/kỳ để xuất đầy đủ.');
+      return value.rows.map(clean);
+    }),
+    read: key => withAgentDb((db, data) => {
+      const value = data.queries.getInvoice(db, key);
+      if (!value) throw new Error('Không tìm thấy hóa đơn.');
+      return { invoice: clean(value.invoice), items: value.items.slice(0, 500).map(clean), itemCount: value.items.length, truncated: value.items.length > 500 };
+    }),
+    items: key => withAgentDb((db, data) => {
+      const value = data.queries.getInvoice(db, key);
+      if (!value) throw new Error('Không tìm thấy hóa đơn.');
+      if (value.items.length > 20000) throw new Error('Hóa đơn có hơn 20.000 dòng hàng; cần engine dữ liệu lớn trước khi xuất đầy đủ.');
+      return value.items.map(clean);
+    }),
+    summary: args => withAgentDb((db, data) => data.queries.summary(db, args)),
+    select: async (mst, expectedSourceMst, signal) => {
+      if (!activeAccounts().some(account => account.mst === mst)) throw new Error('MST không có trong danh sách ứng dụng.');
+      await selectOperation(() => {
+        signal?.throwIfAborted();
+        if (expectedSourceMst !== selected) throw Object.assign(new Error('MST nguồn đã đổi; cần phê duyệt lại.'), { code: 'COMPANY_SCOPE_CHANGED' });
+        return selectAccount(mst);
+      }, mst);
+      if (selected !== mst) throw new Error('Chưa chọn được MST.');
+      return { selectedMst: selected };
+    },
+    refresh: async (signal, expectedMst) => {
+      if (!selected) throw Object.assign(new Error('Chưa chọn MST.'), { code: 'MST_REQUIRED' });
+      if (expectedMst !== selected) throw Object.assign(new Error('MST đã đổi; không dùng quyền của công ty khác.'), { code: 'COMPANY_SCOPE_CHANGED' });
+      const mst = selected;
+      signal.throwIfAborted();
+      const account = await authOperation(checkLogin, mst);
+      signal.throwIfAborted();
+      if (selected !== mst) throw new Error('MST đã thay đổi trong lúc kiểm tra phiên.');
+      if (!account) throw Object.assign(new Error('Phiên hết hạn. Đăng nhập lại bằng form ứng dụng.'), { code: 'SESSION_EXPIRED' });
+      return { mst, authenticated: true };
+    },
+    download: async (args, signal, expectedMst) => {
+      const approvedFolder = output;
+      if (expectedMst !== selected) throw Object.assign(new Error('MST đã đổi; không bắt đầu tải ở công ty khác.'), { code: 'COMPANY_SCOPE_CHANGED' });
+      await ensureLicenseAllowed(); await ensureSessionCheck(); signal.throwIfAborted();
+      if (expectedMst !== selected || approvedFolder !== output) throw Object.assign(new Error('Phạm vi tải đã đổi; cần phê duyệt lại.'), { code: 'COMPANY_SCOPE_CHANGED' });
+      const mst = selected;
+      if (!mst) throw Object.assign(new Error('Chưa chọn MST.'), { code: 'MST_REQUIRED' });
+      const target = ensureEngineFor(mst);
+      if (target.busy) throw new Error('MST đang có tác vụ tải. Kiểm tra tiến độ, không bắt đầu lượt mới.');
+      if (authBusy.has(mst)) throw new Error('Đang đăng nhập MST này, thử lại khi hoàn tất.');
+      if (!directTokens.has(mst) && !authAccount) throw Object.assign(new Error('Đăng nhập cổng thuế trước khi tải.'), { code: 'SESSION_EXPIRED' });
+      const params = validateParams({ ...args, direction: args.direction === 'SELL' ? 'sold' : 'purchase', family: 'both', status: '', formats: ['xml', 'xlsx'] });
+      await ensureFolder(approvedFolder); signal.throwIfAborted();
+      if (expectedMst !== selected || approvedFolder !== output || target.busy) throw Object.assign(new Error('Phạm vi/tác vụ tải đã đổi; kiểm tra trạng thái và phê duyệt lại.'), { code: 'COMPANY_SCOPE_CHANGED' });
+      const folder = output;
+      let started = false;
+      const ready = Promise.withResolvers();
+      const task = runDetached(target, target.job?.id || '', `AI tải MST ${mst}`, async () => {
+        await target.stream(params, folder, {
+          authorizeStart: ensureLicenseAllowed,
+          validateStart: () => { signal.throwIfAborted(); if (selected !== mst || output !== folder) throw Object.assign(new Error('Phạm vi đã đổi trước khi tạo job tải.'), { code: 'COMPANY_SCOPE_CHANGED' }); },
+          onStarted: value => { started = true; ready.resolve(value); },
+        });
+        await closeBrowserWhenIdle('AI tải xong'); autoImportAfterDownload('AI tải xong');
+      });
+      task.then(result => { if (!started) ready.reject(result.error || new Error('Không tạo được job tải; không tự thử lại.')); });
+      const beginning = await ready.promise;
+      if (target.job?.id !== beginning.jobId) throw new Error('Không đọc lại được job vừa tạo; kiểm tra tab tải, không tự thử lại.');
+      return { started: true, mst, jobId: beginning.jobId, message: 'Đã tạo và lưu job tải nền. Kiểm tra download_status để biết kết quả; chưa xác nhận tải hoàn tất.' };
+    },
+  };
+}
 let aiService;
 async function endpoint(req, res, url) {
   if (!allowed(req)) return reply(res, 403, { ok: false, error: 'Không có quyền truy cập giao diện.' });
@@ -2247,7 +2361,7 @@ async function endpoint(req, res, url) {
   if (url.pathname.startsWith('/api/ai/')) {
     try {
       if (!aiService) aiService = require('./ai-service').createAiService({
-        dataDir, secrets, checkLicense: ensureLicenseAllowed,
+        dataDir, secrets, app: getAgentServices(), checkLicense: ensureLicenseAllowed,
         licenseSignature: () => {
           const value = support.publicLicense();
           return JSON.stringify([value.status, value.expiryAt, value.keyName, value.trial]);
@@ -4410,7 +4524,6 @@ const server = http.createServer((req, res) => {
   if (url.pathname === '/renderer.js') return staticFile(req, res, 'renderer.js', 'text/javascript; charset=utf-8');
   if (url.pathname === '/chat-widget.js') return staticFile(req, res, 'chat-widget.js', 'text/javascript; charset=utf-8');
   if (url.pathname === '/ai-chat.js') return staticFile(req, res, 'ai-chat.js', 'text/javascript; charset=utf-8');
-  if (url.pathname === '/ai-bridge.js') return staticFile(req, res, 'ai-bridge.js', 'text/javascript; charset=utf-8');
   if (url.pathname === '/ai-providers.js') return staticFile(req, res, 'ai-providers.js', 'text/javascript; charset=utf-8');
   if (url.pathname === '/vendor/sound.js') return staticFile(req, res, 'vendor/sound.js', 'text/javascript; charset=utf-8');
   // Âm thanh thông báo TUỲ CHỌN: bỏ file src/template/thong-bao.mp3 là app dùng file đó, không có thì
@@ -4468,10 +4581,10 @@ server.listen(0, '127.0.0.1', async () => {
       const text = await solver.solve(`data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`);
       const ok = text === 'A7K2';
       console.log(JSON.stringify({ packed, ocr: ok, text, solverError: solver.lastErrorMessage(), libs }, null, 1));
-      server.close(() => process.exit(ok ? 0 : 1));
+      process.exitCode = ok ? 0 : 1; server.close();
     } catch (error) {
       console.error(JSON.stringify({ packed, ocr: false, thrown: String((error && error.message) || error).slice(0, 300), libs }, null, 1));
-      server.close(() => process.exit(1));
+      process.exitCode = 1; server.close();
     }
   }
   else if (process.argv.includes('--smoke-test')) {
@@ -4507,8 +4620,10 @@ if (broken.length) throw new Error(`EXE thiếu file giao diện: ${broken.join(
         catch { unreadable.push(name); }
       }
       if (unreadable.length) throw new Error(`EXE không đọc được script tải PDF gốc: ${unreadable.join(', ')} — tính năng sẽ chết lúc chạy.`);
-      console.log(JSON.stringify({ ok: true, packed, port, browser: browserPath() || null, ui: true, api: true, assets: assets.length })); server.close(() => process.exit(0));
-    } catch (error) { console.error(error.message); server.close(() => process.exit(1)); }
+      const aiResult = await require('./ai/safe-js').executeSafeJs('return input.filter(x=>helpers.number(x.total)>10)', [{ total: 20 }, { total: 5 }]);
+      if (JSON.stringify(aiResult) !== '[{"total":20}]') throw new Error('Runtime JS của AI Agent không hoạt động trong EXE.');
+      console.log(JSON.stringify({ ok: true, packed, port, browser: browserPath() || null, ui: true, api: true, aiRuntime: true, assets: assets.length })); process.exitCode = 0; server.close();
+    } catch (error) { console.error(error.message); process.exitCode = 1; server.close(); }
   }
   else if (testServer && process.argv.includes('--check-login-page')) {
     try {
@@ -4593,6 +4708,7 @@ async function stop() {
   outputLock.release(output, { pid: process.pid, workspace: WORKSPACE });
   removeInstanceFile();
   stopSupportStream();
+  aiService?.close();
   closeUiWindows();
   await browser.close();
   log('Đã thoát chương trình.');
@@ -4602,6 +4718,3 @@ async function stop() {
   server.close(() => { clearTimeout(force); process.exit(0); });
 }
 process.on('SIGINT', stop); process.on('SIGTERM', stop);
-
-
-

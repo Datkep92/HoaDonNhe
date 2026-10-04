@@ -1,4 +1,0 @@
-User-agent: *
-Allow: /
-
-Sitemap: https://datkep92.github.io/cntaxtools-landing-v2/sitemap.xml

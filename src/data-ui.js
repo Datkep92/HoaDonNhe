@@ -28,6 +28,12 @@ const TAX_KEY = 'hoadon.overview.tax';
 
   let app = {};
   let view = 'overview';
+  // Bốn nút trên tab chính (Hàng hóa / Hóa đơn / Đối tác / Phần thuế) cùng dùng chung pane-data.
+  // Những chỗ kiểm `view === 'data'` cũ phải coi cả bốn là "đang trong kho dữ liệu".
+  function isDataView(name) {
+    return name === 'data' || name === 'data-products' || name === 'data-list'
+      || name === 'data-partners' || name === 'data-vat';
+  }
   // Đã tải xong Tổng quan lần nào chưa. Chỉ hiện chip "Đang tải" ở LẦN ĐẦU; vào lại tab sau đó
   // giữ nguyên dữ liệu cũ và làm mới ngầm — tránh nháy khối xám mỗi lần chuyển tab.
 let overviewReady = false;
@@ -159,7 +165,7 @@ const OVERVIEW_CACHE_IDS = [
   // Tải lại đúng thứ ĐANG HIỆN — đổi kỳ không được làm nặng app (không tải tab đang ẩn).
   function reloadForRange() {
     if (view === 'overview') { restoreOverviewSnapshot(); void refreshOverview(false); }
-    else if (view === 'data') { page = 0; void refreshVisibleData(); }
+    else if (isDataView(view)) { page = 0; void refreshVisibleData(); }
     else if (view === 'bank') { bankPage = 0; void refreshBank(); }
   }
 
@@ -369,11 +375,18 @@ const OVERVIEW_CACHE_IDS = [
   }
 
   function showView(next) {
+    // 'data' là tên tab gộp cũ — giữ làm bí danh cho màn Hàng hóa (để nơi khác gọi show('data')
+    // vẫn vào đúng kho dữ liệu, không về mặc định).
+    if (next === 'data') next = 'data-products';
     view = next;
     const viewInfo = {
       overview: ['TỔNG QUAN', 'Tình hình kinh doanh', 'Doanh thu, mua vào, đối soát và công nợ theo kỳ.'],
       download: ['TRA CỨU & TẢI', 'Tải hóa đơn điện tử', 'Tra cứu cổng thuế và tải chứng từ theo điều kiện đã chọn.'],
       data: ['KHO DỮ LIỆU', 'Quản lý dữ liệu hóa đơn', 'Tìm kiếm, tổng hợp và xuất dữ liệu đã lưu trên máy.'],
+      'data-products': ['HÀNG HÓA', 'Hàng hóa', 'Mặt hàng mua vào và bán ra tổng hợp từ kho dữ liệu.'],
+      'data-list': ['HÓA ĐƠN', 'Hóa đơn', 'Danh sách hóa đơn đã nhập vào kho dữ liệu.'],
+      'data-partners': ['ĐỐI TÁC', 'Đối tác', 'Nhà cung cấp và khách hàng tổng hợp từ hóa đơn.'],
+      'data-vat': ['PHẦN THUẾ', 'Phần thuế', 'Tổng hợp quý kê khai thuế GTGT từ kho dữ liệu.'],
       bank: ['SAO KÊ NGÂN HÀNG', 'Đối chiếu dòng tiền', 'Nhập sao kê, kiểm tra giao dịch và đối chiếu với hóa đơn.'],
       accounting: ['HỖ TRỢ KẾ TOÁN', 'Xuất file nhập MISA AMIS', 'Dọc hoá đơn bán ra theo kỳ và xuất file “Mẫu bán hàng” đúng cấu trúc để nhập vào phần mềm kế toán.'],
       dvt: ['CHUYỂN ĐỔI DVT', 'Quản lý quy tắc đơn vị tính', 'Map đơn vị tính từ hoá đơn mua vào (Thùng) sang đơn vị bán ra (Hộp, Chai).'],
@@ -384,7 +397,7 @@ const OVERVIEW_CACHE_IDS = [
     $('view-title').textContent = info[1];
     // Mô tả tab không còn hàng riêng nữa ⇒ chuyển sang tooltip của nút tab đang bật và
     // aria-label của cả dãy nút, vẫn tra được mà không tốn chiều cao.
-    for (const [id, name] of [['view-overview', 'overview'], ['view-download', 'download'], ['view-data', 'data'], ['view-bank', 'bank'], ['view-accounting', 'accounting'], ['view-dvt', 'dvt'], ['view-mstlookup', 'mstlookup'], ['view-tokhai', 'tokhai']]) {
+    for (const [id, name] of [['view-overview', 'overview'], ['view-download', 'download'], ['view-data-products', 'data-products'], ['view-data-list', 'data-list'], ['view-data-partners', 'data-partners'], ['view-data-vat', 'data-vat'], ['view-bank', 'bank'], ['view-accounting', 'accounting'], ['view-dvt', 'dvt'], ['view-mstlookup', 'mstlookup'], ['view-tokhai', 'tokhai']]) {
       const button = $(id);
       const tabInfo = viewInfo[name] || viewInfo.overview;
       button.title = `${tabInfo[1]} — ${tabInfo[2]}`;
@@ -395,11 +408,11 @@ const OVERVIEW_CACHE_IDS = [
     // để animation fadeIn chạy đúng (nếu gán hidden trước, pane mới sẽ
     // bị display:none → không animate được).
     const allPanes = ['pane-overview', 'pane-download', 'pane-data', 'pane-bank', 'pane-accounting', 'pane-dvt', 'pane-mstlookup', 'pane-tokhai'];
-    const paneMap = { overview:'pane-overview', download:'pane-download', data:'pane-data', bank:'pane-bank', accounting:'pane-accounting', dvt:'pane-dvt', mstlookup:'pane-mstlookup', tokhai:'pane-tokhai' };
+    const paneMap = { overview:'pane-overview', download:'pane-download', data:'pane-data', 'data-products':'pane-data', 'data-list':'pane-data', 'data-partners':'pane-data', 'data-vat':'pane-data', bank:'pane-bank', accounting:'pane-accounting', dvt:'pane-dvt', mstlookup:'pane-mstlookup', tokhai:'pane-tokhai' };
     // Bước 1: show pane mới TRƯỚC
     for (const pid of allPanes) $(pid).hidden = pid !== paneMap[next];
     // Bước 2: cập nhật active class trên nút
-    for (const [id, name] of [['view-overview', 'overview'], ['view-download', 'download'], ['view-data', 'data'], ['view-bank', 'bank'], ['view-accounting', 'accounting'], ['view-dvt', 'dvt'], ['view-mstlookup', 'mstlookup'], ['view-tokhai', 'tokhai']]) {
+    for (const [id, name] of [['view-overview', 'overview'], ['view-download', 'download'], ['view-data-products', 'data-products'], ['view-data-list', 'data-list'], ['view-data-partners', 'data-partners'], ['view-data-vat', 'data-vat'], ['view-bank', 'bank'], ['view-accounting', 'accounting'], ['view-dvt', 'dvt'], ['view-mstlookup', 'mstlookup'], ['view-tokhai', 'tokhai']]) {
       const button = $(id);
       button.classList.toggle('active', name === next);
       button.setAttribute('aria-selected', name === next ? 'true' : 'false');
@@ -441,7 +454,11 @@ const OVERVIEW_CACHE_IDS = [
       if (!overviewReady) setOverviewLoading(true);
       refreshOverview(false);
     }
-    if (next === 'data') refreshAll();
+    if (next === 'data-products') { showDataTab('products'); refreshAll(); }
+    else if (next === 'data-list') { showDataTab('list'); refreshAll(); }
+    else if (next === 'data-partners') { showDataTab('partners'); refreshAll(); }
+    else if (next === 'data-vat') { showDataTab('vat'); refreshAll(); }
+    else if (next === 'data') refreshAll();
     if (next === 'bank') refreshBank();
   }
 
@@ -1171,7 +1188,8 @@ const OVERVIEW_CACHE_IDS = [
 
   async function refreshAll() {
     try {
-      const visible = activeDataTab === 'products' ? loadProducts()
+      const visible = activeDataTab === 'vat' ? Promise.resolve()
+        : activeDataTab === 'products' ? loadProducts()
         : (activeDataTab === 'list' ? loadList() : loadPartners());
       await Promise.all([loadSummary(), visible, loadImportStatus(), loadAutoSync(), loadBackfill()]);
       // Panel mã chưa gán chỉ cần khi vào tab; lỗi của nó không được làm sập refreshAll.
@@ -1183,7 +1201,8 @@ const OVERVIEW_CACHE_IDS = [
 
   async function refreshVisibleData() {
     await loadSummary();
-    if (activeDataTab === 'products') await loadProducts();
+    if (activeDataTab === 'vat') await loadVat();
+    else if (activeDataTab === 'products') await loadProducts();
     else if (activeDataTab === 'list') await loadList();
     else await loadPartners();
   }
@@ -1265,7 +1284,8 @@ const OVERVIEW_CACHE_IDS = [
 
   function reloadAll() {
     page = 0; savePrefs();
-    const loading = activeDataTab === 'products' ? loadProducts()
+    const loading = activeDataTab === 'vat' ? loadVat()
+      : activeDataTab === 'products' ? loadProducts()
       : (activeDataTab === 'list' ? loadList() : loadPartners());
     loading.catch(ignoreAbort);
   }
@@ -1360,17 +1380,27 @@ const OVERVIEW_CACHE_IDS = [
   }
 
   // ------------------------------------------------------------------ tab con + chiều riêng từng bảng
+  // `name` ∈ {'products','list','partners','vat'}. Với 'vat' ta ẩn khối bảng (data-content) và
+  // hiện thẻ tổng hợp thuế (data-vat-card) — bốn mục này nay là các nút trên tab chính, còn
+  // thanh tab con (data-tabs) đã ẩn vì không còn cần.
   function showDataTab(name) {
     activeDataTab = name;
+    const content = $('data-content');
+    const vatCard = $('data-vat-card');
+    const isVat = name === 'vat';
+    if (content) content.hidden = isVat;
+    if (vatCard) vatCard.hidden = !isVat;
     for (const one of ['products', 'list', 'partners']) $('data-tab-' + one).hidden = one !== name;
     for (const [key, id] of [['products', 'data-tab-products-btn'], ['list', 'data-tab-list-btn'], ['partners', 'data-tab-partners-btn']]) {
       const button = $(id);
+      if (!button) continue;
       button.classList.toggle('active', key === name);
       button.setAttribute('aria-selected', key === name ? 'true' : 'false');
     }
     if (name === 'products') loadProducts().catch(ignoreAbort);
     if (name === 'list') loadList().catch(ignoreAbort);
     if (name === 'partners') loadPartners().catch(ignoreAbort);
+    if (name === 'vat') loadVat().catch(ignoreAbort);
   }
 
   function bindSegment(id, onPick) {
@@ -1656,7 +1686,7 @@ const OVERVIEW_CACHE_IDS = [
   }
 
   async function openAutoSync() {
-    if (!view || view !== 'data') showView('data');
+    if (!view || !isDataView(view)) showView('data-products');
     $('autosync-dialog').showModal();
     await loadAutoSync();
   }
@@ -2352,7 +2382,10 @@ Xoá luôn ${num.format(file.rows_imported || 0)} giao dịch của file này. K
     if (debtTitle) debtTitle.textContent = 'Nợ Nhà cung cấp - Phải thu Khách hàng';
     $('view-overview').onclick = () => showView('overview');
     $('view-download').onclick = () => showView('download');
-    $('view-data').onclick = () => showView('data');
+    $('view-data-products').onclick = () => showView('data-products');
+    $('view-data-list').onclick = () => showView('data-list');
+    $('view-data-partners').onclick = () => showView('data-partners');
+    $('view-data-vat').onclick = () => showView('data-vat');
     $('view-bank').onclick = () => showView('bank');
     // Tab Hỗ trợ kế toán — PHẢI nối ở đây: mỗi nút tab được gán onclick riêng, thêm nút vào
     // index.html mà quên dòng này thì bấm vào KHÔNG có gì xảy ra.
@@ -3237,7 +3270,7 @@ $('invoice-close').onclick = closeInvoice;
     syncBackfillFields();
 
     document.addEventListener('keydown', event => {
-      if (view !== 'data' || $('invoice-dialog').open) return;
+      if (!isDataView(view) || $('invoice-dialog').open) return;
       const tag = (document.activeElement && document.activeElement.tagName) || '';
       if (['INPUT', 'SELECT', 'TEXTAREA'].includes(tag)) return;
       if (event.key === 'ArrowDown') { event.preventDefault(); moveSelection(1); }
@@ -3256,7 +3289,7 @@ $('invoice-close').onclick = closeInvoice;
         page = 0;
         bankPage = 0;
         changeRevision = -1;
-        if (view === 'data') refreshAll();
+        if (isDataView(view)) refreshAll();
         if (view === 'bank') refreshBank();
         if (view === 'overview') refreshOverview(false);
       }
@@ -3274,7 +3307,7 @@ $('invoice-close').onclick = closeInvoice;
   // Auto Sync / tự nhập có thể bắt đầu NGOÀI tab này (ví dụ ngay sau khi bấm Tải hóa đơn).
   // Trang ẩn (cửa sổ thu nhỏ/khoá màn hình) thì bỏ nhịp — không fetch vô ích, quay lại là chạy tiếp.
   setInterval(async () => {
-    if (document.hidden || view === 'data') return;
+    if (document.hidden || isDataView(view)) return;
     try {
       const status = await api('/api/db/import/status');
       if (status.running && !seenImportRunning) {
@@ -3290,7 +3323,7 @@ $('invoice-close').onclick = closeInvoice;
 
   // Scanner nền phát hiện XML mới/thay đổi; chỉ làm mới thống kê và bảng con đang mở.
   setInterval(async () => {
-    if (document.hidden || view !== 'data' || changePollBusy || !app.selected) return;
+    if (document.hidden || !isDataView(view) || changePollBusy || !app.selected) return;
     changePollBusy = true;
     try {
       const status = await api('/api/db/changes');

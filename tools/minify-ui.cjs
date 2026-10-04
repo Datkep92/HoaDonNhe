@@ -31,7 +31,6 @@ const TARGETS = [
   { name: 'app-settings.js', loader: 'js' },
   { name: 'chat-widget.js', loader: 'js' },
   { name: 'ai-chat.js', loader: 'js' },
-  { name: 'ai-bridge.js', loader: 'js' },
   { name: 'ai-providers.js', loader: 'js' },
   { name: 'update-ui.js', loader: 'js' },
   { name: 'bank-pdf.js', loader: 'js' },

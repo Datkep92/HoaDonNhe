@@ -414,11 +414,13 @@ class Engine {
       this.save(); await this.scan();
     });
   }
-  async stream(params, output) {
+  async stream(params, output, startHooks = {}) {
     params = validateParams(params);
     const account = await this.identity();
     if (!account) throw Object.assign(new Error('Hãy đăng nhập cổng thuế trước.'), { auth: true });
     if (!output || !path.isAbsolute(output)) throw new Error('Chọn thư mục lưu hóa đơn.');
+    if (startHooks.authorizeStart) await startHooks.authorizeStart();
+    startHooks.validateStart?.();
     return this.run(async () => {
       this.job = {
         version: 1, id: crypto.randomUUID(), mode: 'stream', account, output, params,
@@ -426,7 +428,7 @@ class Engine {
         stats: { total: 0, existed: 0, queued: 0, downloaded: 0, skipped: 0, failed: 0 },
         message: 'Đang tra cứu và tải cuốn chiếu...',
       };
-      this.save(); await this.scan();
+      this.save(); startHooks.onStarted?.({ jobId: this.job.id }); await this.scan();
     });
   }
   async scan() {

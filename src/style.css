@@ -130,13 +130,25 @@ body.chat-open #support-toggle{visibility:hidden;pointer-events:none}
 .ai-tools{display:flex;gap:6px;padding:7px 10px;flex-shrink:0;border-bottom:1px solid #e4eaf0}
 .ai-tools button{font-size:11px;padding:5px 8px;border-radius:5px}
 .ai-tools #ai-retry{margin-left:auto}
-.ai-frame-host,.ai-thread{flex:1;min-height:0}
-#ai-frame{width:100%;height:100%;border:0;display:block;background:#fff}
+.ai-thread{flex:1;min-height:0}
 .ai-thread{overflow:auto;padding:12px;display:flex;flex-direction:column;gap:10px;background:#f8fafc}
-.ai-message{max-width:90%;align-self:flex-start;font-size:12px;line-height:1.6;overflow-wrap:anywhere;white-space:pre-wrap;color:#20324a}
+.ai-status{font-size:12px;color:#617287;margin:0;padding:0 12px}.ai-status:empty{display:none}.ai-status:not(:empty){padding:8px 12px}
+.ai-file{display:block;margin-top:8px;padding:8px;border:1px solid #d3e7e2;border-radius:6px;color:#087f70;background:#edf8f5;text-decoration:none;overflow-wrap:anywhere}
+.ai-file-actions{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}.ai-file-actions button{font-size:11px;padding:4px 7px}
+#ai-file-dialog{width:min(960px,calc(100vw - 24px));max-height:calc(100dvh - 24px);border-radius:8px}.ai-file-scroll{max-height:65vh;overflow:auto}#ai-file-table{border-collapse:collapse;font-size:12px}#ai-file-table th,#ai-file-table td{border:1px solid #e4eaf0;padding:6px;white-space:nowrap}
+.ai-message{max-width:96%;align-self:flex-start;font-size:14px;line-height:1.7;overflow-wrap:anywhere;white-space:pre-wrap;color:#20324a}
 .ai-message.user{align-self:flex-end;background:#e9f7f3;padding:8px 10px;border-radius:6px}
-.ai-message small{display:block;font-weight:600;font-size:10px;color:#617287;margin-bottom:4px}
+.ai-message small{display:block;font-weight:600;font-size:12px;color:#617287;margin-bottom:4px}
 #ai-form input{min-width:0;flex:1}#ai-form button{flex-shrink:0}
+#ai-form{display:flex;flex-direction:column;gap:8px;padding:12px}#ai-form[hidden]{display:none}
+#ai-input{width:100%;min-height:76px;max-height:220px;resize:vertical;font:inherit;font-size:14px;line-height:1.5;padding:10px;border:1px solid #cfdbe5;border-radius:8px}
+.ai-compose-actions{display:flex;align-items:center;gap:8px}.ai-compose-actions #ai-send{margin-left:auto}#ai-upload-note{font-size:10px;color:#617287;max-width:190px}
+.ai-capabilities{display:flex;align-items:center;flex-wrap:wrap;gap:10px;padding:8px 12px;border-bottom:1px solid #e4eaf0;font-size:12px}.ai-capabilities label{display:flex;align-items:center;gap:5px}.ai-capabilities input{width:15px;height:15px;margin:0}.ai-capabilities small{color:#617287}
+.ai-attachments{display:flex;gap:6px;flex-wrap:wrap;padding:0 12px}.ai-attachments:empty{display:none}.ai-attachment{display:flex;align-items:center;gap:6px;font-size:12px;padding:6px;border:1px solid #cfdbe5;border-radius:6px;max-width:100%;overflow-wrap:anywhere}.ai-attachment img{width:44px;height:44px;object-fit:cover;border-radius:4px}.ai-attachment button{padding:2px 5px}
+.ai-message a.ai-source{color:#087f70;text-decoration:underline}.ai-message .ai-attached-name{display:block;font-size:12px;color:#617287;margin-top:5px}
+#ai-legacy-dialog{width:min(760px,calc(100vw - 24px));max-height:85vh;overflow:auto;border-radius:8px}#ai-legacy-text{white-space:pre-wrap;overflow-wrap:anywhere;font:inherit;font-size:13px}
+body.chat-expanded .support-panel{width:min(1100px,100vw)}body.chat-expanded .chat-resize{display:none}body.chat-expanded main{width:calc(100% - var(--app-sidebar-width));filter:brightness(.8)}
+@media(max-width:760px){body.chat-expanded .support-panel{width:100vw}.ai-compose-actions{flex-wrap:wrap}#ai-upload-note{max-width:145px}}
 #ai-provider-dialog{width:min(520px,calc(100vw - 24px));max-height:calc(100dvh - 24px);overflow:auto;border-radius:8px}
 #ai-provider-form label{display:block;font-size:12px;color:#617287;margin:10px 0}
 #ai-provider-form input:not([type="checkbox"]),#ai-provider-form select{width:100%;margin-top:5px}
@@ -931,3 +943,9 @@ body.app-ready > aside, body.app-ready > main { animation: app-enter .55s cubic-
 @media (max-width: 1180px) {
   .app-top > header > .view-switch button { padding: 9px 10px; font-size: 11.5px; }
 }
+.ai-approval { border: 1px solid #ddae51; border-radius: 10px; padding: 12px; margin-top: 10px; background: #fffaf0; color: #243447; }
+.ai-approval p { margin: 8px 0; white-space: pre-wrap; }
+.ai-approval small { display: block; }
+.ai-approval pre { max-height: 160px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; }
+.ai-approval button, .ai-approval select { margin: 6px 6px 0 0; padding: 7px 10px; font: inherit; }
+#ai-permissions-dialog { width: min(650px, 92vw); max-height: 85vh; overflow: auto; }

@@ -17,7 +17,9 @@ function licenseGate(check, signature, now = Date.now) {
   // Every protected route/tool checks again, including revoke during a task.
   return () => Promise.resolve().then(check);
 }
-function createAiService({ dataDir, secrets, app, checkLicense, licenseSignature, fetchImpl = fetch }) {
+// agentGateway() trả về null khi không có Gateway/token phiên — cấu hình AI quay
+// về key trên máy như trước. Nhận qua tham số để test không phải dựng Gateway giả.
+function createAiService({ dataDir, secrets, app, checkLicense, licenseSignature, fetchImpl = fetch, agentGateway = () => null }) {
   const files = { providers: path.join(dataDir, 'ai-providers.json'), history: path.join(dataDir, 'ai-history.json') };
   function read(file, fallback) {
     try { return JSON.parse(fs.readFileSync(file, 'utf8')); }
@@ -27,6 +29,7 @@ function createAiService({ dataDir, secrets, app, checkLicense, licenseSignature
   // Retire saved free web modes without losing API/local providers or their keys.
   const retired = config.providers.filter(p => p.type === 'web');
   config.providers = config.providers.filter(p => p.type !== 'web').map(providers.normalizeProvider);
+  for(const p of config.providers)if(p.id==='agent'&&!p.routingMode)p.routingMode=secrets.read('ai-agent',['token']).token?'manual':'auto';
   let renamed = false;
   for (const p of config.providers) if (p.id === 'agent' && p.label !== identity.agentName) { p.label = identity.agentName; renamed = true; }
   const missingAgent = !config.providers.some(p => p.id === 'agent');
@@ -52,7 +55,15 @@ function createAiService({ dataDir, secrets, app, checkLicense, licenseSignature
   const permissionEngine = () => permissionStore || (permissionStore = createPermissionEngine(dataDir));
   const permissionContext = session => ({ sessionId: session.id, companyId: companyId(), workspace: path.resolve(dataDir), application: identity.productName, ...(app.permissionContext?.() || {}) });
   const keyId = id => 'ai-' + id;
-  function publicConfig() { return { active: config.active, identity, flags: access.flags, legacyHistoryAvailable: Object.keys(history).length > 0, companyId: app ? companyId() : null, providers: config.providers.map(p => ({ ...p, hasKey: !!secrets.read(keyId(p.id), ['token']).token || (p.id === 'agent' && !!environment.apiKey) })) }; }
+  let cloudConfig=null,cloudAt=0,cloudRefresh;
+  async function refreshCloud() {
+    const p=config.providers.find(p=>p.id==='agent');if(p?.routingMode!=='auto')return;
+    const relay=agentGateway();if(!relay?.configURL||Date.now()-cloudAt<15000)return;
+    if(cloudRefresh)return cloudRefresh;
+    cloudRefresh=(async()=>{try{const r=await fetchImpl(relay.configURL,{headers:{Authorization:'Bearer '+relay.token},signal:AbortSignal.timeout(5000),redirect:'error'});if(r.ok){const j=await r.json();if(j.ok){cloudConfig=j.value;cloudAt=Date.now();}}}catch{/* The relay resolves every turn even if metadata refresh is unavailable. */}finally{cloudRefresh=null;}})();
+    return cloudRefresh;
+  }
+  function publicConfig() { return { active: config.active, cloudConfig, identity, flags: access.flags, legacyHistoryAvailable: Object.keys(history).length > 0, companyId: app ? companyId() : null, providers: config.providers.map(p => ({ ...p,...(p.id==='agent'&&p.routingMode==='auto'&&cloudConfig?.active?{cloudModel:cloudConfig.active.model,configRevision:cloudConfig.revision}:{}),hasKey: !!secrets.read(keyId(p.id), ['token']).token || (p.id === 'agent' && !!environment.apiKey) })) }; }
   function provider(id) { const p = config.providers.find(p => p.id === id); if (!p) throw new Error('Không tìm thấy chế độ AI.'); return p; }
   const save = (file, value) => atomicWrite(file, JSON.stringify(value, null, 2));
   function endpoint(p, suffix) { return p.baseURL.replace(/\/$/, '') + suffix; }
@@ -94,7 +105,7 @@ function createAiService({ dataDir, secrets, app, checkLicense, licenseSignature
       const p = provider(input.id), session = sessionOf(p), context = permissionContext(session);
       if (req.method === 'POST') permissionEngine().revoke(input.approvalId, context);
       send(permissionEngine().list(context));
-    } else if (url.pathname === '/api/ai/providers' && req.method === 'GET') send(publicConfig());
+    } else if (url.pathname === '/api/ai/providers' && req.method === 'GET') {await refreshCloud();send(publicConfig());}
     else if (url.pathname === '/api/ai/providers' && req.method === 'POST') {
       if (input.action === 'active') {
         if (input.id !== 'support') provider(input.id);
@@ -114,6 +125,7 @@ function createAiService({ dataDir, secrets, app, checkLicense, licenseSignature
         if (input.apiKey !== undefined && (typeof input.apiKey !== 'string' || input.apiKey.length > 4096 || /[\r\n\x00-\x1f\x7f]/.test(input.apiKey))) throw new Error('API key không hợp lệ.');
         const index = config.providers.findIndex(item => item.id === p.id);
         const previous = config.providers[index];
+        if(p.id==='agent'&&!p.routingMode)p.routingMode=input.apiKey?'manual':previous?.routingMode||'auto';
         if (previous && (previous.baseURL !== p.baseURL || previous.type !== p.type)) secrets.clear(keyId(p.id));
         if (input.apiKey) secrets.write(keyId(p.id), { token: input.apiKey });
         if (input.clearKey || p.type !== 'openai') secrets.clear(keyId(p.id));
@@ -194,8 +206,17 @@ function createAiService({ dataDir, secrets, app, checkLicense, licenseSignature
           reference: name => { const value = sessions().references(session)[name]; if (!value) throw Object.assign(new Error('Chưa có tham chiếu này trong công ty hiện tại.'), { code: 'FILE_NOT_FOUND' }); return value; },
         };
         const token = secrets.read(keyId(p.id), ['token']).token;
-        const useEnvironment = p.id === 'agent' && !token && !!environment.apiKey;
-        const aiConfig = useEnvironment ? environment : { endpoint: endpoint(p, '/chat/completions'), model: p.model, apiKey: token || (p.type === 'local' ? 'ollama' : '') };
+        // Ưu tiên đường qua Gateway cho chế độ 'agent': Gateway giữ url/model/key và
+        // xoay key khi hết hạn mức, nên key không nằm trên máy khách và admin đổi
+        // cấu hình được bằng lệnh Telegram mà không phải sửa máy từng máy. Chỉ khi
+        // không có Gateway (chạy local-mock / mất mạng) mới rơi về key trên máy.
+        const relay = p.id === 'agent' && p.routingMode==='auto' ? agentGateway() : null;
+        const useEnvironment = !relay && p.id === 'agent' && !token && !!environment.apiKey;
+        const aiConfig = relay
+          ? { endpoint: relay.baseURL, model: p.model, apiKey: relay.token, viaGateway: true }
+          : useEnvironment ? environment : { endpoint: endpoint(p, '/chat/completions'), model: p.model, apiKey: token || (p.type === 'local' ? 'ollama' : '') };
+        if(p.id==='agent'&&p.routingMode==='auto'&&!relay)throw new Error('Chưa kết nối Cloudflare. Kiểm tra đăng ký/bản quyền hoặc chọn MANUAL.');
+        if(relay){aiConfig.conversationId=session.id;aiConfig.onGatewayConfig=value=>{cloudConfig={revision:value.revision,active:{...(cloudConfig?.active||{}),model:value.model}};cloudAt=Date.now();};}
         if (!aiConfig.apiKey) throw new Error('Chưa cấu hình API key. Bấm Cấu hình để lưu key cho AI Agent.');
         if (!app) throw new Error('Dịch vụ ứng dụng chưa sẵn sàng cho AI Agent.');
         res.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-store', 'X-Accel-Buffering': 'no' });
@@ -223,7 +244,7 @@ function createAiService({ dataDir, secrets, app, checkLicense, licenseSignature
         controller.signal.throwIfAborted();
         sessions().append(session, { role: 'assistant', content: answer, files: turnFiles });
         emit(streamed ? { replace: answer } : { delta: answer });
-        sessions().updateJob(jobId, 'completed'); completed = true; emit({ done: true, sessionId: session.id, companyId: session.companyId, selectedCompanyId: companyId(), jobId }); res.end();
+        sessions().updateJob(jobId, 'completed'); completed = true; emit({ done: true, ...(relay?{configRevision:cloudConfig?.revision,cloudModel:cloudConfig?.active?.model}:{}),sessionId: session.id, companyId: session.companyId, selectedCompanyId: companyId(), jobId }); res.end();
       } catch (error) {
         sessions().append(session, { role: 'assistant', content: 'Không hoàn tất: ' + (controller.signal.aborted ? 'Tác vụ đã dừng.' : error.message), files: turnFiles });
         if (!res.headersSent) throw error;

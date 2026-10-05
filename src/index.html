@@ -561,6 +561,7 @@
   <form id="ai-provider-form">
     <div class="login-heading"><h2 id="ai-provider-title">Cấu hình AI</h2><button id="ai-provider-close" type="button" aria-label="Đóng">×</button></div>
     <label>Tên<input id="ai-provider-label" maxlength="80" required></label>
+    <label id="ai-routing-label">Nguồn cấu hình<select id="ai-routing-mode"><option value="auto">AUTO — Cloudflare</option><option value="manual">MANUAL — API riêng</option></select></label>
     <label>Loại<select id="ai-provider-type"><option value="openai">API key riêng</option><option value="local">Ollama trên máy</option></select></label>
     <label>Địa chỉ<input id="ai-provider-url" type="url" required></label>
     <div id="ai-provider-api"><label>Model<input id="ai-provider-model" list="ai-model-list" maxlength="200"><datalist id="ai-model-list"></datalist></label><button id="ai-models" type="button">Lấy danh sách model</button></div>

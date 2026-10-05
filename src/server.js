@@ -2362,6 +2362,8 @@ async function endpoint(req, res, url) {
     try {
       if (!aiService) aiService = require('./ai-service').createAiService({
         dataDir, secrets, app: getAgentServices(), checkLicense: ensureLicenseAllowed,
+        // Đường AI qua Gateway: app không cầm API key (xem SupportStore.aiGateway).
+        agentGateway: () => support.aiGateway(),
         licenseSignature: () => {
           const value = support.publicLicense();
           return JSON.stringify([value.status, value.expiryAt, value.keyName, value.trial]);

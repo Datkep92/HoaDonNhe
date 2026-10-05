@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Deploy as a Web App. Set Script Property GATEWAY_SHARED_SECRET to the
  * same high-entropy value used by the Gateway. Never place that secret in
  * the desktop application or a spreadsheet cell.
@@ -12,6 +12,10 @@
  * Licenses  + Max Devices            -> số máy tối đa của một key (trống = 1 máy)
  * tab Bindings: License Key | Hardware ID | Chat Room ID | Activated At  -> bật key nhiều máy
  * tab Settings: Key | Value          -> dòng có Key = Notice để phát thông báo
+ * tab AI_PROFILES: Alias | Active | Base URL | Model | API Keys | Updated At | Updated By
+ *   Cấu hình AI cho bot (url + model + nhiều API key để xoay vòng). Admin sửa
+ *   bằng lệnh /ai... trên Telegram; Gateway đọc tab này để gọi AI thay máy
+ *   khách, nên API key KHÔNG bao giờ đi xuống máy khách.
  *
  * Trạng thái trả về cho app: Active | Trial | Expired | Locked | Unactivated | device_limit_exceeded
  * Dùng thử: TRIAL_DAYS ngày tính từ First Install Time do máy chủ ghi, máy khách không tự đặt lại được.
@@ -32,7 +36,21 @@ const DEVICE_SHEET = 'Devices';
 const LICENSE_SHEET = 'Licenses';
 const BINDING_SHEET = 'Bindings';
 const SETTINGS_SHEET = 'Settings';
+const AI_SHEET = 'AI_PROFILES';
+// Cấu hình AI nên nằm ở Sheet RIÊNG, không nhét vào Sheet bản quyền: khi đó có
+// thể chia sẻ Sheet CRM cho kế toán/nhân sự mà không kéo theo API key của bot.
+// Script Property AI_CONFIG_SPREADSHEET_ID trỏ tới Sheet đó (chỉ ID nằm trong
+// property, không nằm trong code). Để trống thì rơi về tab AI_PROFILES của Sheet
+// CRM — đường cũ vẫn chạy được, không ai bị mất cấu hình đang dùng.
+const AI_CONFIG_PROPERTY = 'AI_CONFIG_SPREADSHEET_ID';
+const AI_EXTERNAL_SHEET = 'PROFILES';
 const TRIAL_DAYS = 30;
+
+// Tên gọi cấu hình AI và API key: chỉ ký tự an toàn để dùng được trong vòng lệnh
+// Telegram (alias trong lệnh, key dán thẳng sau lệnh). Chặn ký tự lạ để một ô
+// viết sai không biến thành công thức hay đường dẫn ngoài ý muốn.
+const AI_ALIAS_PATTERN = /^[A-Za-z0-9_.-]{1,40}$/;
+const AI_KEY_PATTERN = /^[A-Za-z0-9._~+/=-]{8,200}$/;
 
 // Máy coi như đang online nếu lần ghi nhận diện gần nhất nằm trong cửa sổ này.
 // App ghi presence lúc mở và mỗi ~4h khi chạy nền, nên 15 phút là đủ bắt được
@@ -249,15 +267,20 @@ function doPost(e) {
   try {
     const input = JSON.parse(e.postData && e.postData.contents || '{}');
 
-    // Mọi request đều phải có secret của Gateway
+    // Script mới chưa gắn Sheet nào vẫn phải phục vụ được: Gateway nhận cấu
+    // hình AI qua action riêng và KHÔNG cần tới Sheet CRM. Nếu cứ chạy
+    // ensureTabs_() ở đây thì mọi lệnh /ai trên Telegram chết ngay ở máy chủ
+    // cho tới khi admin dựng xong Sheet CRM — lúc đó nhân viên lại không cài
+    // được app để dùng.
+    // Secret phải kiểm TRƯỚC mọi việc khác: không có secret thì không đụng
+    // vào Sheet nào, kể cả việc tự tạo tab.
     const expectedSecret = PropertiesService.getScriptProperties().getProperty('GATEWAY_SHARED_SECRET');
     if (!expectedSecret || input.gatewaySecret !== expectedSecret) {
       throw new Error('Unauthorized gateway.');
     }
-
     // Sheet mới tạo chưa có tab nào -> tạo trước rồi mới xử lý. Đây cũng là bước
     // tự phục hồi: đã có đủ tab thì không động vào gì.
-    ensureTabs_();
+    if (needsCrm_(input.action)) ensureTabs_();
 
     const action = String(input.action || '');
     const chatRoomId = String(input.chatRoomId || '');
@@ -280,6 +303,18 @@ function doPost(e) {
     // SĐT nên không gắn với mã máy nào.
     if (action === 'find_by_phone') {
       return reply_({ ok: true, value: findByPhone_(input) });
+    }
+
+    // Cấu hình AI của bot: cũng là lệnh TOÀN CỤC của admin như /online, vì
+    // url/model/key dùng chung cho mọi máy chứ không gắn với phòng nào.
+    // KHÔNG trả key cho app: chỉ Gateway gọi được (đã qua khoá gatewaySecret).
+    if (action === 'ai_admin') {
+      return reply_({ ok: true, value: aiAdmin_(input) });
+    }
+    if (action === 'ai_config') {
+      // Chỉ Gateway gọi được (đã qua khoá gatewaySecret) và đây là nơi duy
+      // nhất trả API key ra ngoài Sheet — app không bao giờ nhận key.
+      return reply_({ ok: true, value: aiConfig_(input) });
     }
 
     // App bản mới gửi machineId; app bản cũ chỉ gửi installationId (UUID).
@@ -434,7 +469,17 @@ const SHEET_SPECS = [
     name: SETTINGS_SHEET,
     headers: ['Key', 'Value', 'Updated At']
   },
+  {
+    name: AI_SHEET,
+    headers: ['Alias', 'Active', 'Base URL', 'Model', 'API Keys', 'Order', 'Updated At', 'Updated By']
+  },
 ];
+
+// Action nào cần tới Sheet CRM. Các action AI không cần: chúng đọc Sheet cấu
+// hình riêng (nếu có) và luôn phải chạy được kể cả khi script chưa gắn Sheet.
+function needsCrm_(action) {
+  return String(action || '') !== 'ai_admin' && String(action || '') !== 'ai_config';
+}
 
 function ensureTabs_() {
   const parent = SpreadsheetApp.getActive();
@@ -781,7 +826,8 @@ const ADMIN_HELP = [
   '/new [thang|nam] [số_máy] — cấp key mới (mặc định 30 ngày, 1 máy)',
   '/extend [số_ngày] — gia hạn thêm (cập nhật cả Devices và Licenses)',
   '/reset — gỡ liên kết máy để khách kích hoạt sang máy khác',
-  '/lock | /unlock — khóa / mở khóa thiết bị'
+  '/lock | /unlock — khóa / mở khóa thiết bị',
+  '/ai — cấu hình AI của bot (url, model, API key)',
 ].join('\n');
 
 function adminDate_(value) {
@@ -914,4 +960,372 @@ function adminCommand_(input) {
   }
 
   return { ...result, reply: '❓ Không hiểu lệnh "' + command + '".\n\n' + ADMIN_HELP };
+}
+
+// ==========================================
+// CẤU HÌNH AI DO ADMIN ĐẶT TỪ TELEGRAM (/ai)
+// ==========================================
+// Mục tiêu: admin đổi url / model / API key ngay trong Telegram, không phải sửa
+// code hay đụng vào máy khách. Cấu hình nằm trên Sheet; Gateway đọc tab này để
+// gọi AI hộ máy khách và xoay key khi hết quota.
+//
+// Ranh giới an toàn (đừng nới):
+//   - Key chỉ trả cho Gateway, không trả cho app. App chỉ nhận câu trả lời của
+//     model, không bao giờ thấy key.
+//   - Chỉ nhận https. Gateway chạy ở Cloudflare nên localhost ở đây nghĩa là
+//     chính Cloudflare, không phải máy khách -> không dùng được, chặn luôn.
+//   - Mọi ô admin gõ đều đi qua kiểm tra trước khi ghi, và báo lại giá trị đã
+//     lưu để admin nhìn thấy ngay kết quả (tránh lệnh sai mà tưởng đã đúng).
+const AI_HELP = [
+  '🤖 CẤU HÌNH AI',
+  '/ai — xem cấu hình đang dùng',
+  '/ai add <tên> <url> <model> — tạo mới hoặc sửa url/model',
+  '/ai url <tên> <url> — chỉ đổi địa chỉ API',
+  '/ai model <tên> <model> — chỉ đổi model',
+  '/ai use <tên> — bật cấu hình này',
+  '/ai del <tên> — xoá cấu hình',
+  '/ai key <tên> add <key> — thêm API key (xoay vòng khi hết quota)',
+  '/ai key <tên> list — xem key đang lưu (che giữa)',
+  '/ai key <tên> del <số> — xoá key thứ n',
+  '/ai key <tên> check — hướng dẫn kiểm tra key',
+  '',
+  'Trên Telegram có nút bấm: gõ /ai sẽ hiện menu quản lý (xem, bật, xoá, thêm key, kiểm tra key).',
+].join('\n');
+
+function aiMask_(key) {
+  const value = String(key || '');
+  if (value.length < 8) return '***';
+  return value.slice(0, 6) + '...' + value.slice(-4) + ' (' + value.length + ' ký tự)';
+}
+
+function aiKeys_(value) {
+  if (value instanceof Array) return value.map(item => String(item).trim()).filter(Boolean);
+  // Nhiều key trong một ô: tách theo xuống dòng hoặc dấu phẩy, bỏ khoảng trắng.
+  return String(value == null ? '' : value).split(/[\n,;]+/).map(item => item.trim()).filter(Boolean);
+}
+
+// Số thứ tự cho dòng mới: lấy lớn nhất đang có rồi +10. Cách này giữ được
+// thứ tự ưu tiên của các dòng cũ thay vì dồn tất cả vào một số bằng nhau.
+function nextOrder_(data) {
+  const column = optional_(data.header, 'Order');
+  if (column < 0) return '';
+  let biggest = 0;
+  for (const row of data.values) {
+    const value = Number(row[column]);
+    if (Number.isFinite(value) && value > biggest) biggest = value;
+  }
+  return biggest + 10;
+}
+
+function aiNormalizeUrl_(value) {
+  const raw = String(value || '').trim();
+  if (!/^https:\/\/[^\s/$.?#].[^\s]*$/i.test(raw)) throw new Error('URL phải bắt đầu bằng https://');
+  if (/@/.test(raw)) throw new Error('URL chứa thông tin đăng nhập — không nhận dạng hình thức này.');
+  return raw.replace(/\/+$/, '');
+}
+
+function aiNormalizeModel_(value) {
+  const raw = String(value || '').trim();
+  if (!/^[A-Za-z0-9._:/|-]{1,120}$/.test(raw)) throw new Error('Model chỉ gồm chữ/số và các ký tự . _ : / | -');
+  return raw;
+}
+
+// Nguồn cấu hình AI: Sheet RIÊNG nếu Script Property có trỏ tới, không thì
+// rơi về tab AI_PROFILES của Sheet CRM (đường cũ). Sheet riêng có thể tạo
+// tay với đúng tên tab PROFILES, cũng có thể để script tự tạo — miễn là AI nằm
+// ngoài Sheet CRM thì không đụng vào cấu trúc CRM đang chạy.
+const AI_HEADERS = ['Alias', 'Active', 'Base URL', 'Model', 'API Keys', 'Order', 'Updated At', 'Updated By'];
+
+// Sheet vừa tạo còn trống hoàn toàn: ensureColumns_() cố tình không ghi khi
+// chưa có hàng tiêu đề, nên ở đây tự ghi. Không có bước này thì lệnh /ai đầu
+// tiên sẽ chết vì thiếu cột Alias trong khi admin mới tạo Sheet.
+function aiPrepare_(sheet) {
+  if (!rows_(sheet).header.length) sheet.getRange(1, 1, 1, AI_HEADERS.length).setValues([AI_HEADERS]);
+  else ensureColumns_(sheet, AI_HEADERS);
+  return sheet;
+}
+
+// Tạo Sheet riêng cho cấu hình AI rồi tự trỏ Script Property vào đó.
+// Chạy một lần bằng:  clasp run setupAiConfigSheet
+// (hoặc trong Apps Script editor: chọn hàm này rồi Run — hữu ích khi không có CLI).
+// Vì sao cần hàm này: cấu hình AI chứa API key, tách khỏi Sheet bản quyền thì có
+// thể chia sẻ Sheet CRM cho kế toán mà không lộ key. Làm thủ công thì dễ quên
+// tạo tab đúng tên, và mọi lệnh /ai sẽ báo lỗi vì không tìm thấy nơi lưu.
+function setupAiConfigSheet() {
+  const existing = String(PropertiesService.getScriptProperties().getProperty(AI_CONFIG_PROPERTY) || '').trim();
+  if (existing) {
+    return { ok: true, created: false, spreadsheetId: existing, url: 'https://docs.google.com/spreadsheets/d/' + existing + '/edit', note: 'Đã có ' + AI_CONFIG_PROPERTY + ', không tạo mới.' };
+  }
+  const name = 'HoaDonNhe_AI_Config';
+  const doc = SpreadsheetApp.create(name);
+  const sheets = doc.getSheets();
+  // Sheet mới tạo có sẵn một tab (Sheet1). Bỏ hết rồi tạo đúng tên để không
+  // phải đoán tên tab mặc định là gì theo ngôn ngữ tài khoản.
+  for (const sheet of sheets.slice(1)) doc.deleteSheet(sheet);
+  const sheet = sheets[0];
+  sheet.setName(AI_EXTERNAL_SHEET);
+  aiPrepare_(sheet);
+  PropertiesService.getScriptProperties().setProperty(AI_CONFIG_PROPERTY, doc.getId());
+  return { ok: true, created: true, spreadsheetId: doc.getId(), url: doc.getUrl(), tab: AI_EXTERNAL_SHEET, headers: AI_HEADERS };
+}
+
+// `idHint` là ID Sheet do Gateway truyền kèm (secret AI_CONFIG_SHEET_ID).
+// Cần đường này vì Script Property không set được qua API mà không phải chạy
+// code trong editor — mà Gateway thì deploy bằng CLI, không mở editor.
+function aiSheet_(idHint) {
+  const id = String(idHint || PropertiesService.getScriptProperties().getProperty(AI_CONFIG_PROPERTY) || '').trim();
+  if (id) {
+    let doc;
+    try { doc = SpreadsheetApp.openById(id); }
+    catch (error) { throw new Error('Không mở được Sheet cấu hình AI (' + id + '): ' + error.message); }
+    let sheet = doc.getSheetByName(AI_EXTERNAL_SHEET);
+    if (!sheet) {
+      // Sheet admin vừa tạo có đúng một tab rỗng theo tên mặc định (Sheet1 / Trang
+      // tính 1 / …). Đổi tên tab đó thay vì tạo thêm: nếu tạo thêm mà quên xoá,
+      // Sheet sẽ có 2 tab và admin không biết tab nào là tab thật.
+      const sheets = doc.getSheets() || [];
+      const blank = sheets.length === 1 && sheets[0].getLastRow() === 0 ? sheets[0] : null;
+      if (blank) { blank.setName(AI_EXTERNAL_SHEET); sheet = blank; }
+      else sheet = doc.insertSheet(AI_EXTERNAL_SHEET);
+    }
+    return aiPrepare_(sheet);
+  }
+  // Chưa trỏ Sheet riêng: dùng tab AI_PROFILES của Sheet CRM, và TỰ TẠO nếu
+  // thiếu — để lệnh /ai vẫn chạy được ngay thay vì bắt admin tạo tab bằng tay.
+  let sheet = sheet_(AI_SHEET);
+  if (!sheet) {
+    const parent = SpreadsheetApp.getActive();
+    if (!parent) {
+      throw new Error('Chưa có nơi lưu cấu hình AI: script chưa gắn với Google Sheet nào, và Gateway chưa truyền ' + AI_CONFIG_PROPERTY + '.');
+    }
+    sheet = parent.insertSheet(AI_SHEET);
+  }
+  return aiPrepare_(sheet);
+}
+
+// Toàn bộ cấu hình AI dạng đọc được cho Gateway. Key trả về ở đây là toàn bộ
+// (không che) vì chỉ Gateway gọi được action này qua gatewaySecret; tuyệt đối
+// không đưa nhánh này vào bất kỳ action nào app gọi trực tiếp.
+function aiConfig_(input) {
+  const sheet = aiSheet_(input && input.aiSheetId);
+  const data = rows_(sheet);
+  const header = data.header;
+  const aliasCol = cell_(header, 'Alias');
+  const activeCol = optional_(header, 'Active');
+  const urlCol = cell_(header, 'Base URL');
+  const modelCol = cell_(header, 'Model');
+  const keyCol = cell_(header, 'API Keys');
+  const orderCol = optional_(header, 'Order');
+  const profiles = [];
+  for (const row of data.values) {
+    const alias = String(row[aliasCol] || '').trim();
+    if (!alias || !AI_ALIAS_PATTERN.test(alias)) continue;
+    // Order trống = ưu tiên sau mọi dòng có số, để thêm dòng mới bằng tay không
+    // bị chen vào giữa chuỗi dự phòng.
+    const order = orderCol >= 0 && Number.isFinite(Number(row[orderCol])) ? Number(row[orderCol]) : 999;
+    profiles.push({
+      alias: alias,
+      order: order,
+      active: activeCol >= 0 && /^(1|true|yes|active|x|✓)$/i.test(String(row[activeCol] || '').trim()),
+      baseURL: String(row[urlCol] || '').trim(),
+      model: String(row[modelCol] || '').trim(),
+      keys: aiKeys_(row[keyCol]),
+    });
+  }
+  profiles.sort((a, b) => a.order - b.order);
+  // Cấu hình đang bật: ưu tiên dòng Active, không có thì lấy dòng đầu tiên có
+  // đủ url + model + key. Thiếu key thì coi như chưa dùng được — báo rõ hơn là
+  // im lặng rồi lỗi "chưa cấu hình" khi khách chat.
+  const usable = profiles.filter(p => p.baseURL && p.model && p.keys.length);
+  const active = usable.find(p => p.active) || usable[0] || null;
+  return {
+    active: active ? active.alias : '',
+    profiles: profiles.map(p => ({
+      alias: p.alias,
+      order: p.order,
+      active: p.active,
+      baseURL: p.baseURL,
+      model: p.model,
+      keys: p.keys,
+      keyCount: p.keys.length,
+      usable: !!(p.baseURL && p.model && p.keys.length),
+    })),
+  };
+}
+
+// `input` được truyền xuống chỉ để lấy aiSheetId; gọi aiView_() không có tham số
+// vẫn đọc được (rơi về Script Property / Sheet CRM).
+function aiView_(input) {
+  const value = aiConfig_(input);
+  if (!value.profiles.length) {
+    return '🤖 CHƯA CÓ CẤU HÌNH AI\n\nThêm bằng:\n/ai add <tên> <url> <model>\n/ai key <tên> add <key>\n\n' + AI_HELP;
+  }
+  const lines = ['🤖 CẤU HÌNH AI'];
+  for (const p of value.profiles) {
+    const mark = p.alias === value.active ? '▶️' : '  ';
+    lines.push('');
+    lines.push(mark + ' ' + p.alias + (p.alias === value.active ? '  (đang dùng)' : ''));
+    lines.push('   URL: ' + (p.baseURL || '⚠️ thiếu URL'));
+    lines.push('   Model: ' + (p.model || '⚠️ thiếu model'));
+    lines.push('   Key: ' + (p.keyCount ? p.keyCount + ' key' : '⚠️ chưa có key'));
+    lines.push('   Thứ tự dự phòng: ' + p.order);
+  }
+  if (!value.active) lines.push('', '⚠️ Chưa cấu hình nào đủ url + model + key. Bot sẽ báo lỗi khi khách chat.');
+  return lines.join('\n');
+}
+
+// Xử lý /ai... của admin. Trả về { reply, config } để Gateway lưu luôn bản cấu
+// hình mới và app dùng ngay ở lượt kế tiếp, không chờ hết hạn cache.
+function aiAdmin_(input) {
+  const text = String(input.text || '').trim();
+  const parts = text.split(/\s+/).filter(Boolean);
+  const command = (parts[0] || '').toLowerCase().replace(/@[\w_]+$/, '');
+  const done = reply => ({ ok: true, reply: reply, config: aiConfig_(input) });
+
+  if (!/^\/ai/.test(command)) return done('❓ Lệnh này không phải lệnh cấu hình AI.\n\n' + AI_HELP);
+  // `/ai` để xem, `/ai help` để xem cú pháp. Còn lại thì đọc tiếp từ parts[1]:
+  // Telegram gửi lệnh với dấu cách ("/ai add ...") nên phần phụ KHÔNG nằm trong
+  // parts[0] — trước đây gộp chung dẫn tới việc mọi lệnh con đều rơi về AI_HELP.
+  const rest = parts.slice(1);
+  if (!rest.length) return done(aiView_(input));
+  if (/^(help|huongdan|hd)$/i.test(rest[0])) return done(AI_HELP);
+
+  const sheet = aiSheet_(input && input.aiSheetId);
+  const data = rows_(sheet);
+  const header = data.header;
+  const aliasCol = cell_(header, 'Alias');
+  const activeCol = cell_(header, 'Active');
+  const urlCol = cell_(header, 'Base URL');
+  const modelCol = cell_(header, 'Model');
+  const keyCol = cell_(header, 'API Keys');
+  const stampCol = cell_(header, 'Updated At');
+  const byCol = cell_(header, 'Updated By');
+  const who = String(input.updatedBy || 'telegram').slice(0, 40);
+  const rowOf = alias => {
+    const index = find_(data.values, aliasCol, alias);
+    return index < 0 ? -1 : index + 2;
+  };
+  const touch = row => {
+    sheet.getRange(row, stampCol + 1).setValue(new Date());
+    sheet.getRange(row, byCol + 1).setValue(who);
+  };
+
+  // /ai key <alias> ...
+  const sub1 = String(rest[0] || '').toLowerCase();
+  if (sub1 === 'key' || sub1 === 'keys' || sub1 === 'apikey') {
+    const alias = String(rest[1] || '').trim();
+    const sub = String(rest[2] || '').toLowerCase();
+    if (!AI_ALIAS_PATTERN.test(alias)) return done('❌ Sai tên cấu hình: ' + (alias || '(trống)') + '\n\n' + AI_HELP);
+    const row = rowOf(alias);
+    if (row < 0) return done('❌ Chưa có cấu hình "' + alias + '". Thêm trước bằng /ai add ' + alias + ' <url> <model>');
+    const keys = aiKeys_(data.values[row - 2][keyCol]);
+    if (sub === 'list' || sub === 'ls') {
+      if (!keys.length) return done('🔑 ' + alias + ' chưa có key nào.\nThêm: /ai key ' + alias + ' add <key>');
+      return done('🔑 KEY CỦA ' + alias + ' (' + keys.length + ')\n' + keys.map((k, i) => (i + 1) + '. ' + aiMask_(k)).join('\n'));
+    }
+    if (sub === 'add') {
+      const key = String(rest[3] || '').trim();
+      if (!AI_KEY_PATTERN.test(key)) return done('❌ Key không hợp lệ. Dán đúng key, không có dấu cách.');
+      if (keys.indexOf(key) >= 0) return done('ℹ️ Key này đã có trong ' + alias + '.');
+      keys.push(key);
+      sheet.getRange(row, keyCol + 1).setValue(keys.join('\n'));
+      touch(row);
+      return done('✅ Đã thêm key cho ' + alias + ' (tổng ' + keys.length + ' key).\nGateway sẽ xoay vòng các key này, key hết quota bị tự loại tạm.');
+    }
+    if (sub === 'del' || sub === 'rm' || sub === 'remove') {
+      const index = parseInt(rest[3], 10);
+      if (!Number.isFinite(index) || index < 1 || index > keys.length) return done('❌ Số thứ tự không hợp lệ. Xem danh sách bằng /ai key ' + alias + ' list');
+      const removed = keys.splice(index - 1, 1)[0];
+      sheet.getRange(row, keyCol + 1).setValue(keys.join('\n'));
+      touch(row);
+      return done('🗑 Đã xoá key ' + index + ' (' + aiMask_(removed) + ') khỏi ' + alias + '. Còn ' + keys.length + ' key.');
+    }
+    if (sub === 'check') {
+      // Việc gọi nhà cung cấp để kiểm key là việc của Gateway (chỉ Gateway giữ
+      // key). GAS chỉ trả lời hướng dẫn, không tự gọi ra Internet.
+      return done('🔍 Bấm nút "🔍 Kiểm tra key" trong menu /ai — Gateway sẽ thử từng key và báo key nào còn dùng được.');
+    }
+    return done('❓ Không hiểu "key ' + sub + '".\n\n' + AI_HELP);
+  }
+
+  // /ai add <alias> <url> <model> — tạo mới, hoặc sửa url/model của alias cũ.
+  if (sub1 === 'add' || sub1 === 'new') {
+    const alias = String(rest[1] || '').trim();
+    if (!AI_ALIAS_PATTERN.test(alias)) return done('❌ Tên cấu hình chỉ gồm chữ/số và . _ - (tối đa 40 ký tự).\n\n' + AI_HELP);
+    let url, model;
+    try {
+      url = aiNormalizeUrl_(rest[2]);
+      model = aiNormalizeModel_(rest[3]);
+    } catch (error) {
+      return done('❌ ' + error.message + '\n\nCú pháp: /ai add ' + alias + ' <url> <model>\nVí dụ: /ai add chinh https://openrouter.ai/api/v1 stealth/space-bunny-alpha');
+    }
+    const row = rowOf(alias);
+    if (row > 0) {
+      // Sửa cấu hình cũ: giữ nguyên danh sách key đang chạy, chỉ đổi url/model.
+      sheet.getRange(row, urlCol + 1).setValue(url);
+      sheet.getRange(row, modelCol + 1).setValue(model);
+      touch(row);
+      return done('✏️ Đã cập nhật ' + alias + '.\nURL: ' + url + '\nModel: ' + model + '\nKey đang có: ' + aiKeys_(data.values[row - 2][keyCol]).length);
+    }
+    appendMapped_(sheet, {
+      'Alias': alias,
+      'Active': '',
+      'Base URL': url,
+      'Model': model,
+      'API Keys': '',
+      // Dòng mới luôn nằm CUỐI chuỗi dự phòng: cấu hình đang chạy không bị
+      // đổi chỉ vì admin thêm một dòng dự phòng.
+      'Order': nextOrder_(data),
+      'Updated At': new Date(),
+      'Updated By': who,
+    });
+    const saved = rows_(sheet);
+    const fresh = find_(saved.values, cell_(saved.header, 'Alias'), alias);
+    if (fresh >= 0) touch(fresh + 2);
+    return done('➕ Đã tạo cấu hình ' + alias + '.\nURL: ' + url + '\nModel: ' + model + '\n\nBước tiếp theo: thêm key rồi bật\n/ai key ' + alias + ' add <key>\n/ai use ' + alias);
+  }
+
+  // Các lệnh cần alias đã có.
+  const needAlias = () => {
+    const alias = String(rest[1] || '').trim();
+    if (!AI_ALIAS_PATTERN.test(alias)) throw new Error('Sai tên cấu hình: ' + (alias || '(trống)'));
+    const row = rowOf(alias);
+    if (row < 0) throw new Error('Chưa có cấu hình "' + alias + '"');
+    return { alias, row };
+  };
+
+  try {
+    if (sub1 === 'use' || sub1 === 'active' || sub1 === 'bat') {
+      const { alias, row } = needAlias();
+      // Chỉ một cấu hình được bật: dùng "Yes"/"" thay vì TRUE/FALSE để dễ đọc
+      // khi mở Sheet bằng tay.
+      for (let i = 0; i < data.values.length; i++) sheet.getRange(i + 2, activeCol + 1).setValue('');
+      sheet.getRange(row, activeCol + 1).setValue('Yes');
+      touch(row);
+      return done('✅ Đã bật cấu hình ' + alias + '. Mọi máy sẽ dùng cấu hình này ở lượt chat kế tiếp.');
+    }
+    if (sub1 === 'del' || sub1 === 'delete' || sub1 === 'rm') {
+      const { alias, row } = needAlias();
+      sheet.deleteRow(row);
+      return done('🗑 Đã xoá cấu hình ' + alias + '.\n\n' + aiView_(input));
+    }
+    if (sub1 === 'url' || sub1 === 'model') {
+      const { alias, row } = needAlias();
+      const value = rest.slice(2).join(' ');
+      try {
+        if (sub1 === 'url') sheet.getRange(row, urlCol + 1).setValue(aiNormalizeUrl_(value));
+        else sheet.getRange(row, modelCol + 1).setValue(aiNormalizeModel_(value));
+      } catch (error) {
+        return done('❌ ' + error.message);
+      }
+      touch(row);
+      const after = rows_(sheet);
+      const saved = after.values[row - 2];
+      return done('✏️ Đã cập nhật ' + alias + '.\nURL: ' + saved[cell_(after.header, 'Base URL')] + '\nModel: ' + saved[cell_(after.header, 'Model')] + '\nKey đang có: ' + aiKeys_(saved[cell_(after.header, 'API Keys')]).length);
+    }
+  } catch (error) {
+    return done('❌ ' + error.message + '\n\n' + AI_HELP);
+  }
+
+  return done('❓ Không hiểu "' + text + '".\n\n' + AI_HELP);
 }

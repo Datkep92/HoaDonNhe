@@ -47,11 +47,22 @@ async function callAI({ config, messages, tools, signal, structured = false, fet
       if (message.tool_calls) return { role: 'assistant', content: JSON.stringify({ type: 'tool_calls', calls: message.tool_calls }) };
       return message;
     }), stream: true, max_tokens: 4096,
+      ...(config.viaGateway&&config.conversationId?{metadata:{conversation_id:config.conversationId}}:{}),
       ...(native ? { tools, tool_choice: 'auto' } : {}),
     }),
   });
   if (structured) messages = [...messages, { role: 'system', content: 'Dùng JSON protocol. Tools được cấp: ' + JSON.stringify(tools) }];
   let response = await send(!structured);
+  for(let attempt=0;config.viaGateway&&response.status===503&&attempt<8;attempt++) {
+    const detail=await response.text();let data;try{data=JSON.parse(detail)}catch{}
+    if(data?.error?.code!=='HEALTH_CHECK_IN_PROGRESS'){response=new Response(detail,{status:response.status,headers:response.headers});break;}
+    await new Promise((resolve,reject)=>{const done=()=>{signal?.removeEventListener('abort',abort);resolve();};const timer=setTimeout(done,3000);const abort=()=>{clearTimeout(timer);reject(signal.reason||Object.assign(Error('Aborted'),{name:'AbortError'}));};if(signal?.aborted)abort();else signal?.addEventListener('abort',abort,{once:true});});
+    response=await send(!structured);
+  }
+  if(config.viaGateway&&response.ok) {
+    const revision=Number(response.headers.get('X-AI-Revision')),model=response.headers.get('X-AI-Model');
+    if(model&&Number.isSafeInteger(revision))config.onGatewayConfig?.({revision,model});
+  }
   // Capability fallback only for a rejected tool schema; never retry authentication/quota errors.
   if (response.status === 400 || response.status === 404) {
     const body = await response.text();

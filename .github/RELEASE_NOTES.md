@@ -1,51 +1,27 @@
-# CN Tax Tools v1.1.3 — ghi chú phát hành
+# CN Tax Tools v1.1.4
 
-> File này được commit vào repo nên CI luôn đọc được (thư mục `release/` bị .gitignore).
-> Cố ý **không** ghi SHA-256 ở đây: NSIS đóng timestamp nên mỗi lần build ra hash khác nhau.
-> Hash thật do `npm run installer` ghi vào `release/*.sha256`, workflow tính lại lúc build.
+## Có gì mới
 
-Bản này gom phần việc của kỳ refactor AI, đồng thời dọn kho và khôi phục landing page đang chạy.
+- Chat AI dùng Cloudflare làm nguồn cấu hình chung cho EXE và Telegram; có AUTO—Cloudflare và MANUAL—API riêng.
+- Quản lý URL → nhiều model → nhiều key bằng nút Telegram; thêm/sửa/xóa, thêm nhiều model, kiểm tra và xem lịch sử.
+- Deep health check, phân loại lỗi, resolver Chat Completions/Responses, tự chuyển dự phòng, cooldown, phục hồi, sticky conversation và cập nhật revision tại runtime.
+- Sửa nút Telegram không nhận callback và lỗi kết nối riêng của Cloudflare; model lỗi không làm mất key/cấu hình.
+- Copy URL/model; lấy key/full config riêng cho admin, không gửi full key vào group.
+- Chat có trạng thái đang xử lý, hỗ trợ ảnh/file, gọi công cụ và xuất Excel theo quyền đã cấp.
+- Giữ chức năng hiện có: tải hóa đơn nhiều MST, XML/PDF gốc, CAPTCHA/OCR, kho dữ liệu, tổng quan, sao kê/đối chiếu, xuất Excel/MISA, tra cứu MST/tờ khai, hỗ trợ và cập nhật ứng dụng.
 
-## Tính năng
+## Tải và cập nhật
 
-### Trợ lý AI chạy được trong app (đợt refactor lớn)
+- Cài mới: tải **CN-Tax-Tools-Setup-v1.1.4.exe**, chọn cài đặt hoặc portable.
+- Cập nhật thủ công/self-update: **CN-Tax-Tools-v1.1.4.exe** và file **.sha256** tương ứng.
+- Dữ liệu trong thư mục du_lieu được giữ theo cơ chế cập nhật hiện có. Yêu cầu Windows x64 và Chrome/Edge.
 
-`src/ai-bridge.js` cũ chỉ là một file khổng lồ, vỡ dần theo số tính năng. Nay tách thành **21 module** trong `src/ai/`:
+## Kiểm chứng và giới hạn
 
-| Nhóm | Module | Việc |
-| --- | --- | --- |
-| Lõi | `agent.js`, `tool-router.js`, `prompt.js` | vòng lặp agent, định tuyến lệnh, dựng prompt |
-| Công cụ | `tool-registry.js`, `fs-tools.js`, `db-tools.js`, `pdf-tools.js`, `cloud-tools.js` | đăng ký + chạy tool |
-| An toàn | `permission-engine.js`, `access-policy.js`, `audit-log.js`, `data-minimizer.js` | chặn ngoài vùng dữ liệu, giới hạn theo vai trò, ghi log, lọc dữ liệu gửi đi |
-| Sandbox | `safe-js.js` | chạy JS trong QuickJS thay vì `eval` trực tiếp |
-| Trạng thái | `session-store.js`, `context-manager.js`, `dataset-store.js`, `attachments.js` | hội thoại, ngữ cảnh, tập dữ liệu, tệp đính kèm |
-| Cấu hình | `config.js`, `identity.js`, `model-provider.js`, `openrouter-client.js` | đọc `.env`, định danh máy, gọi model |
+Bản phát hành qua bộ kiểm thử, xác minh tài nguyên, OCR và smoke của chính EXE, cùng kiểm tra giao diện bản đóng gói. Báo cáo chi tiết: CHATAI_CHECKLIST_FINAL_REPORT.md trong mã nguồn.
 
-Ba điểm an toàn đáng chú ý so với bản cũ:
+Kiểm thử cuối: **979 tests — 972 PASS, 0 FAIL, 7 SKIP**; EXE đủ **80/80** tài nguyên bắt buộc. Packaged browser, OCR và smoke đều PASS. Các mục SKIP không được tính PASS.
 
-1. **`safe-js` dùng QuickJS** (`quickjs-emscripten`) thay cho `eval`. Mã do AI sinh ra không chạy trực tiếp trên tiến trình Node của app.
-2. **`permission-engine` chặn vùng dữ liệu.** Tool đọc/ghi file và DB bị giới hạn theo danh sách đường dẫn được phép — không còn đường dẫn tự do.
-3. **`audit-log` ghi lại mọi lần gọi tool**, kể cả lần bị từ chối, để truy vết được AI đã đụng vào dữ liệu nào.
+Cloudflare thật đã chat và gọi health_ping thành công qua openrouter/free với key hiện tại. Model stealth/space-bunny-alpha trả MODEL_NOT_FOUND và được giữ lại để quản trị. Dịch vụ free đôi lúc trả rỗng/rate limit; cần cấu hình dự phòng còn quota để tăng độ ổn định.
 
-### `.env` không còn lọt lên git
-
-`.gitignore` chặn `.env` và `.env.*`; thêm `.env.example` làm mẫu (giá trị rỗng). Khóa API của người dùng giờ nằm ngoài repo.
-
-## Sửa lỗi / dọn dẹp
-
-### Khôi phục `landing-v4`
-
-`landing-v4` (trang đang phục vụ trên GitHub Pages) từng bị xoá khỏi cây làm việc trong lúc dọn dẹp. `.github/workflows/pages.yml` kiểm tra bắt buộc `landing-v4/index.html`, `.nojekyll`, `assets/css/style.css`, `assets/js/main.js` — thiếu thì workflow hỏng. Nay đã khôi phục nguyên vẹn.
-
-`landing-v2` và `landing-v3` (hai bản cũ không còn dùng) vẫn giữ ở trạng thái đã xoá.
-
-### Bỏ thư mục `KETOAN`
-
-Hai file mẫu `.xls`/`.xlsx` cũ. Bản mẫu dùng thật của app nằm ở `src/template/`.
-
-## Build và kiểm tra
-
-- **901 test: 894 pass, 0 fail, 7 skip.**
-- Thay `tests/ai-bridge.test.js` bằng `ai-agent`, `ai-files`, `ai-master` — tất cả nằm trong `npm test` (danh sách test được liệt kê tường minh trong `package.json` nên thêm file mới cũng không thể quên khai báo).
-- `tools/verify-exe.cjs` kiểm tra thêm phần runtime AI và 21 file `src/ai/` phải nằm trong EXE.
-- Build v1.1.3: `npm run build` → `release/CN-Tax-Tools-v1.1.3.exe`, đã tự kiểm 80/80 file nhúng, OCR đọc đúng ảnh mẫu, smoke-test `ui`/`api`/`aiRuntime` đều OK.
+Keyboard đã được Telegram API thật chấp nhận; thao tác nhấn/copy riêng trên điện thoại chưa được thử trực tiếp. Responses được kiểm tra bằng fixture; capability vision/reasoning/structured từ metadata chưa thay thế thử nghiệm provider thật. Python/shell tự do vẫn theo feature flag và quyền hiện có; bản này không tự bật các quyền đó.

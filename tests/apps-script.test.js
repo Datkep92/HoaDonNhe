@@ -52,6 +52,8 @@ function makeSheet(name, header, rows) {
   const values = [header.slice(), ...rows.map(row => row.slice())];
   return {
     getName: () => name,
+    // setupAiConfigSheet() đổi tên tab mặc định của Sheet mới tạo.
+    setName: value => { name = value; },
     getLastRow: () => values.length - 1,
     getDataRange: () => ({ getValues: () => values.map(row => row.slice()) }),
     getRange: (row, col, rows_, cols) => ({
@@ -92,7 +94,12 @@ function load(sheets, options = {}) {
   const sandbox = {
     PropertiesService: {
       getScriptProperties: () => ({
-        getProperty: name => (name === 'GATEWAY_SHARED_SECRET' ? (options.secret === undefined ? SECRET : options.secret) : null),
+        getProperty: name => {
+          if (name === 'GATEWAY_SHARED_SECRET') return options.secret === undefined ? SECRET : options.secret;
+          // Sheet cấu hình AI RIÊNG: script gọi openById() chứ không đụng Sheet CRM.
+          if (name === 'AI_CONFIG_SPREADSHEET_ID') return options.aiSheetId || null;
+          return null;
+        },
       }),
     },
     ContentService: {
@@ -100,6 +107,14 @@ function load(sheets, options = {}) {
       createTextOutput: text => ({ text, setMimeType() { return this; }, getContent() { return this.text; } }),
     },
     SpreadsheetApp: {
+      // Sheet AI riêng: mở bằng ID. Sai ID phải ném lỗi (không được rơi về Sheet
+      // CRM âm thầm — lúc đó admin tưởng đã lưu vào Sheet mới mà thực ra ghi
+      // nhầm chỗ, và key của bot nằm trong Sheet CRM).
+      openById: id => {
+        const found = options.aiSheets && options.aiSheets.get(id);
+        if (!found) throw new Error('Requested entity was not found.');
+        return { getSheetByName: name => found.get(name) || null };
+      },
       getActive: () => ({
         getSheetByName: name => byName.get(name) || null,
         // ensureTabs_() cần hai hàm này để dựng cấu trúc Sheet khi thiếu.
@@ -127,6 +142,9 @@ function load(sheets, options = {}) {
   };
   vm.createContext(sandbox);
   vm.runInContext(SOURCE, sandbox, { filename: 'Code.gs' });
+  // Một số hàm (ví dụ tạo Sheet) chạy trong môi trường thật với API riêng; test
+  // ghi đè đúng phần đó thay vì để hàm gọi nhầm sang Sheet CRM của test.
+  for (const [name, value] of Object.entries(options.extraSandbox || {})) sandbox[name] = value;
   return sandbox;
 }
 
@@ -261,14 +279,16 @@ test('license_status: thiết bị chưa có trong Sheet trả value (không m�
 // chỉ lộ ra khi khách đăng ký.
 // ---------------------------------------------------------------------------
 
-test('Sheet trống hoàn toàn: tự tạo đủ 4 tab và ghi tiêu đề cột', () => {
+test('Sheet trống hoàn toàn: tự tạo đủ 5 tab và ghi tiêu đề cột', () => {
   const ctx = load([makeSheet('Sheet1', ['cột rác'], [])]);   // Sheet mới tạo có 1 tab rác
   const res = post(ctx, { gatewaySecret: SECRET, action: 'register_device', machineId: MACHINE, installationId: MACHINE, chatRoomId: MACHINE_ROOM, hardwareHash: '' });
 
   assert.equal(res.ok, true, JSON.stringify(res));
   assert.equal(res.value.registered, true);
   const tabs = ctx.SpreadsheetApp.getActive().getSheets().map(s => s.getName()).sort();
-  assert.deepEqual(tabs, ['Bindings', 'Devices', 'Licenses', 'Settings'], 'phải tự tạo đủ tab và dọn tab rác');
+  // AI_PROFILES nằm trong danh sách vì /ai là lệnh TOÀN CỤC của admin: thiếu tab
+  // này thì mọi lệnh /ai đều fail, mà lúc đó CRM đã chạy ổn.
+  assert.deepEqual(tabs, ['AI_PROFILES', 'Bindings', 'Devices', 'Licenses', 'Settings'], 'phải tự tạo đủ tab và dọn tab rác');
 });
 
 test('tab vừa tạo phải có đủ cột bắt buộc, không thiếu ô nào', () => {
@@ -715,6 +735,308 @@ test('admin_command: /extend cập nhật cả Devices và Licenses; /lock rồi
 
   post(ctx, { gatewaySecret: SECRET, action: 'admin_command', chatRoomId: DEVICE.chatRoomId, text: '/unlock' });
   assert.equal(devices.__values[1][3], 'Active');
+});
+
+// ---------------------------------------------------------------------------
+// CẤU HÌNH AI QUA TELEGRAM (/ai) — admin đổi url/model/API key không cần sửa code.
+// Ranh giới quan trọng nhất: chỉ Gateway (đã qua khoá gatewaySecret) được đọc key;
+// app không bao giờ nhận key qua bất kỳ action nào.
+// ---------------------------------------------------------------------------
+const AI_HEADERS = ['Alias', 'Active', 'Base URL', 'Model', 'API Keys', 'Order', 'Updated At', 'Updated By'];
+const AI_URL = 'https://openrouter.ai/api/v1';
+const AI_MODEL = 'stealth/space-bunny-alpha';
+const KEY_ONE = 'sk-or-test-key-0000000001';
+const KEY_TWO = 'sk-or-test-key-0000000002';
+
+// Phải nhận CHÍNH sheet AI để test đọc lại được dữ liệu đã ghi (makeSheet giữ
+// mảng values bên trong; dựng sheet riêng ở đây sẽ khiến assert đọc sai bản).
+function aiCtx(rows = [], ai = makeSheet('AI_PROFILES', AI_HEADERS, rows)) {
+  const ctx = load([
+    makeSheet('Devices', DEVICE_HEADERS, []),
+    makeSheet('Licenses', LICENSE_HEADERS, []),
+    ai,
+  ]);
+  return { ctx, ai };
+}
+
+// Bối cảnh có Sheet AI RIÊNG (Script Property trỏ tới) — đúng cách cấu hình
+// được khuyến nghị: key nằm ngoài Sheet CRM.
+function aiSheetCtx(rows = []) {
+  const ai = makeSheet('PROFILES', [], rows);
+  const crm = makeSheet('AI_PROFILES', AI_HEADERS, []);
+  const ctx = load([
+    makeSheet('Devices', DEVICE_HEADERS, []),
+    makeSheet('Licenses', LICENSE_HEADERS, []),
+    crm,
+  ], { aiSheetId: 'sheet-ai-rieng', aiSheets: new Map([['sheet-ai-rieng', new Map([['PROFILES', ai]])]]) });
+  return { ctx, ai, crm };
+}
+const aiAdmin = (ctx, text) => post(ctx, { gatewaySecret: SECRET, action: 'ai_admin', text, updatedBy: 'telegram' });
+
+test('/ai add tạo cấu hình và /ai key add thêm nhiều key để xoay vòng', () => {
+  const { ctx, ai } = aiCtx();
+  const added = aiAdmin(ctx, '/ai add chinh ' + AI_URL + ' ' + AI_MODEL);
+  assert.equal(added.ok, true, JSON.stringify(added));
+  assert.equal(ai.__values.length, 2, 'phải thêm đúng một dòng cấu hình');
+  assert.equal(cellAt(ai, 2, 'Alias'), 'chinh');
+  assert.equal(cellAt(ai, 2, 'Base URL'), AI_URL);
+  assert.equal(cellAt(ai, 2, 'Model'), AI_MODEL);
+  assert.equal(cellAt(ai, 2, 'Updated By'), 'telegram');
+
+  aiAdmin(ctx, '/ai key chinh add ' + KEY_ONE);
+  aiAdmin(ctx, '/ai key chinh add ' + KEY_TWO);
+  assert.equal(cellAt(ai, 2, 'API Keys').split('\n').length, 2, 'phải lưu được nhiều key trong một ô');
+
+  // Gateway đọc cấu hình: đủ url + model + 2 key, và key trả VỀ TOÀN BỘ (Gateway
+  // cần để gọi AI; app thì không bao giờ gọi action này).
+  const config = post(ctx, { gatewaySecret: SECRET, action: 'ai_config' });
+  assert.equal(config.ok, true);
+  assert.equal(config.value.active, 'chinh', 'chưa /ai use thì lấy dòng dùng được đầu tiên');
+  assert.deepEqual(config.value.profiles[0].keys, [KEY_ONE, KEY_TWO]);
+});
+
+test('/ai use bật đúng một cấu hình; /ai del xoá và báo lại danh sách', () => {
+  const { ctx, ai } = aiCtx();
+  aiAdmin(ctx, '/ai add chinh ' + AI_URL + ' ' + AI_MODEL);
+  aiAdmin(ctx, '/ai key chinh add ' + KEY_ONE);
+  aiAdmin(ctx, '/ai add duphong https://api.du-phong.example/v1 ' + AI_MODEL);
+  aiAdmin(ctx, '/ai key duphong add ' + KEY_TWO);
+
+  const used = aiAdmin(ctx, '/ai use duphong');
+  assert.equal(used.ok, true);
+  assert.equal(post(ctx, { gatewaySecret: SECRET, action: 'ai_config' }).value.active, 'duphong');
+  // Chỉ một dòng được bật: bật lại 'chinh' thì 'duphong' phải tắt.
+  aiAdmin(ctx, '/ai use chinh');
+  const marked = ai.__values.slice(1).filter(row => /^(yes|1|true)$/i.test(String(row[1] || '').trim()));
+  assert.equal(marked.length, 1, 'chỉ được có đúng một cấu hình bật');
+
+  const deleted = aiAdmin(ctx, '/ai del duphong');
+  assert.equal(deleted.ok, true);
+  assert.equal(ai.__values.filter(row => String(row[0] || '').trim() === 'duphong').length, 0, 'phải xoá hẳn dòng');
+});
+
+test('/ai url và /ai model chỉ sửa đúng một phần, giữ nguyên key đang chạy', () => {
+  const { ctx, ai } = aiCtx();
+  aiAdmin(ctx, '/ai add chinh ' + AI_URL + ' ' + AI_MODEL);
+  aiAdmin(ctx, '/ai key chinh add ' + KEY_ONE);
+  aiAdmin(ctx, '/ai key chinh add ' + KEY_TWO);
+
+  aiAdmin(ctx, '/ai url chinh https://api.moi.example/v1');
+  aiAdmin(ctx, '/ai model chinh ten/model-moi');
+  assert.equal(cellAt(ai, 2, 'Base URL'), 'https://api.moi.example/v1');
+  assert.equal(cellAt(ai, 2, 'Model'), 'ten/model-moi');
+  assert.equal(cellAt(ai, 2, 'API Keys').split('\n').length, 2, 'đổi url/model không được mất key');
+});
+
+test('/ai key del xoá đúng thứ tự; key sai dạng thì từ chối', () => {
+  const { ctx, ai } = aiCtx();
+  aiAdmin(ctx, '/ai add chinh ' + AI_URL + ' ' + AI_MODEL);
+  aiAdmin(ctx, '/ai key chinh add ' + KEY_ONE);
+  aiAdmin(ctx, '/ai key chinh add ' + KEY_TWO);
+  aiAdmin(ctx, '/ai key chinh add ' + KEY_ONE); // trùng: phải báo chứ không nhân bản
+
+  assert.equal(cellAt(ai, 2, 'API Keys').split('\n').length, 2, 'key trùng không được thêm lần hai');
+  const bad = aiAdmin(ctx, '/ai key chinh add co khoang trong');
+  assert.equal(bad.ok, true);
+  assert.match(bad.value.reply, /không hợp lệ/i, 'key có dấu cách phải bị từ chối');
+  assert.equal(cellAt(ai, 2, 'API Keys').split('\n').length, 2, 'key hỏng không được ghi vào Sheet');
+
+  aiAdmin(ctx, '/ai key chinh del 1');
+  assert.equal(cellAt(ai, 2, 'API Keys').split('\n')[0], KEY_TWO, 'xoá key thứ nhất phải còn lại key thứ hai');
+  const out = aiAdmin(ctx, '/ai key chinh del 9');
+  assert.match(out.value.reply, /không hợp lệ/i);
+});
+
+test('URL không phải https thì từ chối — Gateway chạy ở Cloudflare nên localhost vô nghĩa', () => {
+  const { ctx, ai } = aiCtx();
+  for (const url of ['http://openrouter.ai/api/v1', 'localhost:11434/v1', 'ftp://x.example/v1']) {
+    const res = aiAdmin(ctx, '/ai add chinh ' + url + ' ' + AI_MODEL);
+    assert.equal(res.ok, true);
+    assert.match(res.value.reply, /https/i, url + ': phải bị từ chối');
+  }
+  assert.equal(ai.__values.length, 1, 'không cấu hình hỏng nào được ghi vào Sheet');
+});
+
+test('ai_admin / ai_config là lệnh TOÀN CỤC: không đòi mã máy, nhưng vẫn phải có secret', () => {
+  const { ctx } = aiCtx();
+  assert.equal(post(ctx, { gatewaySecret: 'sai', action: 'ai_admin', text: '/ai' }).ok, false);
+  assert.equal(post(ctx, { gatewaySecret: 'sai', action: 'ai_config' }).ok, false, 'sai secret thì không được đọc key');
+  const res = post(ctx, { gatewaySecret: SECRET, action: 'ai_admin', text: '/ai' });
+  assert.equal(res.ok, true);
+  assert.ok(res.value.config, 'phải trả kèm cấu hình để Gateway dùng ngay');
+  assert.equal(res.value.reply.includes(KEY_ONE), false, 'reply trong Telegram không được lộ key');
+});
+
+test('bảng xem /ai hiện trạng thái và che giữa key, không in key thật', () => {
+  const { ctx, ai } = aiCtx();
+  aiAdmin(ctx, '/ai add chinh ' + AI_URL + ' ' + AI_MODEL);
+  aiAdmin(ctx, '/ai key chinh add ' + KEY_ONE);
+  const view = aiAdmin(ctx, '/ai');
+  assert.match(view.value.reply, /1 key/);
+  const listed = aiAdmin(ctx, '/ai key chinh list');
+  assert.equal(listed.value.reply.includes(KEY_ONE), false, 'danh sách key phải che giữa');
+  assert.match(listed.value.reply, /\.\.\./, 'phải có dấu hiệu đã che');
+});
+
+// Sheet cấu hình AI RIÊNG: lệnh /ai phải ghi vào đó, tuyệt đối không đụng tab
+// AI_PROFILES của Sheet CRM — nếu rò sang Sheet CRM thì khi chia sẻ Sheet đó cho
+// kế toán, API key của bot cũng bị lộ theo.
+test('có Script Property thì cấu hình AI nằm ở Sheet riêng, không ghi vào Sheet CRM', () => {
+  const { ctx, ai, crm } = aiSheetCtx();
+  assert.equal(aiAdmin(ctx, '/ai add chinh ' + AI_URL + ' ' + AI_MODEL).ok, true);
+  aiAdmin(ctx, '/ai key chinh add ' + KEY_ONE);
+
+  assert.equal(cellAt(ai, 2, 'Alias'), 'chinh', 'phải ghi vào Sheet AI riêng');
+  assert.equal(cellAt(ai, 2, 'API Keys'), KEY_ONE);
+  assert.equal(crm.__values.length, 1, 'Sheet CRM không được thêm dòng AI nào');
+
+  // Sheet AI tạo tay có thể thiếu cột: script phải tự thêm, không chết.
+  assert.ok(ai.__values[0].includes('Order'), 'phải tự thêm cột Order');
+  assert.ok(ai.__values[0].includes('Alias'));
+});
+
+// Mock phải nhớ trạng thái thật: sau khi insertSheet/đổi tên thì getSheetByName
+// phải trả về tab đó. Mock "vô trạng thái" sẽ khiến script tạo trùng tab — lỗi
+// chỉ có ở test, ở Sheets thật thì không.
+test('Sheet riêng không có tab nào thì tự tạo tab PROFILES, không ghi nhầm về Sheet CRM', () => {
+  const created = [];
+  let current = null;
+  const doc = {
+    getSheetByName: () => current,
+    getSheets: () => (current ? [current] : []),
+    insertSheet: name => { current = makeSheet(name, [], []); created.push(current); return current; },
+  };
+  const crm = makeSheet('AI_PROFILES', AI_HEADERS, []);
+  const ctx = load([makeSheet('Devices', DEVICE_HEADERS, []), makeSheet('Licenses', LICENSE_HEADERS, []), crm], {
+    aiSheetId: 'sheet-sai',
+    aiSheets: new Map([['sheet-sai', new Map()]]),
+    extraSandbox: { SpreadsheetApp: {
+      openById: () => doc,
+      getActive: () => ({ getSheetByName: name => (name === 'AI_PROFILES' ? crm : null) }),
+    } },
+  });
+  const res = aiAdmin(ctx, '/ai add chinh ' + AI_URL + ' ' + AI_MODEL);
+  assert.equal(res.ok, true, JSON.stringify(res));
+  assert.equal(created.length, 1, 'phải tự tạo đúng một tab, không tạo trùng');
+  assert.equal(created[0].getName(), 'PROFILES');
+  assert.equal(cellAt(created[0], 2, 'Alias'), 'chinh');
+  assert.equal(crm.__values.length, 1, 'Sheet CRM không được ghi dòng AI nào');
+});
+
+test('cột Order quyết định thứ tự dự phòng, dòng mới luôn nằm cuối', () => {
+  const { ctx, ai } = aiCtx([
+    ['chinh', 'Yes', AI_URL, AI_MODEL, KEY_ONE, 10, '', ''],
+    ['duphong', '', AI_URL, AI_MODEL, KEY_TWO, 20, '', ''],
+  ]);
+  const before = post(ctx, { gatewaySecret: SECRET, action: 'ai_config' }).value.profiles.map(p => p.alias);
+  assert.deepEqual(before, ['chinh', 'duphong']);
+  assert.deepEqual(post(ctx, { gatewaySecret: SECRET, action: 'ai_config' }).value.profiles.map(p => p.order), [10, 20]);
+
+  aiAdmin(ctx, '/ai add third https://api.third.example/v1 model-3');
+  const after = post(ctx, { gatewaySecret: SECRET, action: 'ai_config' }).value.profiles;
+  assert.deepEqual(after.map(p => p.alias), ['chinh', 'duphong', 'third'], 'dòng mới phải nằm cuối chuỗi');
+  assert.equal(Number(cellAt(ai, 4, 'Order')), 30);
+});
+
+test('/ai key <tên> check chỉ hướng dẫn bấm nút, không tự gọi ra Internet', () => {
+  const { ctx, ai } = aiCtx();
+  aiAdmin(ctx, '/ai add chinh ' + AI_URL + ' ' + AI_MODEL);
+  aiAdmin(ctx, '/ai key chinh add ' + KEY_ONE);
+  const res = aiAdmin(ctx, '/ai key chinh check');
+  assert.equal(res.ok, true);
+  assert.match(res.value.reply, /nút/i, 'phải hướng dẫn dùng nút Kiểm tra key');
+  assert.equal(cellAt(ai, 2, 'API Keys'), KEY_ONE, 'lệnh check không được đụng vào key');
+});
+
+test('hai action AI không tạo tab CRM — chạy được cả khi script chưa gắn Sheet bản quyền', () => {
+  // Ngữ cảnh chỉ có Sheet cấu hình AI, KHÔNG có Devices/Licenses: đúng tình huống
+  // sau khi admin tách sang Sheet riêng mà script chưa gắn vào Sheet CRM.
+  const ai = makeSheet('PROFILES', [], []);
+  const ctx = load([ai], { aiSheetId: 'sheet-ai-rieng', aiSheets: new Map([['sheet-ai-rieng', new Map([['PROFILES', ai]])]]) });
+  assert.equal(aiAdmin(ctx, '/ai add chinh ' + AI_URL + ' ' + AI_MODEL).ok, true, '/ai phải chạy được không cần Sheet CRM');
+  assert.equal(post(ctx, { gatewaySecret: SECRET, action: 'ai_config' }).ok, true, 'ai_config phải chạy được không cần Sheet CRM');
+  // Lệnh bản quyền thì vẫn tự dựng tab CRM (cơ chế tự phục hồi sẵn có), chứ
+  // không liên quan gì tới việc tách Sheet cấu hình AI ra riêng.
+  assert.equal(post(ctx, { gatewaySecret: SECRET, action: 'license_status', ...DEVICE }).ok, true, 'lệnh CRM vẫn tự tạo tab thiếu');
+});
+
+test('sai secret thì kể cả /ai cũng không được đụng vào Sheet cấu hình', () => {
+  const { ctx, ai } = aiCtx();
+  const res = post(ctx, { gatewaySecret: 'sai', action: 'ai_admin', text: '/ai add chinh ' + AI_URL + ' ' + AI_MODEL });
+  assert.equal(res.ok, false);
+  assert.equal(ai.__values.length, 1, 'không được ghi gì khi thiếu secret');
+});
+
+test('setupAiConfigSheet tạo Sheet riêng, đặt Script Property và ghi đủ tiêu đề', () => {
+  // SpreadsheetApp.create() chỉ có trong môi trường thật; ở đây giả lập để kiểm
+  // logic: tạo đúng 1 tab tên PROFILES, ghi tiêu đề, và trỏ property.
+  const created = [];
+  const properties = {};
+  const doc = {
+    __sheets: [makeSheet('Sheet1', [], [])],
+    getSheets() { return this.__sheets; },
+    deleteSheet(sheet) { this.__sheets = this.__sheets.filter(item => item !== sheet); },
+    getId() { return 'sheet-id-moi'; },
+    getUrl() { return 'https://docs.google.com/spreadsheets/d/sheet-id-moi/edit'; },
+  };
+  const ctx = load([], { extraSandbox: {
+    SpreadsheetApp: {
+      create: name => { created.push(name); return doc; },
+      getActive: () => null,
+    },
+    PropertiesService: {
+      getScriptProperties: () => ({ getProperty: key => (key === 'GATEWAY_SHARED_SECRET' ? SECRET : properties[key] || null), setProperty: (key, value) => { properties[key] = value; } }),
+    },
+  } });
+
+  const result = ctx.setupAiConfigSheet();
+  assert.equal(result.created, true);
+  assert.equal(created.length, 1, 'phải tạo đúng một Sheet');
+  assert.equal(doc.__sheets.length, 1, 'chỉ được còn một tab');
+  assert.equal(doc.__sheets[0].getName(), 'PROFILES', 'tab phải tên đúng PROFILES');
+  assert.deepEqual(doc.__sheets[0].__values[0], ['Alias', 'Active', 'Base URL', 'Model', 'API Keys', 'Order', 'Updated At', 'Updated By']);
+  assert.equal(properties.AI_CONFIG_SPREADSHEET_ID, 'sheet-id-moi', 'phải tự trỏ Script Property vào Sheet mới');
+  assert.match(result.url, /sheet-id-moi/);
+
+  // Chạy lần hai không được tạo thêm Sheet (tránh rác trong Drive khi bấm nhầm Run).
+  const again = ctx.setupAiConfigSheet();
+  assert.equal(again.created, false);
+  assert.equal(created.length, 1, 'lần sau phải bỏ qua, không tạo Sheet thứ hai');
+});
+
+// Gateway không set được Script Property nên phải truyền ID Sheet theo request,
+// và script phải TỰ tạo/đổi tên tab PROFILES — nếu chỉ báo lỗi thì admin phải
+// tự tạo tab bằng tay trước khi dùng được /ai.
+test('Sheet riêng còn trống thì tự đổi tên tab thành PROFILES và ghi tiêu đề', () => {
+  const blank = makeSheet('Sheet1', [], []);
+  const doc = {
+    getSheetByName: name => (name === blank.getName() ? blank : null),
+    getSheets: () => [blank],
+    insertSheet: () => { throw new Error('không được tạo tab mới khi đã có tab rỗng'); },
+  };
+  const ctx = load([], { aiSheetId: 'sheet-moi', aiSheets: new Map([['sheet-moi', new Map([['PROFILES', null]])]]), extraSandbox: { SpreadsheetApp: {
+    openById: id => (id === 'sheet-moi' ? doc : null),
+    getActive: () => null,
+  } } });
+
+  const res = aiAdmin(ctx, '/ai add chinh ' + AI_URL + ' ' + AI_MODEL);
+  assert.equal(res.ok, true, JSON.stringify(res));
+  assert.equal(blank.getName(), 'PROFILES', 'phải đổi tên tab rỗng thành PROFILES');
+  assert.equal(blank.__values[0][0], 'Alias', 'phải ghi hàng tiêu đề');
+  assert.equal(cellAt(blank, 2, 'Alias'), 'chinh');
+});
+
+// Không trỏ Sheet riêng thì vẫn phải chạy được: tự tạo tab AI_PROFILES trong
+// Sheet CRM thay vì báo lỗi buộc admin phải tự tạo bằng tay.
+test('không có Sheet riêng thì tự tạo tab AI_PROFILES trong Sheet CRM', () => {
+  const devices = makeSheet('Devices', DEVICE_HEADERS, []);
+  const licenses = makeSheet('Licenses', LICENSE_HEADERS, []);
+  const ctx = load([devices, licenses]);
+  const res = aiAdmin(ctx, '/ai add chinh ' + AI_URL + ' ' + AI_MODEL);
+  assert.equal(res.ok, true, JSON.stringify(res));
+  const created = ctx.SpreadsheetApp.getActive().getSheets().find(s => s.getName() === 'AI_PROFILES');
+  assert.ok(created, 'phải tự tạo tab AI_PROFILES');
+  assert.equal(cellAt(created, 2, 'Alias'), 'chinh');
 });
 
 test('mọi action thành công đều phải có trường value (không hàm nào quên return)', () => {

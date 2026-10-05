@@ -51,7 +51,7 @@
   window.addEventListener('resize', syncDock);
   window.addEventListener('blur', () => finishResize());
   syncDock();
-  let config = null, active = null, loading = null, switching = false, editing = null, stream = null;
+  let config = null, active = null, loading = null, editing = null, stream = null;
   let pendingFiles = []; const queue = [];
   for (const id of ['ai-web', 'ai-python']) {
     try { const value = localStorage.getItem(id); if (value !== null) $(id).checked = value === 'true'; } catch {}
@@ -117,6 +117,23 @@
     markMode();
   }
   function markMode() { $('chat-modes').querySelectorAll('[data-mode]').forEach(button => button.setAttribute('aria-pressed', String(button.dataset.mode === (active?.id || 'support')))); }
+  // Vẽ giao diện cho một chế độ. Tách riêng khỏi selectMode() để bấm nút đổi
+  // giao diện ngay, còn phần hỏi máy chủ chạy sau; khi phần sau lỗi thì gọi lại
+  // hàm này với chế độ cũ để quay về đúng trạng thái trước đó.
+  function applyMode(next) {
+    active = next;
+    const cloudAvailable = !!active && /^https:\/\/openrouter\.ai\/api\/v1\/?$/.test(active.baseURL);
+    $('ai-web').disabled = !cloudAvailable;
+    $('ai-python').disabled = !config?.flags?.generated_python_enabled;
+    if ($('ai-python').disabled) $('ai-python').checked = false;
+    panel.classList.toggle('is-ai', !!active);
+    for (const [el, hidden] of initialHidden) el.hidden = active ? true : hidden;
+    $('ai-mode-label').hidden = !active;
+    $('ai-mode-label').textContent = active ? active.label + ' · ' + (config.companyId === 'GLOBAL' ? 'Tài liệu chung' : 'MST ' + config.companyId) : '';
+    $('ai-workspace').hidden = !active;
+    $('ai-thread').hidden = !active; $('ai-form').hidden = !active;
+    markMode();
+  }
   async function loadConfig() {
     if (!loading) loading = call('/api/ai/providers').then(value => { config = value; $('ai-legacy').hidden = !value.legacyHistoryAvailable; drawModes(); }).finally(() => { loading = null; });
     return loading;
@@ -224,30 +241,36 @@
     if (active?.id !== id) return;
     $('ai-thread').replaceChildren(); rows.forEach(row => { const text = message(row.role, row.content); attachmentNames(text.parentElement, row.attachments); for (const file of row.files || []) attachFile(text.parentElement, file); });
   }
+  let switchToken = 0, persistActive = Promise.resolve();
+  // Gửi các lần ghi "chế độ đang chọn" theo đúng thứ tự bấm: xếp hàng trên một
+  // chuỗi promise để lần bấm sau luôn ghi đè lần bấm trước trên máy chủ.
+  function queueActive(id) {
+    persistActive = persistActive.catch(() => {}).then(() => call('/api/ai/providers', { action: 'active', id }));
+    return persistActive;
+  }
   async function selectMode(id) {
-    if (switching) return;
-    switching = true;
+    // Mỗi lần bấm sinh một token. Kết quả tải về của lần bị bấm đè sau sẽ bị bỏ
+    // qua (token cũ) nên không ghi đè giao diện của chế độ mới hơn.
+    const token = ++switchToken;
+    // Rất hiếm: nút chế độ AI chỉ tồn tại sau khi cấu hình đã tải. Nếu chưa có thì
+    // phải hỏi trước, không có cách nào vẽ giao diện tức thì trong trường hợp này.
+    if (id !== 'support' && !config) { try { await loadConfig(); } catch (e) { error(e.message); return; } }
+    const next = id === 'support' ? null : config.providers.find(p => p.id === id);
+    if (id !== 'support' && !next) { error('Chế độ AI không còn tồn tại.'); return; }
+    const previous = active;
+    stream?.abort(); cancelQueue(); clearPending(); $('ai-status').textContent = ''; error('');
+    applyMode(next);
     try {
-      if (id !== 'support') {
-        await loadConfig();
-        config = await call('/api/ai/providers', { action: 'active', id });
-      }
-      const next = id === 'support' ? null : config.providers.find(p => p.id === id);
-      if (id !== 'support' && !next) throw new Error('Chế độ AI không còn tồn tại.');
-      stream?.abort(); cancelQueue(); clearPending(); active = next; $('ai-status').textContent = '';
-      const cloudAvailable = !!active && /^https:\/\/openrouter\.ai\/api\/v1\/?$/.test(active.baseURL);
-      $('ai-web').disabled = !cloudAvailable;
-      $('ai-python').disabled = !config?.flags?.generated_python_enabled;
-      if ($('ai-python').disabled) $('ai-python').checked = false;
-      panel.classList.toggle('is-ai', !!active);
-      for (const [el, hidden] of initialHidden) el.hidden = active ? true : hidden;
-      $('ai-mode-label').hidden = !active; $('ai-mode-label').textContent = active ? active.label + ' · ' + (config.companyId === 'GLOBAL' ? 'Tài liệu chung' : 'MST ' + config.companyId) : '';
-      $('ai-workspace').hidden = !active;
-      $('ai-thread').hidden = !active; $('ai-form').hidden = !active;
-      markMode(); error('');
-      if (active) await drawHistory();
-    } catch (e) { error(e.message); }
-    finally { switching = false; }
+      if (id !== 'support') config = await queueActive(id);
+      if (token !== switchToken) return;
+      if (active) { $('ai-status').textContent = 'Đang tải lịch sử chat…'; await drawHistory(); }
+    } catch (e) {
+      // Lỗi của lần bấm đã bị bấm đè thì bỏ qua: chế độ mới hơn đang chạy nên không
+      // báo lỗi của việc cũ, cũng không kéo giao diện về lùi.
+      if (token === switchToken) { error(e.message); applyMode(previous); }
+    } finally {
+      if (token === switchToken && !stream) $('ai-status').textContent = '';
+    }
   }
   window.addEventListener('hd:state', event => {
     if (!config || !active || !Object.hasOwn(event.detail || {}, 'selected')) return;
@@ -266,13 +289,19 @@
   }));
   function draft() {
     const type = $('ai-provider-type').value;
+    const auto=editing==='agent'&&$('ai-routing-mode').value==='auto';
+    const saved=config.providers.find(p=>p.id===editing)||window.AiProviders.defaults()[0];
     return { id: editing || 'ai-' + crypto.randomUUID(), label: $('ai-provider-label').value, type,
-      baseURL: $('ai-provider-url').value, model: $('ai-provider-model').value || 'default' };
+      baseURL: auto?saved.baseURL:$('ai-provider-url').value, model: auto?saved.model:$('ai-provider-model').value || 'default',routingMode:editing==='agent'?$('ai-routing-mode').value:'manual' };
   }
   function fields() {
     const type = $('ai-provider-type').value;
-    $('ai-key-label').hidden = type !== 'openai';
-    $('ai-provider-model').required = true;
+    const auto=editing==='agent'&&$('ai-routing-mode').value==='auto';
+    $('ai-routing-label').hidden=editing!=='agent';
+    $('ai-key-label').hidden = auto||type !== 'openai';
+    $('ai-provider-url').closest('label').hidden=auto;
+    $('ai-provider-api').hidden=auto;
+    $('ai-provider-model').required = !auto;$('ai-provider-url').required=!auto;
   }
   async function openEditor(p) {
     try {
@@ -280,6 +309,7 @@
       $('ai-provider-form').reset();
       $('ai-provider-label').value = p?.label || '';
       $('ai-provider-type').value = p?.type || 'openai';
+      $('ai-routing-mode').value=p?.routingMode||'manual';
       $('ai-provider-url').value = p?.baseURL || 'https://openrouter.ai/api/v1';
       $('ai-provider-model').value = p?.model || 'stealth/space-bunny-alpha';
       $('ai-provider-key').placeholder = p?.hasKey ? 'Đã lưu key; để trống để giữ lại' : '';
@@ -299,6 +329,7 @@
     $('ai-provider-model').value = type === 'local' ? 'qwen2.5' : 'stealth/space-bunny-alpha';
     $('ai-provider-key').value = ''; $('ai-model-list').replaceChildren();
   });
+  $('ai-routing-mode').addEventListener('change',fields);
   async function editorAction(button, work) {
     button.disabled = true; $('ai-provider-error').textContent = '';
     try { await work(); } catch (e) { $('ai-provider-error').textContent = e.message; } finally { button.disabled = false; }
@@ -313,7 +344,7 @@
     event.preventDefault();
     void editorAction($('ai-provider-save'), async () => {
       const p = draft(); window.AiProviders.normalizeProvider(p);
-      config = await call('/api/ai/providers', { provider: p, apiKey: $('ai-provider-key').value, clearKey: $('ai-clear-key').checked });
+      config = await call('/api/ai/providers', { provider: p, apiKey: p.routingMode==='auto'?undefined:$('ai-provider-key').value, clearKey: p.routingMode==='auto'?false:$('ai-clear-key').checked });
       drawModes(); $('ai-provider-dialog').close(); await selectMode(p.id);
     });
   });
@@ -344,7 +375,9 @@
     if (active !== p) { output.textContent = 'Đã hủy tin nhắn chờ.'; void drainQueue(); return; }
     const controller = new AbortController(); stream = controller;
     $('ai-send').textContent = 'Gửi tiếp'; $('ai-stop').hidden = false;
-    let completed = false;
+    let completed = false,workingFrame=0;
+    output.setAttribute('aria-busy','true');
+    const working=setInterval(()=>{if(output.getAttribute('aria-busy')==='true')output.textContent='AI đang xử lý'+'.'.repeat(1+(workingFrame++%3));},500);
     try {
       const attachments = [];
       for (const file of selected) {
@@ -366,19 +399,20 @@
           const line = buffer.slice(0, boundary); buffer = buffer.slice(boundary + 2);
           if (!line.startsWith('data: ')) continue;
           const data = JSON.parse(line.slice(6));
-          if (data.reset) { answer = ''; output.textContent = 'Đang xử lý…'; }
-          if (typeof data.replace === 'string') { answer = data.replace; renderText(output, answer); }
+          if (data.reset) { answer = '';output.setAttribute('aria-busy','true');output.textContent = 'Đang xử lý…'; }
+          if (typeof data.replace === 'string') { output.setAttribute('aria-busy','false');answer = data.replace; renderText(output, answer); }
           if (data.error) throw new Error(data.error);
           if (data.status && active === p) $('ai-status').textContent = data.status;
           if (data.file) attachFile(output.parentElement, data.file);
           if (data.approval_required) approvalCard(output.parentElement, data.approval_required, p);
-          if (data.delta) { answer += data.delta; renderText(output, answer); $('ai-thread').scrollTop = $('ai-thread').scrollHeight; }
-          if (data.done) completed = true;
+          if (data.delta) { output.setAttribute('aria-busy','false');answer += data.delta; renderText(output, answer); $('ai-thread').scrollTop = $('ai-thread').scrollHeight; }
+          if (data.done) {completed = true;if(p.routingMode==='auto'&&data.cloudModel){p.cloudModel=data.cloudModel;p.configRevision=data.configRevision;$('ai-mode-label').textContent=p.label+' · AUTO · '+p.cloudModel+' · rev '+p.configRevision;}}
         }
       }
       if (!completed) throw new Error('Kết nối bị ngắt trước khi AI trả lời xong.');
     } catch (e) { if (active === p) { output.textContent = e.name === 'AbortError' ? 'Đã dừng trả lời.' : 'Không hoàn tất: ' + e.message; error(e.name === 'AbortError' ? 'Đã dừng trả lời.' : e.message); } }
     finally {
+      clearInterval(working);output.setAttribute('aria-busy','false');
       output.parentElement.querySelectorAll('.ai-approval button,.ai-approval select').forEach(el => { el.disabled = true; });
       if (!completed) controller.abort();
       if (stream === controller) { stream = null; $('ai-send').textContent = 'Gửi'; $('ai-stop').hidden = true; }

@@ -24,10 +24,14 @@
     value.baseURL = url.href.replace(/\/$/, '');
     value.model = String(input.model || '').trim();
     if (!value.model || value.model.length > 200) throw new Error('Chưa nhập model hợp lệ.');
+    if(input.routingMode!==undefined) {
+      if(!['auto','manual'].includes(input.routingMode))throw new Error('Chế độ cấu hình AI không hợp lệ.');
+      value.routingMode=input.id==='agent'?input.routingMode:'manual';
+    }
     return value;
   }
   function defaults() {
-    return [{ id: 'agent', label: 'CNTaxTools', type: 'openai', baseURL: 'https://openrouter.ai/api/v1', model: 'stealth/space-bunny-alpha' }];
+    return [{ id: 'agent', label: 'CNTaxTools', type: 'openai', baseURL: 'https://openrouter.ai/api/v1', model: 'stealth/space-bunny-alpha',routingMode:'auto' }];
   }
   return { LOOPBACK, parseBaseUrl, normalizeProvider, defaults };
 });

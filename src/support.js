@@ -248,6 +248,18 @@ class SupportStore {
     return url.replace(/\/$/, '');
   }
 
+  // Đường gọi AI qua Gateway: app KHÔNG cầm API key, Gateway lo url/model/key và
+  // tự xoay key khi hết hạn mức (admin đặt bằng lệnh /ai trên Telegram).
+  // Chỉ dựng khi có cả URL lẫn token phiên — thiếu token thì để app dùng cấu hình
+  // cục bộ như cũ, không dựng đường nửa vời rồi hỏng lúc chat.
+  aiGateway() {
+    let base = '';
+    try { base = this.gatewayUrl(); } catch { base = ''; }
+    const token = this.data.license.sessionToken;
+    if (!base || !token) return null;
+    return { baseURL: base.replace(/\/$/, '') + '/v1/ai/chat/completions', configURL:base.replace(/\/$/,'')+'/v1/ai/config', token };
+  }
+
   gateway(pathname, payload, authorize = false) {
     const base = this.gatewayUrl(); if (!base) return null;
     const target = new URL(pathname, base); const transport = target.protocol === 'https:' ? https : http; const body = JSON.stringify(payload);

@@ -1,6 +1,66 @@
 # Cloudflare Workers Free Gateway
 
-This is the no-billing deployment target for the support Gateway. Create a Worker from the Cloudflare dashboard, paste `src/index.js`, and set the non-secret variables from `wrangler.jsonc`.
+## Telegram AI manager v2
+
+`AI_ADMIN_V2_ENABLED=1` enables `/ai` with URL → model → key navigation.
+Only administrators/creator of `TELEGRAM_CHAT_ID` may operate it. Old inline
+buttons open the new tree. Typed legacy editing commands show navigation rather
+than updating a different store silently. Replies are bound to the administrator,
+the exact prompt message, topic, and a ten-minute expiry. `/cancel` clears a prompt.
+
+The first open imports all legacy profiles from Apps Script into a separate
+encrypted Firebase record at `/aiAdmin/v2/config`. The original Sheet remains
+unchanged. This new record is the source of truth while v2 is enabled. AES-GCM
+uses a key derived from `TOKEN_SECRET`; preserve this secret and re-encrypt the
+record deliberately before rotating it. Firebase ETag compare-and-swap prevents
+simultaneous admins/check jobs from overwriting each other's changes. Audit entries
+contain action, administrator ID and timestamp, never raw keys. Key input messages
+are deleted after saving; the bot reports if Telegram denies deletion.
+
+Buttons support add/edit/delete at each level, labels, enable/disable, priority,
+active model, check selected subtree/all keys, and a confirmed one-token model
+test that may be billed by the provider. Deletions bind to a fresh configuration
+revision and expire after two minutes. Lists paginate at eight children per page.
+Limits: 20 URLs, 30 models/URL, 30 keys/model, 500 keys total.
+
+Navigation updates a single persisted panel per Telegram topic with
+`editMessageText`, including check progress/results and confirmations. Only
+typed-input prompts require a new message; prompts and answered inputs are
+cleaned up afterward. Missing/deleted panels are recreated, unchanged panels
+do not produce duplicate messages. Key Status and Help use short Telegram
+alert popups (`answerCallbackQuery`, 200 characters). These alerts are read-only;
+editing uses the inline buttons and a bound reply prompt.
+
+Each URL has editable Chat, Models and Key endpoints. Defaults are
+`/chat/completions`, `/models` and `/key`, appended to the API base URL.
+An absolute HTTPS endpoint is accepted only on the same origin as that URL;
+keys cannot be redirected to a different host through an endpoint edit.
+Entering `-` restores a default. The panel displays resolved endpoint URLs.
+Base URLs accidentally ending with `/chat/completions`, `/models`, or `/key`
+are normalized when resolving paths. Endpoint changes clear previous cooldowns
+and ignore in-flight checks against the old route.
+
+Checks run in batches of three with an encrypted persisted cursor/lease and HMAC
+authenticated Worker continuations. Interrupted jobs expose Resume. `/models`
+success on a generic provider is labelled model-list only; public catalogs do not
+prove that a key is valid, or that credit/model access exists. OpenRouter `/key` supplies key spending
+limit and expiry, which is distinct from the account's total balance. A paid model
+test needs a separate exact, one-use confirmation.
+
+Runtime tries enabled keys of the selected model, remaining models of that URL,
+then other URLs. Shared 401/402 credentials skip all models at the same URL;
+model-scoped 403/429 may still try a different model. Persisted cooldowns: quota
+15 minutes, authentication 24 hours, unavailable model 5 minutes, URL transport/
+server failure 30 seconds. Manual Check or replacing a key can restore eligibility.
+Each chat tries at most 40 candidates to fit Worker subrequest limits. Exhaustion
+returns an explicit error; it does not promise service when all providers fail.
+Fallback happens before forwarding the response stream; it never replays an
+already forwarded stream. API endpoints must use OpenAI-compatible chat APIs.
+
+Validate locally: `npm run test:ai-admin`. Deploy with `wrangler deploy`; retain
+the webhook subscription to both `message` and `callback_query`.
+
+This is the no-billing deployment target for the support Gateway. Prefer CLI deployment with `wrangler deploy`, which bundles both `src/index.js` and `src/ai-admin.js`. A manual dashboard upload must include both modules; pasting only the main file is insufficient. Set the non-secret variables from `wrangler.jsonc`.
 
 Add these as **Secrets**, never as plain variables:
 
@@ -11,6 +71,50 @@ Add these as **Secrets**, never as plain variables:
 - `TELEGRAM_WEBHOOK_SECRET`
 
 After deployment, use the Worker URL as `url` in `release/du_lieu/support-gateway.json`. Register Telegram webhook at `https://<worker>/v1/telegram/webhook` with `TELEGRAM_WEBHOOK_SECRET`.
+
+For the `/ai` inline buttons, webhook registration must include
+`allowed_updates: ["message", "callback_query"]`. Registering only `message`
+lets typed commands work but Telegram never delivers button clicks. Omitting
+`allowed_updates` on a later `setWebhook` call preserves the previous filter;
+deploying the Worker alone does not fix it. Verify the subscription with
+`getWebhookInfo`. Preserve the existing URL and secret, and do not drop pending
+updates when repairing this filter.
+
+## AI router v3 — registry chung cho Telegram và EXE
+
+Bật `AI_ADMIN_V2_ENABLED=1` và `AI_ROUTER_V3_ENABLED=1` bằng cấu hình Wrangler hiện tại.
+Triển khai bằng `npx wrangler deploy` để bundle các module `index.js`, `ai-admin.js` và
+`ai-routing.js`. Registry mã hóa lưu trong Firebase; cập nhật bằng ETag/CAS, không lưu
+key trong response metadata gửi cho EXE.
+
+`/ai` mở cây URL → model → key. Admin có thể thêm nhiều model (phân cách bằng xuống dòng,
+dấu phẩy, chấm phẩy hoặc khoảng trắng), deep test, bật/tắt, xem lịch sử và copy URL/model.
+Lấy full key/full config chỉ gửi qua DM sau khi kiểm tra quyền admin, không gửi vào group.
+Deep test có xác nhận vì có thể tốn quota; job chạy từng key và có lease/continuation.
+Thêm cấu hình không lập tức phát hành: router phải xác minh chat và capability cần thiết.
+
+Mỗi tổ hợp URL/model/key có trạng thái riêng: protocol/endpoint đã resolve, capabilities,
+health score, latency, lỗi gần nhất, failure count, cooldown và circuit breaker.
+Lỗi model không làm key bị xóa. Lỗi auth/quota của cùng credential được chia sẻ giữa
+model phù hợp; timeout tạm thời được thử lại. Cấu hình circuit OPEN hết cooldown được
+retest với lease Firebase để nhiều isolate không cùng chạy deep check.
+
+Router ưu tiên cấu hình đang khỏe, ngữ cảnh sticky và lastKnownGood; chỉ tăng revision
+khi cần đổi cấu hình toàn cục. Failover giữ messages/tool outputs. Không retry sau khi
+đã chuyển bytes stream tới client. Giới hạn số lần thử/discovery và thời gian resolver
+giúp tránh vượt ngân sách subrequest của Worker.
+
+`GET /v1/ai/config` cần session/license như AI proxy; trả metadata active/revision, không
+trả key. Chat trả `X-AI-Revision` và `X-AI-Model`. EXE AUTO cập nhật ở runtime; MANUAL
+dùng cấu hình riêng, giữ các giá trị đã lưu. Telegram có typing; EXE có loading.
+
+Resolver hỗ trợ Chat Completions và Responses, tránh `/v1/v1`. Với Responses, adapter
+dùng phản hồi hoàn chỉnh rồi đóng gói SSE tương thích; `nativeStream` không được đánh
+true. Vision/reasoning/structured phát hiện từ metadata nếu có, chưa thay thế thử nghiệm
+ảnh/schema thật. Một completion rỗng hoặc SSE error không được đánh healthy chỉ vì HTTP 200.
+
+Kiểm tra: `npm run test:ai-admin`, `npm run test:ai`, `npm test` tại thư mục dự án.
+Xem `../CHATAI_CHECKLIST_FINAL_REPORT.md` để biết kết quả live, EXE và giới hạn xác minh.
 
 ## Deploy without the dashboard (API)
 

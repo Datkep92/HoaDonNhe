@@ -37,6 +37,8 @@ const ENV = {
   TELEGRAM_CHAT_ID: '-100123',
   TELEGRAM_BOT_TOKEN: 'test-bot-token',
   TELEGRAM_WEBHOOK_SECRET: 'test-webhook-secret',
+  // Sheet cấu hình AI riêng; Worker phải chuyển ID này xuống Apps Script.
+  AI_CONFIG_SHEET_ID: 'test-ai-sheet-id',
   FIREBASE_SERVICE_ACCOUNT_JSON: JSON.stringify({
     client_email: 'svc@test.iam.gserviceaccount.com',
     private_key: PRIVATE_PEM,
@@ -45,11 +47,11 @@ const ENV = {
 };
 
 let worker;
-const calls = { firebase: [], gas: [], telegram: [] };
+const calls = { firebase: [], gas: [], telegram: [], ai: [] };
 
 // handler cho từng hệ thống; test gán lại qua setBackend()
 let backend = {};
-function setBackend(next) { backend = next || {}; calls.firebase.length = 0; calls.gas.length = 0; calls.telegram.length = 0; }
+function setBackend(next) { backend = next || {}; calls.firebase.length = 0; calls.gas.length = 0; calls.telegram.length = 0; calls.ai = []; }
 
 const jsonResponse = (value, status = 200) => new Response(JSON.stringify(value), { status, headers: { 'Content-Type': 'application/json' } });
 
@@ -96,6 +98,19 @@ function installFetchStub() {
       calls.firebase.push({ method: options.method || 'GET', path, body });
       const handler = backend.firebase;
       if (typeof handler === 'function') return toResponse(handler(path, options.method || 'GET', body));
+      return jsonResponse(handler === undefined ? null : handler);
+    }
+
+    // Nhà cung cấp AI giả. Ghi lại TỪNG request (Authorization + body) vì phần
+    // lớn hành vi cần kiểm của proxy nằm ở đây: dùng key nào, model nào, và có
+    // thử key khác khi key hết hạn mức hay không.
+    if (target.startsWith('https://ai.test/')) {
+      let payload = null;
+      try { payload = options.body ? JSON.parse(options.body) : null; } catch { payload = options.body || null; }
+      calls.ai = calls.ai || [];
+      calls.ai.push({ url: target, authorization: String((options.headers || {}).Authorization || ''), body: payload });
+      const handler = backend.ai;
+      if (typeof handler === 'function') return toResponse(handler(target, String((options.headers || {}).Authorization || ''), payload));
       return jsonResponse(handler === undefined ? null : handler);
     }
 
@@ -313,6 +328,64 @@ const webhook = (text, headers = {}) => worker.fetch(new Request('https://gatewa
   headers: { 'Content-Type': 'application/json', 'X-Telegram-Bot-Api-Secret-Token': 'test-webhook-secret', ...headers },
   body: JSON.stringify({ message: { message_id: 1, from: { id: 1, is_bot: false }, message_thread_id: 10, date: Math.floor(Date.now() / 1000), text } }),
 }), ENV);
+
+// NÚT BẤM của /ai: Telegram gửi callback_query (không có `message`).
+const tap = (data, threadId = 10) => worker.fetch(new Request('https://gateway.test/v1/telegram/webhook', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json', 'X-Telegram-Bot-Api-Secret-Token': 'test-webhook-secret' },
+  body: JSON.stringify({ callback_query: { id: 'cb-1', from: { id: 1, is_bot: false }, data, message: { message_thread_id: threadId } } }),
+}), ENV);
+
+// flat(2): inline_keyboard là [hàng][nút]; muốn danh sách NÚT thì phải mở
+// cả hai tầng, nếu không sẽ ra danh sách hàng và mất hết chữ trên nút.
+// Tin nhắn của admin. `replyTo` = đang trả lời đúng tin bot đã hỏi.
+const say = (text, options = {}) => worker.fetch(new Request('https://gateway.test/v1/telegram/webhook', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json', 'X-Telegram-Bot-Api-Secret-Token': 'test-webhook-secret' },
+  body: JSON.stringify({ message: { message_id: 2, from: { id: 1, is_bot: false }, message_thread_id: options.threadId || 10, date: Math.floor(Date.now() / 1000), text, ...(options.replyTo ? { reply_to_message: { message_id: options.replyTo } } : {}) } }),
+}), ENV);
+
+const sentKeyboards = () => calls.telegram.map(c => (c.body && c.body.reply_markup && c.body.reply_markup.inline_keyboard) || []).filter(rows => rows.length);
+
+test('V2 webhook wiring migrates actual legacy config through encrypted Firebase CAS and checks admin', async () => {
+  let stored = null, revision = 0;
+  ENV.AI_ADMIN_V2_ENABLED = '1';
+  setBackend({
+    gas: { active: 'legacy', profiles: [{ alias: 'legacy', baseURL: 'https://ai.test/v1', model: 'legacy/model', keys: ['legacy-secret-key-123'] }] },
+    firebase: (url, method, body) => {
+      if (!url.includes('/aiAdmin/v2/config.json')) return null;
+      if (method === 'PUT') { stored = body; revision++; return {}; }
+      return new Response(JSON.stringify(stored), { headers: { 'Content-Type': 'application/json', ETag: '"' + revision + '"' } });
+    },
+    telegram: url => ({ ok: true, result: url.endsWith('/getChatMember') ? { status: 'administrator' } : { message_id: 42 } }),
+  });
+  try {
+    const response = await worker.fetch(new Request('https://gateway.test/v1/telegram/webhook', {
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Telegram-Bot-Api-Secret-Token': ENV.TELEGRAM_WEBHOOK_SECRET },
+      body: JSON.stringify({ message: { chat: { id: ENV.TELEGRAM_CHAT_ID }, from: { id: 1 }, text: '/ai', message_thread_id: 10 } }),
+    }), ENV, { waitUntil() {} });
+    assert.equal(response.status, 200);
+    assert.equal(stored.version, 2); assert.equal(JSON.stringify(stored).includes('legacy-secret-key-123'), false);
+    assert.ok(calls.telegram.some(c => c.url.endsWith('/getChatMember')));
+    assert.ok(calls.telegram.some(c => c.body.text?.includes('1 URL · 1 model · 1 key')));
+  } finally { delete ENV.AI_ADMIN_V2_ENABLED; }
+});
+
+test('AI callback xác nhận trước khi đọc Sheet và vẫn trả lời khi callback hết hạn', async () => {
+  setBackend({
+    gas: () => {
+      assert.ok(calls.telegram.some(c => c.url.endsWith('/answerCallbackQuery')), 'phải xác nhận trước khi gọi Apps Script');
+      return { active: '', profiles: [] };
+    },
+    telegram: url => url.endsWith('/answerCallbackQuery')
+      ? new Response(JSON.stringify({ ok: false, description: 'Bad Request: query is too old and response timeout expired or query ID is invalid' }), { status: 400 })
+      : { ok: true, result: {} },
+  });
+  const response = await tap('ai:refresh');
+  assert.equal(response.status, 200);
+  assert.equal(calls.telegram.filter(c => c.url.endsWith('/answerCallbackQuery')).length, 1);
+  assert.ok(calls.telegram.some(c => c.url.endsWith('/sendMessage') && c.body.text.includes('Đã tải lại')));
+});
 
 test('webhook: /new cấp key xong thì đẩy key sang app của khách', async () => {
   setBackend({
@@ -568,6 +641,27 @@ test('REGRESSION: /check đơn thuần vẫn là lệnh của máy đang mở to
   assert.equal(gasCalled('find_by_phone'), 0, '/check không được tra SĐT');
 });
 
+// /lock, /unlock, /reset đã có test ở tầng Apps Script, nhưng chưa test MỨC
+// Gateway — mà đây mới là tầng quyết định lệnh có tới được Sheet không và có
+// ghi bản ghi nhớ để app nhận ra ngay không.
+test('/lock, /unlock, /reset đi qua admin_command và ghi bản ghi nhớ cho app', async () => {
+  for (const command of ['/lock', '/unlock', '/reset']) {
+    setBackend({
+      firebase: path => (path.includes('/telegramTopics/') ? { chatRoomId: ROOM } : null),
+      gas: { found: true, status: 'Active', reply: 'xong ' + command },
+      telegram: url => (url.includes('getUpdates') ? null : new Response(JSON.stringify({ ok: true, result: {} }), { status: 200 })),
+    });
+    const r = await webhook(command);
+    assert.equal(r.status, 200, command);
+    assert.equal(gasCalled('admin_command'), 1, command + ' phải gọi admin_command');
+    const asked = calls.gas.find(c => c.action === 'admin_command');
+    assert.equal(asked.command, command, 'phải chuyển đúng tên lệnh');
+    assert.equal(asked.chatRoomId, ROOM, 'phải kèm phòng chat của topic');
+    assert.ok(calls.firebase.some(c => c.method === 'PUT' && c.path.includes('/license')), command + ': phải ghi bản ghi nhớ cho app');
+    assert.ok(sentText().includes('xong ' + command), command + ': phải trả lời trong topic');
+  }
+});
+
 test('REGRESSION: khách tự tra SĐT người khác trong app là bị chặn', async () => {
   // CUSTOMER_COMMANDS chỉ có /check và /info — app không được dò SĐT người khác.
   const src = fs.readFileSync(WORKER_PATH, 'utf8');
@@ -595,4 +689,338 @@ test('phiên không khớp thiết bị thì bị từ chối trước khi đụ
   const r = await post('/v1/chats/status', { machineId: MACHINE, installationId: UUID, chatRoomId: ROOM }, { Authorization: 'Bearer sai.chuoi.token' });
   await expectJsonError(r, 'chats/status với token hỏng');
   assert.equal(calls.firebase.length, 0);
+});
+
+// ---------------------------------------------------------------------------
+// PROXY AI — url/model/key do admin đặt bằng /ai trên Telegram; app không cầm key.
+// Rủi ro lớn nhất: lộ key ra ngoài, và key hết hạn mức làm sập AI của khách.
+// ---------------------------------------------------------------------------
+const AI_ALIAS = 'chinh';
+
+function aiConfigRows(alias = AI_ALIAS, keys = ['sk-or-test-key-0001', 'sk-or-test-key-0002'], model = 'model-do-admin-dat') {
+  return {
+    active: alias,
+    profiles: [{ alias, active: true, baseURL: 'https://ai.test/v1', model, keys }],
+  };
+}
+
+// Lấy token phiên thật từ Worker: /v1/ai bắt buộc token hợp lệ, token tự chế thì
+// vô dụng — nên test phải đi đúng đường cấp token.
+async function aiToken(status = 'Active') {
+  setBackend({ gas: { status, expiryAt: '2099-12-31', trial: false } });
+  const r = await post('/v1/sync', { machineId: MACHINE, installationId: UUID, chatRoomId: ROOM });
+  return JSON.parse(await r.text()).value.sessionToken;
+}
+
+// Đổi cấu hình AI trong bộ nhớ của Worker theo ĐÚNG đường production: admin gõ
+// lệnh /ai. Worker có bản ghi nhớ cấu hình (để khỏi gọi Apps Script mỗi lượt
+// chat), nên test không được lách qua nó bằng cách giả thẳng giá trị — nếu không
+// thì test sẽ xanh trong khi bản ghi nhớ thật lại hỏng.
+async function useAiConfig(rows) {
+  setBackend({
+    firebase: () => null,
+    gas: payload => (payload.action === 'ai_admin' ? { reply: '✅ Đã cập nhật cấu hình AI.', config: rows } : { devices: [] }),
+    telegram: () => ({ ok: true, result: { message_id: 1 } }),
+  });
+  await webhook('/ai');
+}
+const aiPost = (token, body) => worker.fetch(new Request(WORKER_URL + '/v1/ai/chat/completions', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: 'Bearer ' + token } : {}) },
+  body: JSON.stringify(body || { model: 'client-model', messages: [{ role: 'user', content: 'chào' }] }),
+}), ENV);
+
+test('proxy AI đổi model của client sang model admin đặt, và key không bao giờ lộ ra app', async () => {
+  const token = await aiToken();
+  await useAiConfig(aiConfigRows());
+  setBackend({ ai: () => new Response('data: {"choices":[{"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n\n', { status: 200, headers: { 'Content-Type': 'text/event-stream' } }) });
+
+  const r = await aiPost(token);
+  const body = await r.text();
+  assert.equal(r.status, 200, body);
+  assert.match(body, /"content":"ok"/, 'phải trả nguyên stream của nhà cung cấp về app');
+  assert.equal(calls.ai.length, 1);
+  assert.equal(calls.ai[0].body.model, 'model-do-admin-dat', 'model phải do admin quyết, không phải model client gửi lên');
+  assert.equal(body.includes('sk-or-test-key-0001'), false, 'key tuyệt đối không được trả về app');
+  assert.equal((r.headers.get('Content-Type') || '').includes('text/event-stream'), true, 'giữ nguyên kiểu stream để app đọc như cũ');
+});
+
+test('key hết hạn mức thì tự thử key khác, và lượt sau không quay lại key chết', async () => {
+  const token = await aiToken();
+  await useAiConfig(aiConfigRows(AI_ALIAS, ['sk-or-key-mot', 'sk-or-key-con-du']));
+  // Worker xáo trộn key nên không thể giả định key nào được thử trước. Cách duy
+  // nhất để kiểm chắc chắn đường "hết hạn mức ⇒ tự đổi key": làm LẦN THỬ ĐẦU của
+  // mỗi lượt chat trả lỗi hết hạn mức, các lần sau trả bình thường.
+  let attempt = 0;
+  setBackend({
+    ai: () => {
+      attempt++;
+      if (attempt === 1) return new Response('{"error":{"message":"insufficient credits"}}', { status: 402 });
+      return new Response('data: [DONE]\n\n', { status: 200, headers: { 'Content-Type': 'text/event-stream' } });
+    },
+  });
+
+  const first = await aiPost(token);
+  assert.equal(first.status, 200, 'key hết hạn mức không được làm hỏng AI của khách');
+  await first.text();
+  assert.equal(calls.ai.length, 2, 'phải thử key thứ hai trong cùng lượt chat');
+  assert.notEqual(calls.ai[0].authorization, calls.ai[1].authorization, 'phải thử key khác, không lặp lại key vừa lỗi');
+
+  const second = await aiPost(token);
+  assert.equal(second.status, 200);
+  await second.text();
+  assert.equal(calls.ai.length, 3, 'lượt sau chỉ cần một key: key vừa hết hạn mức đã bị loại tạm');
+  assert.equal(calls.ai[2].authorization, calls.ai[1].authorization, 'lượt sau phải dùng key còn tốt');
+});
+
+test('lỗi KHÔNG phải hết hạn mức thì không đổi key vô ích — trả lỗi thật cho app', async () => {
+  const token = await aiToken();
+  await useAiConfig(aiConfigRows());
+  setBackend({ ai: () => new Response('model not found', { status: 404 }) });
+  const r = await aiPost(token);
+  assert.equal(r.status, 404, 'phải trả nguyên lỗi của nhà cung cấp');
+  assert.equal(calls.ai.length, 1, 'lỗi cấu hình thì đừng quay key làm cháy hạn mức key tốt');
+});
+
+test('REGRESSION: /v1/ai không có token phiên thì bị từ chối, không tiêu key của bạn', async () => {
+  await useAiConfig(aiConfigRows());
+  setBackend({ ai: () => { throw new Error('không được gọi AI'); } });
+  const r = await aiPost('');
+  assert.equal(r.status, 400);
+  await expectJsonError(r, 'ai không có token');
+  assert.equal(calls.ai.length, 0, 'tuyệt đối không gọi AI khi không có phiên');
+});
+
+test('bản quyền hết hạn/khoá thì /v1/ai bị chặn ở Gateway', async () => {
+  await useAiConfig(aiConfigRows());
+  for (const status of ['Expired', 'Locked']) {
+    const token = await aiToken(status);
+    setBackend({ ai: () => { throw new Error('không được gọi AI'); } });
+    const r = await aiPost(token);
+    assert.equal(r.status, 400, status + ': phải bị chặn');
+    assert.equal(calls.ai.length, 0, status + ': không được gọi AI');
+  }
+});
+
+test('cấu hình AI trên Sheet thiếu url/key thì báo lỗi rõ, không gọi mù lên internet', async () => {
+  const token = await aiToken();
+  await useAiConfig({ active: '', profiles: [{ alias: 'rong', active: false, baseURL: '', model: '', keys: [] }] });
+  setBackend({ ai: () => { throw new Error('không được gọi AI'); } });
+  const r = await aiPost(token);
+  assert.equal(r.status, 400);
+  assert.match((JSON.parse(await r.text()).error || ''), /cấu hình AI/i);
+  assert.equal(calls.ai.length, 0);
+});
+
+test('lệnh /ai trong Telegram gọi thẳng CRM và trả lời vào topic', async () => {
+  setBackend({
+    firebase: () => null,
+    gas: payload => (payload.action === 'ai_admin' ? { reply: '➕ Đã tạo cấu hình chinh.', config: aiConfigRows() } : { devices: [] }),
+    telegram: () => ({ ok: true, result: { message_id: 5 } }),
+  });
+  const r = await webhook('/ai add chinh https://ai.test/v1 model-do-admin-dat');
+  assert.equal(r.status, 200);
+  const asked = calls.gas.filter(c => c.action === 'ai_admin');
+  assert.equal(asked.length, 1, 'phải chuyển lệnh xuống CRM');
+  assert.match(asked[0].text, /\/ai add chinh/);
+  const sent = calls.telegram.map(c => String(c.body && c.body.text || '')).join('\n');
+  assert.match(sent, /Đã tạo cấu hình/, 'phải trả lời kết quả vào topic');
+});
+
+test('Worker truyền ID Sheet cấu hình AI xuống Apps Script (vì không set được Script Property qua CLI)', async () => {
+  setBackend({
+    firebase: () => null,
+    gas: payload => (payload.action === 'ai_admin' ? { reply: 'ok', config: aiConfigRows() } : { devices: [] }),
+    telegram: () => ({ ok: true, result: { message_id: 5 } }),
+  });
+  await webhook('/ai');
+  const asked = calls.gas.find(c => c.action === 'ai_admin');
+  assert.equal(asked.aiSheetId, ENV.AI_CONFIG_SHEET_ID || '', 'phải kèm aiSheetId từ secret của Gateway');
+});
+
+test('lệnh /ai chạy được cả khi topic chưa gắn máy nào (lệnh toàn cục)', async () => {
+  setBackend({
+    firebase: () => null,
+    gas: payload => (payload.action === 'ai_admin' ? { reply: '🤖 CẤU HÌNH AI\n...', config: aiConfigRows() } : { devices: [] }),
+    telegram: () => ({ ok: true, result: { message_id: 5 } }),
+  });
+  const r = await webhook('/ai');
+  assert.equal(r.status, 200);
+  assert.ok(calls.gas.some(c => c.action === 'ai_admin'), 'topic chưa gắn máy vẫn phải xem được cấu hình');
+});
+
+// ---------------------------------------------------------------------------
+// NÚT BẤM /ai — yêu cầu: admin thao tác bằng cách bấm, chỉ gõ tay cho giá trị mới.
+// ---------------------------------------------------------------------------
+test('/ai trả lời kèm menu nút bấm, không phải màn hình chữ toàn tên', async () => {
+  setBackend({
+    firebase: () => null,
+    gas: payload => (payload.action === 'ai_admin' ? { reply: '🤖 CẤU HÌNH AI', config: aiConfigRows() } : { devices: [] }),
+    telegram: () => ({ ok: true, result: { message_id: 5 } }),
+  });
+  await webhook('/ai');
+  const rows = sentKeyboards();
+  assert.ok(rows.length, 'phải có bàn phím nút bấm');
+  const labels = rows.flat(2).map(b => b.text).join(' | ');
+  for (const want of ['Cấu hình', 'Kiểm tra key', 'Thêm key', 'Thêm model', 'Hướng dẫn', 'Làm mới']) {
+    assert.match(labels, new RegExp(want), 'thiếu nút: ' + want);
+  }
+});
+
+test('bấm nút thao tác được: xem danh sách, bật, xoá key — đều không cần gõ lệnh', async () => {
+  await useAiConfig(aiConfigRows(AI_ALIAS, ['sk-or-test-key-0001', 'sk-or-test-key-0002']));
+  setBackend({ gas: payload => (payload.action === 'ai_admin' ? { reply: '✅ Đã bật.', config: aiConfigRows() } : { devices: [] }), telegram: () => ({ ok: true, result: { message_id: 5 } }) });
+
+  assert.equal((await tap('ai:list')).status, 200);
+  assert.match(sentText(), /CẤU HÌNH AI/);
+  assert.ok(calls.telegram.some(c => String(c.url || '').includes('answerCallbackQuery')), 'phải trả lời callback để Telegram không báo treo');
+
+  await tap('ai:use:' + AI_ALIAS);
+  assert.ok(calls.gas.some(c => c.action === 'ai_admin' && c.text === '/ai use ' + AI_ALIAS), 'nút Bật phải ra đúng lệnh');
+
+  await tap('ai:keydel:' + AI_ALIAS + ':2');
+  assert.ok(calls.gas.some(c => c.action === 'ai_admin' && c.text === '/ai key ' + AI_ALIAS + ' del 2'), 'nút xoá key phải xoá đúng thứ tự');
+});
+
+test('bấm Thêm key thì bot mới hỏi nhập, và tin trả lời đúng tin hỏi được dùng làm key', async () => {
+  await useAiConfig(aiConfigRows());
+  setBackend({ gas: payload => (payload.action === 'ai_admin' ? { reply: '✅ Đã thêm key (tổng 2 key).', config: aiConfigRows() } : { devices: [] }), telegram: () => ({ ok: true, result: { message_id: 77 } }) });
+
+  await tap('ai:addkey:' + AI_ALIAS);
+  assert.match(sentText(), /Gõ API key/, 'phải hỏi nhập key');
+  assert.ok(calls.telegram.some(c => c.body && c.body.force_reply), 'phải ép trả lời để tin nhập được hiểu là giá trị');
+
+  // Tin nhập giá trị (trả lời tin bot vừa hỏi): KHÔNG được rơi vào nhánh chat.
+  await say('sk-or-key-moi-123456', { replyTo: 77 });
+  assert.ok(calls.gas.some(c => c.action === 'ai_admin' && c.text === '/ai key ' + AI_ALIAS + ' add sk-or-key-moi-123456'), 'tin nhập phải thành lệnh thêm key');
+  assert.equal(calls.firebase.filter(c => c.method === 'POST' && c.path.includes('/messages')).length, 0, 'không được gửi tin này vào phòng chat khách');
+});
+
+test('REGRESSION: tin của khách trong topic không bị bot nuốt làm "key"', async () => {
+  await useAiConfig(aiConfigRows());
+  setBackend({ firebase: () => null, gas: payload => (payload.action === 'ai_admin' ? { reply: '✅ ok', config: aiConfigRows() } : { devices: [] }), telegram: () => ({ ok: true, result: { message_id: 77 } }) });
+
+  await tap('ai:addkey:' + AI_ALIAS);       // bot hỏi "gõ key vào đây"
+  // Khách vô tình nhắn trong cùng topic, KHÔNG phải trả lời tin của bot.
+  await say('cho tôi hỏi hoá đơn tháng này');
+  assert.equal(calls.gas.filter(c => c.action === 'ai_admin').length, 0, 'tin thường của khách không được thành lệnh /ai');
+});
+
+test('sau khi nhập xong thì tin thường trở lại bình thường, không bị nuốt nhầm', async () => {
+  await useAiConfig(aiConfigRows());
+  setBackend({ gas: payload => (payload.action === 'ai_admin' ? { reply: '✅ Đã thêm key.', config: aiConfigRows() } : { devices: [] }), telegram: () => ({ ok: true, result: { message_id: 77 } }) });
+  await tap('ai:addkey:' + AI_ALIAS);
+  await say('sk-or-key-moi-123456', { replyTo: 77 });
+  await say('tin nhắn thường của khách');
+  assert.equal(calls.gas.filter(c => c.action === 'ai_admin').length, 1, 'tin thường phải rơi xuống luồng chat, không thành lệnh /ai');
+});
+
+// ---------------------------------------------------------------------------
+// CHUỖI DỰ PHÒNG: hết key -> model cùng URL -> URL khác.
+// Rủi ro lớn: chỉ đổi tên model mà vẫn gọi model chết, khiến cả chuỗi vô dụng.
+// ---------------------------------------------------------------------------
+test('các nút còn lại của menu /ai đều phản hồi đúng: giúp đỡ, làm mới, xem dòng, xem key, chọn thêm key, xoá', async () => {
+  await useAiConfig(aiConfigRows());
+  // gas phải trả CẢ cấu hình cho action ai_config: nút "Làm mới" đọc lại Sheet,
+  // mock chỉ trả { devices: [] } sẽ làm bản ghi nhớ bị xoá sạch rồi các nút sau
+  // báo "không còn cấu hình" — test xanh giả.
+  const gasAi = rows => payload => (payload.action === 'ai_admin' ? { reply: '✅ xong.', config: rows } : payload.action === 'ai_config' ? rows : { devices: [] });
+  const telegramOk = () => ({ ok: true, result: { message_id: 5 } });
+
+  setBackend({ gas: gasAi(aiConfigRows()), telegram: telegramOk });
+  await tap('ai:help');
+  assert.match(sentText(), /\/ai add/, 'nút Hướng dẫn phải ra cú pháp');
+  assert.ok(sentKeyboards().length, 'phải kèm menu quay lại');
+
+  setBackend({ gas: gasAi(aiConfigRows()), telegram: telegramOk });
+  await tap('ai:refresh');
+  assert.ok(calls.gas.some(c => c.action === 'ai_config'), 'nút Làm mới phải đọc lại Sheet, không dùng bản ghi nhớ cũ');
+
+  setBackend({ gas: gasAi(aiConfigRows()), telegram: telegramOk });
+  await tap('ai:prof:' + AI_ALIAS);
+  assert.match(sentText(), /URL: https:\/\/ai\.test/, 'phải hiện chi tiết của dòng');
+  assert.equal(sentKeyboards().flat(2).some(b => b.callback_data === 'ai:use:' + AI_ALIAS), true, 'phải có nút Bật cho dòng này');
+
+  setBackend({ gas: gasAi(aiConfigRows()), telegram: telegramOk });
+  await tap('ai:keys:' + AI_ALIAS);
+  const keyRows = sentKeyboards().flat(2).filter(b => String(b.callback_data || '').startsWith('ai:keydel:'));
+  assert.equal(keyRows.length, 2, 'phải có nút xoá cho TỪNG key');
+  assert.equal(sentText().includes('sk-or-test-key-0001'), false, 'không được in key thật trên nút');
+
+  setBackend({ gas: gasAi(aiConfigRows()), telegram: telegramOk });
+  await tap('ai:keypick');
+  assert.equal(sentKeyboards().flat(2).some(b => b.callback_data === 'ai:addkey:' + AI_ALIAS), true, 'phải cho chọn dòng để thêm key');
+
+  setBackend({ gas: gasAi(aiConfigRows()), telegram: telegramOk });
+  await tap('ai:del:' + AI_ALIAS);
+  assert.ok(calls.gas.some(c => c.action === 'ai_admin' && c.text === '/ai del ' + AI_ALIAS), 'nút Xoá phải ra lệnh xoá đúng tên');
+});
+
+test('nút ➕ Thêm model hỏi lần lượt tên → url → model rồi mới ghi', async () => {
+  await useAiConfig(aiConfigRows());
+  setBackend({ gas: payload => (payload.action === 'ai_admin' ? { reply: '➕ Đã tạo cấu hình.', config: aiConfigRows() } : { devices: [] }), telegram: () => ({ ok: true, result: { message_id: 88 } }) });
+
+  await tap('ai:new');
+  assert.match(sentText(), /tên cấu hình/, 'bước 1 phải hỏi tên');
+
+  await say('backup', { replyTo: 88 });
+  assert.match(sentText(), /địa chỉ API/, 'bước 2 phải hỏi URL');
+
+  await say('https://api.backup.example/v1', { replyTo: 88 });
+  assert.match(sentText(), /tên model/, 'bước 3 phải hỏi model');
+
+  await say('model-dup-phong', { replyTo: 88 });
+  assert.ok(calls.gas.some(c => c.action === 'ai_admin' && c.text === '/ai add backup https://api.backup.example/v1 model-dup-phong'), 'phải gộp đủ ba bước thành một lệnh');
+});
+
+test('nút bấm ở nơi không phải topic thì chỉ trả lời, không gửi tin rác', async () => {
+  await useAiConfig(aiConfigRows());
+  setBackend({ telegram: () => ({ ok: true, result: { message_id: 5 } }) });
+  const r = await tap('ai:menu', 0);
+  assert.equal(r.status, 200);
+  assert.ok(calls.telegram.some(c => String(c.url || '').includes('answerCallbackQuery')), 'phải trả lời callback để Telegram tắt vòng loading');
+  assert.equal(calls.telegram.filter(c => String(c.url || '').includes('/sendMessage')).length, 0, 'không gửi tin khi không có topic');
+});
+
+test('hết key thì chuyển model CÙNG URL trước, chuyển URL sau cùng', async () => {
+  const token = await aiToken();
+  const rows = { active: 'nhanh', profiles: [
+    { alias: 'nhanh', order: 10, baseURL: 'https://ai.test/v1', model: 'model-nhanh', keys: ['sk-or-nhanh-1'] },
+    { alias: 'cham', order: 20, baseURL: 'https://ai.test/v1', model: 'model-cham', keys: ['sk-or-cham-1'] },
+    { alias: 'du-phong', order: 30, baseURL: 'https://ai.test/v2', model: 'model-khac', keys: ['sk-or-khac-1'] },
+  ] };
+  await useAiConfig(rows);
+  setBackend({
+    ai: url => (String(url).includes('/v2/')
+      ? new Response('data: [DONE]\n\n', { status: 200, headers: { 'Content-Type': 'text/event-stream' } })
+      : new Response('{"error":{"message":"insufficient credits"}}', { status: 402 })),
+  });
+
+  const r = await aiPost(token);
+  assert.equal(r.status, 200, 'phải tự tìm được một cấu hình còn dùng được');
+  await r.text();
+  const used = calls.ai.map(c => String(c.url));
+  assert.deepEqual(used, [
+    'https://ai.test/v1/chat/completions',   // model-nhanh hết quota
+    'https://ai.test/v1/chat/completions',   // model-cham cùng URL cũng hết quota
+    'https://ai.test/v2/chat/completions',   // mới chuyển sang URL dự phòng
+  ], 'phải thử hết cùng URL rồi mới đổi URL');
+  assert.deepEqual(calls.ai.map(c => c.body.model), ['model-nhanh', 'model-cham', 'model-khac'], 'mỗi lần thử phải dùng model của chính cấu hình đó');
+});
+
+test('kiểm tra key (nút bấm) báo cáo từng key và loại key hết hạn mức khỏi vòng xoay', async () => {
+  await useAiConfig(aiConfigRows(AI_ALIAS, ['sk-or-key-tot-1', 'sk-or-key-tot-2']));
+  setBackend({
+    gas: payload => (payload.action === 'ai_admin' ? { reply: 'ok', config: aiConfigRows(AI_ALIAS, ['sk-or-key-tot-1', 'sk-or-key-tot-2']) } : { devices: [] }),
+    ai: (url, authorization) => (authorization.includes('sk-or-key-tot-1')
+    ? new Response(JSON.stringify({ error: 'no credits' }), { status: 402 })
+    : new Response(JSON.stringify({ data: [{ id: 'a' }, { id: 'b' }] }), { status: 200, headers: { 'Content-Type': 'application/json' } })),
+    telegram: () => ({ ok: true, result: { message_id: 5 } }),
+  });
+
+  await tap('ai:check1:' + AI_ALIAS);
+  const text = sentText();
+  assert.match(text, /hết hạn mức/, 'phải báo key nào hết hạn mức');
+  assert.match(text, /hoạt động/, 'phải báo key nào còn dùng được');
+  assert.equal(text.includes('sk-or-key-tot-1'.slice(0, 6) + 'sk-or'), false, 'không được in key thật');
 });

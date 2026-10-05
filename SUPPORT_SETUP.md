@@ -89,6 +89,21 @@ Sau khi Firebase đã cấu hình, widget chat **lắng nghe thay đổi** thay 
 2. Lấy `TELEGRAM_BOT_TOKEN` từ BotFather, và `TELEGRAM_CHAT_ID` của group (dạng thường là `-100…`). Tạo `TELEGRAM_WEBHOOK_SECRET` ngẫu nhiên ít nhất 32 ký tự.
 3. Lưu ba giá trị này trong secret store của Gateway và redeploy.
 4. Với `PUBLIC_GATEWAY_URL` là HTTPS URL đã deploy, chạy `npm run telegram:webhook` trong môi trường có các secret trên.
+5. **Gán danh sách lệnh cho bot** (bắt buộc sau khi thêm lệnh mới):
+
+   ```powershell
+   $env:TELEGRAM_BOT_TOKEN='123456:ABC...'
+   npm run telegram:commands          # ghi danh sách lệnh
+   npm run telegram:commands:list     # xem danh sách đang có
+   ```
+
+   > **Vì sao cần bước này:** Telegram **không** suy ra danh sách lệnh từ code.
+   > Menu lệnh (nút ☰ cạnh ô nhập tin) là cấu hình riêng trên máy chủ Telegram.
+   > Worker xử lý được `/ai` nhưng nếu chưa đăng ký thì menu vẫn chỉ hiện lệnh cũ
+   > (`/lock`, `/unlock`…). Chạy lại script sau mỗi lần thêm lệnh mới là an toàn —
+   > nó ghi đè danh sách, không xoá gì ngoài ý muốn. Script gán cho cả ba phạm vi:
+   > `default`, `group_administrators` (nhóm supergroup có Topics) và
+   > `chat_administrators` (từng topic), nên lệnh hiện ở mọi nơi bot dùng được.
 
 Khi khách gửi tin lần đầu, Gateway tạo Topic `Support · ROOM_WIN_…`, lưu `telegramThreadId` trong Firebase rồi gửi các tin sau đúng vào Topic đó. Khi admin trả lời trong Topic, Telegram webhook ghi tin `sender: admin` ngược vào đúng room Firebase. Tin nhắn không thuộc Topic, hoặc từ bot, được bỏ qua để tránh loop.
 
@@ -137,6 +152,108 @@ trước khi deploy, app chạy ở chế độ đọc theo yêu cầu và vẫn
 - Kiểm tra thủ công phần này: `node tools/realtime-lifecycle-check.mjs` (chạy ~50 giây, không nằm trong `npm test`).
 - `cloudflare-worker/wrangler.jsonc` phải khớp cấu hình đang chạy trên dashboard (nhất là `GAS_URL`), nếu không
   `wrangler deploy` sẽ ghi đè production bằng giá trị trong file — wrangler cảnh báo và dừng khi thấy lệch.
+
+## 8. Cấu hình AI của bot bằng lệnh Telegram (`/ai`)
+
+Admin đổi url / model / API key ngay trong Telegram, không sửa code và không
+đụng vào máy khách.
+
+**Nơi lưu cấu hình AI (nên để Sheet riêng):**
+
+1. Tạo Google Sheet mới, ví dụ tên `HoaDonNhe_AI_Config`.
+2. Trong Sheet đó tạo tab tên **`PROFILES`** (để trống cũng được — script tự ghi
+   hàng tiêu đề và tự thêm cột thiếu).
+3. Lấy **ID** của Sheet (đoạn giữa `/d/` và `/edit` trong URL) và đặt vào
+   **Script Property** của Apps Script: `AI_CONFIG_SPREADSHEET_ID`.
+
+Khi có property này, lệnh `/ai` ghi vào Sheet riêng và **không đụng** vào Sheet
+bản quyền — nên có thể chia sẻ Sheet CRM cho kế toán/nhân sự mà không lộ key
+của bot. Để trống property thì quay về tab `AI_PROFILES` của Sheet CRM (đường
+cũ vẫn chạy).
+
+Cấu trúc một dòng trong `PROFILES`:
+
+| Cột | Ý nghĩa |
+| --- | --- |
+| `Alias` | Tên gọi cấu hình (chữ/số và `. _ -`, tối đa 40 ký tự) |
+| `Active` | `Yes` = cấu hình đang dùng cho mọi máy |
+| `Base URL` | Địa chỉ API (https) |
+| `Model` | Model của dòng này |
+| `API Keys` | Nhiều key trong một ô, tách bằng xuống dòng hoặc `;` |
+| `Order` | Thứ tự dự phòng (nhỏ hơn = thử trước). Dòng mới luôn thêm cuối |
+
+## Dùng bằng nút bấm (khuyến nghị)
+
+Gõ `/ai` → bot trả về menu nút bấm:
+
+```
+📋 Cấu hình   | 🔍 Kiểm tra key
+🗝 Thêm key   | ➕ Thêm model
+❓ Hướng dẫn  | 🔄 Làm mới
+```
+
+- **📋 Cấu hình** → danh sách từng dòng (bấm vào để vào màn hình của riêng dòng đó).
+- Màn hình một dòng: `✅ Bật`, `🔑 Danh sách key`, `🔍 Kiểm tra key`, `🗝 Thêm key`, `🗑 Xoá`.
+- **🔑 Danh sách key** → hiện từng key (che giữa); bấm một key là xoá key đó.
+- **🗝 Thêm key** → chọn dòng, bot mới hỏi *gõ key vào đây*, tin nhắn kế tiếp
+  trong topic được lấy làm key (giữ nguyên các key cũ).
+- **➕ Thêm model** → bot hỏi lần lượt: tên → URL → model.
+- **🔍 Kiểm tra key** → Gateway gọi `GET {url}/models` với từng key và báo
+  `✅ hoạt động` / `❌ key không hợp lệ (401)` / `❌ hết hạn mức (402)`; key hết
+  hạn mức bị loại khỏi vòng xoay luôn.
+
+Ngoài nút bấm, các lệnh viết tay vẫn chạy (tiện khi gõ nhanh):
+
+| Lệnh | Tác dụng |
+| --- | --- |
+| `/ai` | xem cấu hình đang dùng (key hiện ở dạng che) |
+| `/ai add <tên> <url> <model>` | tạo mới, hoặc sửa url/model của `<tên>` cũ |
+| `/ai url <tên> <url>` | chỉ đổi địa chỉ API (giữ nguyên key) |
+| `/ai model <tên> <model>` | chỉ đổi model (giữ nguyên key) |
+| `/ai use <tên>` | bật cấu hình này cho mọi máy |
+| `/ai del <tên>` | xoá cấu hình |
+| `/ai key <tên> add <key>` | thêm API key (một cấu hình được thêm nhiều key) |
+| `/ai key <tên> list` | xem key đang lưp (che giữa) |
+| `/ai key <tên> del <số>` | xoá key thứ n |
+
+Cách dùng:
+
+```
+/ai add chinh https://openrouter.ai/api/v1 stealth/space-bunny-alpha
+/ai key chinh add sk-or-...
+/ai key chinh add sk-or-...        # thêm key thứ hai
+/ai use chinh
+```
+
+Luồng chạy:
+
+1. Worker nhận lệnh `/ai...` từ Telegram → `action: ai_admin` → Apps Script ghi
+   Sheet cấu hình AI (Sheet riêng nếu đã đặt `AI_CONFIG_SPREADSHEET_ID`) và trả
+   kèm cấu hình vừa lưu (Worker dùng ngay, không chờ hết hạn bản ghi nhớ).
+2. Khi app chat, app gọi `POST /v1/ai/chat/completions` trên Gateway (thay vì
+   tự gọi OpenRouter) kèm token phiên của máy. Worker đọc cấu hình từ
+   `action: ai_config`, **tự gắn model của admin** vào request và chuyển tiếp.
+3. Worker đi theo **chuỗi dự phòng** (tối đa 12 lần thử):
+   key ngẫu nhiên của model đang chạy → key còn lại của model đó → **model kế
+   tiếp CÙNG URL** → **URL tiếp theo** (theo cột `Order`). Key trả
+   `401/402/403/429` hoặc thân lỗi có quota/limit/balance/credit ⇒ bị loại khỏi
+   vòng xoay 15 phút rồi thử bước kế tiếp **ngay trong lượt chat đó**, nên hết
+   hạn mức một key không làm AI của khách sập. Lỗi khác hạn mức (model sai, 500)
+   thì trả thẳng lỗi thật, không quay key vô ích.
+
+Ranh giới bảo mật:
+
+- API key nằm trên Gateway, **không bao giờ đi xuống máy khách**: app chỉ nhận
+  câu trả lời của model. Khi không có Gateway (chạy local-mock / mất mạng) app
+  rơi về key cấu hình trên máy như trước.
+- `/v1/ai/chat/completions` đòi token phiên hợp lệ và chặn bản quyền
+  `Expired`/`Locked`, nên người lạ biết URL Gateway cũng không dùng được key.
+- Trả lời trong topic Telegram và nhãn nút bấm đều không in key thật (che giữa).
+- `/ai` là lệnh TOÀN CỤC: chạy được ở topic nào, kể cả topic chưa gắn máy.
+- Nút bấm chỉ mang mã lệnh + tên cấu hình trong `callback_data` (Telegram giới
+  hạn 64 byte), không bao giờ mang key.
+- Hai action `ai_admin`/`ai_config` chỉ chạy được khi có `gatewaySecret` đúng, và
+  không gọi `ensureTabs_()` nên vẫn phục vụ được khi script chưa gắn Sheet CRM.
 
 ## Bảo mật và vận hành
 

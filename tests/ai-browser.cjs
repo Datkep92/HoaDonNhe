@@ -84,7 +84,7 @@ const click = id => evaluate(`document.getElementById(${JSON.stringify(id)}).cli
   await until(() => evaluate("!!document.getElementById('support-toggle').onclick && typeof window.AiProviders === 'object'"), 'support loaded');
   await click('support-toggle');
   await until(() => evaluate("document.querySelectorAll('[data-provider]').length===1"), 'modes');
-  assert.equal(await evaluate("document.querySelector('[data-mode=agent]').textContent"), 'HoaDonNhe AI');
+  assert.equal(await evaluate("document.querySelector('[data-mode=agent]').textContent"), require('../src/ai/identity').agentName);
   assert.equal(await evaluate("!!document.getElementById('ai-frame') || !!document.querySelector('#ai-provider-type option[value=web]')"), false);
   assert.equal(await evaluate("document.body.classList.contains('chat-open')"), true);
   const supportBounds = await evaluate("(()=>{const r=document.getElementById('support-panel').getBoundingClientRect();return {height:r.height,top:r.top,right:r.right,width:r.width}})()");
@@ -102,7 +102,13 @@ const click = id => evaluate(`document.getElementById(${JSON.stringify(id)}).cli
   await until(() => evaluate("document.getElementById('support-panel').classList.contains('is-ai')"), 'agent mode');
   assert.equal(await evaluate("document.getElementById('support-panel').getBoundingClientRect().height"), supportBounds.height);
   await evaluate("document.getElementById('ai-input').value='Kiểm tra hóa đơn';document.getElementById('ai-send').click()");
-  await until(() => evaluate("document.getElementById('ai-error').textContent.includes('API key')"), 'missing key message');
+  await until(() => evaluate("document.getElementById('ai-error').textContent.includes('Cloudflare')"), 'AUTO unavailable message');
+  await click('ai-edit');await until(()=>evaluate("document.getElementById('ai-provider-dialog').open"),'AUTO editor');
+  assert.equal(await evaluate("document.getElementById('ai-routing-mode').value"),'auto');
+  assert.equal(await evaluate("document.getElementById('ai-key-label').hidden && document.getElementById('ai-provider-api').hidden"),true);
+  await evaluate("document.getElementById('ai-routing-mode').value='manual';document.getElementById('ai-routing-mode').dispatchEvent(new Event('change'))");
+  assert.equal(await evaluate("!document.getElementById('ai-key-label').hidden && !document.getElementById('ai-provider-api').hidden"),true);
+  await click('ai-provider-cancel');
   await click('support-close'); assert.equal(await evaluate("document.getElementById('support-panel').hidden"), true);
   await click('support-toggle');
   await evaluate("document.querySelector('[data-mode=support]').click()");

@@ -1,3 +1,4 @@
+import { createAiAdmin } from './ai-admin.js';
 const text = new TextEncoder();
 const b64 = value => btoa(String.fromCharCode(...new Uint8Array(value instanceof ArrayBuffer ? value : text.encode(value)))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 const json64 = value => b64(JSON.stringify(value));
@@ -77,10 +78,10 @@ async function claims(env, request) {
 }
 
 async function gas(env, payload) {
-  const response = await fetch(env.GAS_URL, { 
-    method: 'POST', 
-    headers: { 'Content-Type': 'application/json' }, 
-    body: JSON.stringify({ ...payload, gatewaySecret: env.GAS_SHARED_SECRET }) 
+  const response = await fetch(env.GAS_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ...payload, gatewaySecret: env.GAS_SHARED_SECRET })
   });
   const raw = await response.text();
   let body;
@@ -120,6 +121,24 @@ async function firebase(env, path, method = 'GET', value) {
   if (!response.ok) throw Error('Firebase request failed.');
   return response.json();
 }
+
+const aiAdmin = createAiAdmin({
+  telegram,
+  panel: (env, thread, value) => firebase(env, '/aiAdmin/v2/panels/' + String(thread || 0), value ? 'PUT' : 'GET', value),
+  legacy: env => gas(env, { action: 'ai_config', aiSheetId: env.AI_CONFIG_SHEET_ID || '' }),
+  read: async env => {
+    const response = await fetch(env.FIREBASE_DATABASE_URL.replace(/\/$/, '') + '/aiAdmin/v2/config.json', { headers: { Authorization: 'Bearer ' + await firebaseToken(env), 'X-Firebase-ETag': 'true' } });
+    if (!response.ok) throw Error('Không đọc được kho cấu hình AI.');
+    return { value: await response.json(), etag: response.headers.get('ETag') };
+  },
+  write: async (env, value, etag) => {
+    if (!etag) throw Error('Firebase chưa trả ETag; không ghi đè cấu hình.');
+    const response = await fetch(env.FIREBASE_DATABASE_URL.replace(/\/$/, '') + '/aiAdmin/v2/config.json', { method: 'PUT', headers: { Authorization: 'Bearer ' + await firebaseToken(env), 'Content-Type': 'application/json', 'If-Match': etag }, body: JSON.stringify(value) });
+    if (response.status === 412) return false;
+    if (!response.ok) throw Error('Không lưu được kho cấu hình AI.');
+    return true;
+  },
+});
 
 // Luồng realtime cho Support Chat. Gateway chuyển tiếp REST streaming của Firebase Realtime
 // Database: Firebase CHỈ đẩy sự kiện khi dữ liệu thay đổi, nên EXE không phải hỏi lại định kỳ.
@@ -338,14 +357,27 @@ async function announce(env, d, contact, value) {
   return thread;
 }
 
-async function webhook(env, request) {
+async function webhook(env, request, ctx) {
   if (request.headers.get('X-Telegram-Bot-Api-Secret-Token') !== env.TELEGRAM_WEBHOOK_SECRET) return reply({ ok: false, error: 'Invalid webhook secret.' }, 403);
   const update = await request.json();
+  if (env.AI_ADMIN_V2_ENABLED === '1' && await aiAdmin.handle(env, update, ctx, new URL(request.url).origin)) return reply({ ok: true });
+  // NÚT BẤM của /ai: Telegram gửi callback_query, không có `message`. Xử lý
+  // trước mọi thứ khác vì các nhánh dưới đều đòi có message.
+  if (update.callback_query) {
+    if (update.callback_query.from?.is_bot) return reply({ ok: true, ignored: true });
+    await aiCallback_(env, update.callback_query);
+    return reply({ ok: true, value: { callback: String(update.callback_query.data || '') } });
+  }
   const message = update.message;
   if (!message || message.from?.is_bot || !message.message_thread_id || !String(message.text || '').trim()) return reply({ ok: true, ignored: true });
   const map = await firebase(env, '/telegramTopics/' + message.message_thread_id);
   const text = String(message.text).trim().slice(0, 2000);
   const threadId = message.message_thread_id;
+
+  // Bot đang chờ admin nhập giá trị sau khi bấm nút (thêm key / tạo cấu hình):
+  // tin này là GIÁ TRỊ, không phải lệnh — nuốt trước khi rơi xuống các nhánh
+  // lệnh để tránh gõ nhầm "/ai ..." ra thành lệnh thật.
+  if (text[0] !== '/' && await aiPrompt_(env, message, threadId)) return reply({ ok: true, value: { prompt: true } });
 
   // CẦU NỐI GẮN LẠI: dùng khi Firebase bị xoá (mapping mất) mà topic trên Telegram còn.
   // Gõ trong chính topic đó:  /link ROOM_WIN_XXXXXXXXXXXX
@@ -372,6 +404,9 @@ async function webhook(env, request) {
     await telegram(env, 'sendMessage', { chat_id: env.TELEGRAM_CHAT_ID, message_thread_id: threadId, text: answer });
     return reply({ ok: true, value: { command: '/online' } });
   }
+
+  // /ai... — đặt TRƯỚC /check_SDT và trước nhánh lệnh theo phòng chat.
+  if (/^\/ai(\s|$)/i.test(text)) return await aiCommand_(env, text, threadId);
 
   // /check_SDT — tra cứu theo số điện thoại. Lệnh toàn cục, không gắn với phòng:
   // "tra cứu" nghĩa là tìm khách, nên phải chạy được từ bất kỳ topic nào, kể cả
@@ -476,6 +511,383 @@ if (/^\/who(\s|$)/i.test(text) || /^\/trang-thai(\s|$)/i.test(text)) {
   const value = { sender: 'admin', text, timestamp: (message.date || Math.floor(Date.now() / 1000)) * 1000, source: 'telegram', telegramMessageId: message.message_id, telegramThreadId: message.message_thread_id, deliveryStatus: 'firebase' };
   const result = await firebase(env, '/chats/' + encodeURIComponent(map.chatRoomId) + '/messages', 'POST', value);
   return reply({ ok: true, value: { id: result.name } });
+}
+
+// ============================================================
+// CẤU HÌNH AI DO ADMIN ĐẶT TỪ TELEGRAM
+// ============================================================
+// Admin gõ /ai... trong Telegram; Gateway chuyển action ai_admin xuống Apps Script,
+// Apps Script ghi vào tab AI_PROFILES và trả kèm cấu hình đã lưu. Gateway giữ
+// bản ghi nhớ để app dùng ngay ở lượt kế tiếp, không phải chờ hết hạn cache.
+//
+// Ai trả lời câu hỏi "key có hết quota không" là chính dịch vụ AI: HTTP 401/402/429
+// hoặc thân lỗi có quota/limit/balance/credit/authorization. Mỗi key hết hạn mức bị
+// loại khỏi vòng xoay một khoảng lâu (quota thường hồi theo giờ/ngày, không phải
+// vài giây) — nếu chỉ thử lại ngay thì mọi lượt chat sau đều dồn vào key vừa hết
+// hạn mức và đều fail, tức là bản quyền của khách bị giết vì nhà cung cấp AI.
+const AI_CACHE_MS = 60000;
+const AI_KEY_COOLDOWN_MS = 15 * 60 * 1000;
+let aiCache = { value: null, at: 0 };
+// key -> thời điểm hết thời gian nghỉ. Ghi nhớ trong bộ nhớ isolate; mất khi
+// Cloudflare khởi động lại isolate thì tệ nhất là vài lượt chat thử lại key cũ —
+// không mất tiền, không lộ dữ liệu.
+const aiKeysDown = new Map();
+
+// Trả về cấu hình AI đang dùng, có kiểm tra hình dạng dữ liệu vì nó đến từ Sheet
+// do người ngoài sửa tay: URL phải là https, model phải là chuỗi, key phải là mảng
+// chuỗi. Ô rác thì bỏ dòng đó chứ không ném lỗi cho cả bot.
+function aiSanitize_(value) {
+  const profiles = (value && Array.isArray(value.profiles) ? value.profiles : [])
+    .map(p => ({
+      alias: String(p && p.alias || ''),
+      order: Number.isFinite(Number(p && p.order)) ? Number(p.order) : 999,
+      baseURL: String(p && p.baseURL || '').replace(/\/+$/, ''),
+      model: String(p && p.model || ''),
+      keys: (p && Array.isArray(p.keys) ? p.keys : []).map(k => String(k)).filter(k => /^[\x21-\x7e]{8,200}$/.test(k)),
+    }))
+    .filter(p => /^https:\/\/[^\s/$.?#][^\s]*$/i.test(p.baseURL) && /^[A-Za-z0-9._:/|-]{1,120}$/.test(p.model) && p.keys.length)
+    .slice(0, 20);
+  const active = String(value && value.active || '');
+  return { active: profiles.some(p => p.alias === active) ? active : (profiles[0] ? profiles[0].alias : ''), profiles };
+}
+
+// Chuỗi thử lần lượt khi một key hết hạn mức: hết key của model này thì sang
+// model kế tiếp CÙNG URL, hết các model của URL đó thì mới sang URL tiếp theo.
+// Gom theo URL trước rồi mới xếp theo Order — nếu chỉ xếp phẳng theo Order thì
+// hai model cùng URL có thể bị ngắt bởi một URL khác chen giữa, mất đúng ý
+// "cùng URL thì thay model trước, chết hẳn mới đổi URL".
+function aiChain_(config) {
+  const ordered = config.profiles.slice().sort((a, b) => a.order - b.order);
+  const groups = [];
+  const indexOf = new Map();
+  for (const profile of ordered) {
+    if (!indexOf.has(profile.baseURL)) {
+      indexOf.set(profile.baseURL, groups.length);
+      groups.push({ baseURL: profile.baseURL, profiles: [] });
+    }
+    groups[indexOf.get(profile.baseURL)].profiles.push(profile);
+  }
+  const active = ordered.find(p => p.alias === config.active);
+  if (active) {
+    const at = indexOf.get(active.baseURL);
+    if (at > 0) groups.unshift(...groups.splice(at, 1));
+  }
+  const chain = [];
+  for (const group of groups) {
+    for (const profile of group.profiles) {
+      for (const key of aiKeyOrder_(profile.keys)) chain.push({ profile, key });
+    }
+  }
+  // Trần số lần thử: chuỗi dài vô hạn sẽ biến một lượt chat thành hàng chục
+  // request ra ngoài. 12 lần là dư cho mọi cấu hình thực tế.
+  return chain.slice(0, 12);
+}
+
+async function aiConfig_(env, force) {
+  const now = Date.now();
+  if (!force && aiCache.value && now - aiCache.at < AI_CACHE_MS) return aiCache.value;
+  const value = aiSanitize_(await gas(env, { action: 'ai_config', aiSheetId: env.AI_CONFIG_SHEET_ID || '' }));
+  aiCache = { value, at: Date.now() };
+  return value;
+}
+
+// Sắp key ngẫu nhiên để tải phân bố đều, và đưa key đang nghỉ xuống cuối: nhờ vậy
+// khi một key vừa hết hạn mức thì các key còn tốt vẫn được thử trước, chứ không
+// phải đợi hết thời gian nghỉ của key chết.
+function aiKeyOrder_(keys) {
+  const now = Date.now();
+  const ready = [], resting = [];
+  for (const key of keys) (Number(aiKeysDown.get(key) || 0) > now ? resting : ready).push(key);
+  for (let i = ready.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [ready[i], ready[j]] = [ready[j], ready[i]];
+  }
+  return ready.concat(resting);
+}
+
+// /ai... — lệnh TOÀN CỤC của admin (cấu hình dùng chung cho mọi máy), nên nhánh gọi
+// nó đặt ở webhook TRƯỚC nhánh lệnh gắn theo phòng chat: nếu để sau, "/ai add ..."
+// sẽ bị đổi thành lệnh theo phòng và báo lỗi "topic chưa gắn thiết bị".
+async function aiCommand_(env, text, threadId) {
+  let answer;
+  let keyboard = null;
+  try {
+    const value = await gas(env, { action: 'ai_admin', text, updatedBy: 'telegram', aiSheetId: env.AI_CONFIG_SHEET_ID || '' });
+    // Lệnh của admin vừa đổi cấu hình thì dùng ngay, không chờ hết TTL cache —
+    // nếu không, admin sửa xong phải đợi tới một phút mới thấy tác dụng.
+    if (value && value.config) aiCache = { value: aiSanitize_(value.config), at: Date.now() };
+    answer = String(value && value.reply || '').trim() || '⚠️ CRM không trả về nội dung.';
+    keyboard = aiMenu_();
+  } catch (error) {
+    answer = '⚠️ Không đổi được cấu hình AI: ' + (error && error.message ? error.message : String(error));
+  }
+  await telegram(env, 'sendMessage', { chat_id: env.TELEGRAM_CHAT_ID, message_thread_id: threadId, text: answer.slice(0, 4000), ...(keyboard ? { reply_markup: keyboard } : {}) });
+  return reply({ ok: true, value: { command: '/ai' } });
+}
+
+// ============================================================
+// MENU NÚT BẤM CHO /ai
+// ============================================================
+// Yêu cầu của admin: thao tác bằng cách BẤM, chỉ gõ tay khi nhập giá trị mới.
+// callback_data của Telegram chỉ chứa được 64 byte — nên trong đó chỉ để mã
+// lệnh + tên cấu hình (tên đã giới hạn 40 ký tự), tuyệt đối không kèo key.
+const AI_PROMPTS = new Map();   // topic -> bước đang chờ admin nhập giá trị
+
+function aiMenu_() {
+  return { inline_keyboard: [
+    [{ text: '📋 Cấu hình', callback_data: 'ai:list' }, { text: '🔍 Kiểm tra key', callback_data: 'ai:check' }],
+    [{ text: '🗝 Thêm key', callback_data: 'ai:keypick' }, { text: '➕ Thêm model', callback_data: 'ai:new' }],
+    [{ text: '❓ Hướng dẫn', callback_data: 'ai:help' }, { text: '🔄 Làm mới', callback_data: 'ai:refresh' }],
+  ] };
+}
+
+function aiProfilesKeyboard_(profiles, active) {
+  const rows = profiles.map(p => [{ text: (p.alias === active ? '▶️ ' : '  ') + p.alias + ' · ' + p.model, callback_data: 'ai:prof:' + p.alias }]);
+  rows.push([{ text: '⬅️ Menu', callback_data: 'ai:menu' }]);
+  return { inline_keyboard: rows };
+}
+
+function aiProfileKeyboard_(alias) {
+  return { inline_keyboard: [
+    [{ text: '✅ Bật cấu hình này', callback_data: 'ai:use:' + alias }],
+    [{ text: '🔑 Danh sách key', callback_data: 'ai:keys:' + alias }, { text: '🔍 Kiểm tra key', callback_data: 'ai:check1:' + alias }],
+    [{ text: '🗝 Thêm key', callback_data: 'ai:addkey:' + alias }, { text: '🗑 Xoá cấu hình', callback_data: 'ai:del:' + alias }],
+    [{ text: '⬅️ Danh sách', callback_data: 'ai:list' }],
+  ] };
+}
+
+function aiMaskKey_(key) {
+  const value = String(key || '');
+  if (value.length < 10) return '***';
+  return value.slice(0, 6) + '…' + value.slice(-4);
+}
+
+function aiKeysKeyboard_(profile) {
+  const rows = profile.keys.map((key, index) => [{
+    text: (aiKeysDown.has(key) ? '⚠️ ' : '') + (index + 1) + '. ' + aiMaskKey_(key),
+    callback_data: 'ai:keydel:' + profile.alias + ':' + (index + 1),
+  }]);
+  rows.push([{ text: '🔍 Kiểm tra key', callback_data: 'ai:check1:' + profile.alias }]);
+  rows.push([{ text: '🗝 Thêm key', callback_data: 'ai:addkey:' + profile.alias }, { text: '⬅️ Cấu hình', callback_data: 'ai:prof:' + profile.alias }]);
+  return { inline_keyboard: rows };
+}
+
+// Chạy lệnh /ai của Apps Script rồi trả về câu trả lời (nút bấm gửi kèm sau).
+// AI_CONFIG_SHEET_ID (secret) là Sheet cấu hình AI RIÊNG. Script Property của
+// Apps Script không set được qua API, nên Gateway truyền ID xuống theo mỗi
+// request; Apps Script tự tạo tab PROFILES nếu Sheet đó còn trống.
+async function aiRun_(env, threadId, text) {
+  try {
+    const value = await gas(env, { action: 'ai_admin', text, updatedBy: 'telegram', aiSheetId: env.AI_CONFIG_SHEET_ID || '' });
+    if (value && value.config) aiCache = { value: aiSanitize_(value.config), at: Date.now() };
+    return String(value && value.reply || '').trim() || '⚠️ CRM không trả về nội dung.';
+  } catch (error) {
+    return '⚠️ Lỗi: ' + (error && error.message ? error.message : String(error));
+  }
+}
+
+// Gõ tay chỉ dùng cho giá trị mới: sau khi bấm nút, bot hỏi và nhận đúng MỘT
+// tin nhắn kế tiếp trong topic đó làm giá trị.
+async function aiAsk_(env, threadId, text, step) {
+  const sent = await telegram(env, 'sendMessage', { chat_id: env.TELEGRAM_CHAT_ID, message_thread_id: threadId, text, force_reply: true, reply_markup: { force_reply: { input_field_placeholder: 'Nhập giá trị rồi gửi' } } });
+  // Ghi lại id tin hỏi: chỉ nhận câu trả lời TRẢ LỜI ĐÚNG tin này. Nếu ai đó
+  // đang chat trong cùng topic (topic của một máy khách) thì tin của họ phải tới
+  // đúng khách, tuyệt đối không được nuốt nhầm làm "API key".
+  AI_PROMPTS.set(threadId, { ...step, messageId: sent && sent.message_id || 0 });
+}
+
+// Kiểm tra key bằng request rẻ nhất của nhà cung cấp (GET /models): không tốn
+// tiền chat và nhanh hơn, đủ để biết key còn dùng được hay không.
+async function aiCheck_(env, alias) {
+  const config = await aiConfig_(env);
+  const profiles = alias ? config.profiles.filter(p => p.alias === alias) : config.profiles;
+  if (!profiles.length) return '⚠️ Không có cấu hình "' + (alias || '') + '".';
+  const lines = ['🔍 KIỂM TRA KEY'];
+  for (const profile of profiles) {
+    lines.push('');
+    lines.push((profile.alias === config.active ? '▶️ ' : '  ') + profile.alias + ' · ' + profile.model);
+    for (const key of profile.keys) {
+      let verdict;
+      try {
+        const response = await fetch(profile.baseURL + '/models', { method: 'GET', redirect: 'error', headers: { Authorization: 'Bearer ' + key } });
+        if (response.ok) {
+          let count = 0;
+          try { const body = await response.json(); count = Array.isArray(body && body.data) ? body.data.length : 0; } catch { count = 0; }
+          verdict = '✅ hoạt động' + (count ? ' (' + count + ' model)' : '');
+          aiKeysDown.delete(key);
+        } else {
+          const detail = (await response.text().catch(() => '')).slice(0, 300);
+          const quota = aiQuotaError_(response.status, detail);
+          verdict = quota ? (response.status === 401 ? '❌ key không hợp lệ (401)' : '❌ hết hạn mức (' + response.status + ')') : '❌ lỗi ' + response.status;
+          // Key đã hỏng thì loại khỏi vòng xoay luôn, khỏi để khách chat dò nhầm.
+          if (quota) aiKeysDown.set(key, Date.now() + AI_KEY_COOLDOWN_MS);
+        }
+      } catch (error) {
+        verdict = '❌ không gọi được: ' + (error && error.message ? error.message : String(error));
+      }
+      lines.push('   ' + aiMaskKey_(key) + ' — ' + verdict);
+    }
+  }
+  return lines.join('\n');
+}
+
+// Xử lý một cú bấm nút. Trả về false nếu không phải nút của /ai để nhánh khác
+// xử lý tiếp (nút của các lệnh cũ vẫn chạy y như cũ).
+async function aiCallback_(env, callback) {
+  const data = String(callback && callback.data || '');
+  if (!data.startsWith('ai:')) return false;
+  const threadId = callback.message && callback.message.message_thread_id;
+  let acknowledged = false;
+  const ack = async text => {
+    if (acknowledged) return;
+    acknowledged = true;
+    try {
+      await telegram(env, 'answerCallbackQuery', { callback_query_id: callback.id, ...(text ? { text: text.slice(0, 200) } : {}) });
+    } catch {
+      // Telegram có thể hết hạn callback khi webhook bị giao chậm. Việc bỏ
+      // vòng quay trên nút thất bại không được chặn thao tác và câu trả lời.
+      console.log('AI callback acknowledgement unavailable');
+    }
+  };
+  if (!threadId) { await ack('⚠️ Chỉ dùng được trong topic.'); return true; }
+  // Xác nhận NGAY, trước khi đợi Apps Script khởi động/đọc Sheet.
+  await ack();
+  // Bỏ đúng tiền tố 'ai:' rồi mới tách phần còn lại — tác cả chuỗi sẽ cho
+  // action = 'ai' và mọi nút rơi xuống nhánh cuối, tức bấm gì cũng im lặng.
+  const [action, a, b] = data.slice(3).split(':');
+  const send = async (text, keyboard) => telegram(env, 'sendMessage', { chat_id: env.TELEGRAM_CHAT_ID, message_thread_id: threadId, text: text.slice(0, 4000), ...(keyboard ? { reply_markup: keyboard } : {}) });
+  if (action === 'menu') { await ack(); await send('🤖 QUẢN LÝ AI — chọn một việc:', aiMenu_()); return true; }
+  if (action === 'list') {
+    const config = await aiConfig_(env);
+    await ack();
+    await send('🤖 CẤU HÌNH AI — bấm một dòng để quản lý:', config.profiles.length ? aiProfilesKeyboard_(config.profiles, config.active) : aiMenu_());
+    return true;
+  }
+  if (action === 'help') {
+    await ack();
+    await send('/ai add <tên> <url> <model>\n/ai url <tên> <url>\n/ai model <tên> <model>\n/ai use <tên>\n/ai del <tên>\n/ai key <tên> add <key>\n/ai key <tên> list\n/ai key <tên> del <số>\n/ai key <tên> check', aiMenu_());
+    return true;
+  }
+  if (action === 'refresh') { await ack('Đã tải lại'); await aiConfig_(env, true); await send('🔄 Đã tải lại cấu hình từ Sheet.', aiMenu_()); return true; }
+  if (action === 'prof') {
+    const config = await aiConfig_(env);
+    const profile = config.profiles.find(p => p.alias === a);
+    await ack();
+    await send(profile ? '🤖 ' + profile.alias + '\nURL: ' + profile.baseURL + '\nModel: ' + profile.model + '\nKey: ' + profile.keys.length + ' key' + (profile.alias === config.active ? '\n▶️ Đang dùng' : '') : '⚠️ Không còn cấu hình này.', aiProfileKeyboard_(a));
+    return true;
+  }
+  if (action === 'keys') {
+    const config = await aiConfig_(env);
+    const profile = config.profiles.find(p => p.alias === a);
+    await ack();
+    await send(profile ? '🔑 KEY CỦA ' + profile.alias + ' (' + profile.keys.length + ')\nBấm một key để xoá.' : '⚠️ Không còn cấu hình này.', profile ? aiKeysKeyboard_(profile) : aiMenu_());
+    return true;
+  }
+  if (action === 'use' || action === 'del' || action === 'keydel') {
+    await ack();
+    const text = action === 'use' ? '/ai use ' + a : action === 'del' ? '/ai del ' + a : '/ai key ' + a + ' del ' + b;
+    await send(await aiRun_(env, threadId, text), aiMenu_());
+    return true;
+  }
+  if (action === 'keypick') {
+    const config = await aiConfig_(env);
+    const rows = config.profiles.map(p => [{ text: p.alias + ' · ' + p.model, callback_data: 'ai:addkey:' + p.alias }]);
+    rows.push([{ text: '⬅️ Menu', callback_data: 'ai:menu' }]);
+    await ack();
+    await send('🗝 Chọn cấu hình để thêm key:', { inline_keyboard: rows });
+    return true;
+  }
+  if (action === 'addkey') {
+    await ack();
+    await aiAsk_(env, threadId, '🗝 Gõ API key cần thêm vào "' + a + '"\n(key đang chạy vẫn giữ nguyên, chỉ thêm thêm key)', { kind: 'addkey', alias: a });
+    return true;
+  }
+  if (action === 'new') {
+    await ack();
+    await aiAsk_(env, threadId, '➕ Gõ tên cấu hình (chữ/số và . _ -, không khoảng trắng)', { kind: 'new', step: 'alias' });
+    return true;
+  }
+  if (action === 'check') { await ack(); await send(await aiCheck_(env, ''), aiMenu_()); return true; }
+  if (action === 'check1') { await ack(); await send(await aiCheck_(env, a), aiProfileKeyboard_(a)); return true; }
+  return true;
+}
+
+// Tin nhắn trả lời đúng câu hỏi của bot: dùng làm giá trị cho bước đó rồi xoá
+// trạng thái chờ, để tin nhắn sau không bị nuốt nhầm.
+async function aiPrompt_(env, message, threadId) {
+  const step = AI_PROMPTS.get(threadId);
+  if (!step) return false;
+  const reply = message && message.reply_to_message;
+  if (!reply || reply.message_id !== step.messageId) return false;   // không phải trả lời cho bot
+  AI_PROMPTS.delete(threadId);
+  const value = String(message.text || '').trim().slice(0, 300);
+  if (!value) { await aiAsk_(env, threadId, '⚠️ Chưa nhận được giá trị, thử lại nhé.', step); return true; }
+  if (step.kind === 'addkey') {
+    await telegram(env, 'sendMessage', { chat_id: env.TELEGRAM_CHAT_ID, message_thread_id: threadId, text: await aiRun_(env, threadId, '/ai key ' + step.alias + ' add ' + value), reply_markup: aiMenu_() });
+    return true;
+  }
+  if (step.kind === 'new') {
+    if (step.step === 'alias') { await aiAsk_(env, threadId, '🌐 Gõ địa chỉ API (https://…)', { kind: 'new', step: 'url', alias: value }); return true; }
+    if (step.step === 'url') { await aiAsk_(env, threadId, '🧠 Gõ tên model', { kind: 'new', step: 'model', alias: step.alias, url: value }); return true; }
+    await telegram(env, 'sendMessage', { chat_id: env.TELEGRAM_CHAT_ID, message_thread_id: threadId, text: await aiRun_(env, threadId, '/ai add ' + step.alias + ' ' + step.url + ' ' + value), reply_markup: aiMenu_() });
+    return true;
+  }
+  return true;
+}
+
+// ============================================================
+// PROXY AI — app không cầm API key
+// ============================================================
+// App gửi body OpenAI-compatible tới đây; Gateway đọc cấu hình do admin đặt ở
+// Telegram (tab AI_PROFILES), tự chọn model và key rồi chuyển tiếp. Key nằm trên
+// Gateway, không bao giờ đi xuống máy khách — đó là lý do của toàn bộ đường này.
+//
+// Bắt buộc trước khi gọi AI: token phiên hợp lệ (token đã ký, chỉ đúng máy đang
+// gọi) và bản quyền còn dùng được. Thiếu hai bước này thì bất kỳ ai biết URL
+// Gateway cũng dùng được key của bạn.
+async function aiProxy_(env, request) {
+  const value = await claims(env, request);
+  if (/expired|locked/i.test(String(value.license || ''))) throw Error('Bản quyền không cho phép dùng AI.');
+  const raw = await request.text();
+  if (!raw || raw.length > 2 * 1024 * 1024) throw Error('Request AI quá lớn.');
+  let body;
+  try { body = JSON.parse(raw); } catch { throw Error('Body AI không phải JSON hợp lệ.'); }
+  if (env.AI_ADMIN_V2_ENABLED === '1') {
+    const conversation = String(body.metadata?.conversation_id || '').slice(0,80);
+    const managed = await aiAdmin.proxy(env, body, String(value.installationId || value.machineId || '') + ':' + conversation);
+    if (managed) return managed;
+  }
+  const config = await aiConfig_(env);
+  const chain = aiChain_(config);
+  if (!chain.length) throw Error('Chưa có cấu hình AI trên máy chủ. Admin gõ /ai trong Telegram.');
+  let lastError = null;
+  // Đi hết chuỗi dự phòng: hết key của model này thì thử model kế tiếp CÙNG URL,
+  // rồi mới sang URL sau. Model của mỗi lần thử lấy từ chính profile đó, không
+  // dùng cứng model của profile đầu — nếu dùng cứng thì "chuyển model dự phòng"
+  // chỉ đổi tên mà vẫn gọi model đã chết.
+  for (const step of chain) {
+    const payload = JSON.stringify({ ...body, model: step.profile.model });
+    const response = await fetch(step.profile.baseURL + '/chat/completions', { method: 'POST', redirect: 'manual', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + step.key }, body: payload });
+    if (response.ok) {
+      // Chuyển thẳng stream của nhà cung cấp về app: app đọc SSE y hệt, nên logic
+      // agent/model-provider cũ không phải đổi gì.
+      return new Response(response.body, { status: 200, headers: { 'Content-Type': response.headers.get('Content-Type') || 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-store', 'X-Accel-Buffering': 'no' } });
+    }
+    const detail = (await response.text().catch(() => '')).slice(0, 2000);
+    lastError = { status: response.status, detail };
+    // Lỗi KHÔNG phải hết hạn mức (model sai, body sai, 500) thì đổi key/model cũng
+    // không giúp — trả luôn lỗi thật cho app, đừng quay key vô ích.
+    if (!aiQuotaError_(response.status, detail)) break;
+    aiKeysDown.set(step.key, Date.now() + AI_KEY_COOLDOWN_MS);
+    console.log('AI key het han muc, thu tiep: ' + step.profile.alias + ' / ' + response.status);
+  }
+  if (lastError) return new Response(lastError.detail || 'Máy chủ AI lỗi.', { status: lastError.status, headers: { 'Content-Type': 'text/plain; charset=utf-8' } });
+  throw Error('Không gọi được AI.');
+}
+
+function aiQuotaError_(status, detail) {
+  if ([401, 402, 403, 429].includes(status)) return true;
+  return /quota|insufficient|rate.?limit|too many|balance|credit|unauthor/i.test(String(detail || ''));
 }
 
 // Bản ghi nhớ phía Firebase cho phép hỏi NHẸ mà không đụng Apps Script.
@@ -802,16 +1214,24 @@ async function phoneReport_(env, phone) {
 }
 
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     try {
       const url = new URL(request.url);
+      if (request.method === 'GET' && url.pathname === '/v1/ai/config') {
+        const value = await claims(env, request);
+        if (/expired|locked/i.test(String(value.license || ''))) throw Error('Bản quyền không cho phép dùng AI.');
+        return reply({ok:true,value:await aiAdmin.publicActive(env)});
+      }
       if (request.method === 'GET' && url.pathname === '/healthz') return reply({ ok: true });
+      if (env.AI_ADMIN_V2_ENABLED === '1' && request.method === 'POST' && url.pathname === '/internal/ai/check') return await aiAdmin.internal(env, request, ctx);
       // PHẢI `await` khi trả về promise bên trong `try`.
       // `try { return p } catch {}` KHÔNG bắt được lỗi của p: hàm async thoát ra
       // ngay, lỗi nổi lên thành unhandled rejection và Cloudflare trả 500 dạng
       // HTML — còn app chỉ biết JSON.parse thất bại và báo câu chữ vô nghĩa.
+      if (request.method === 'POST' && url.pathname === '/v1/ai/chat/completions') return await aiProxy_(env, request);
+
       if (request.method === 'GET' && url.pathname === '/v1/chats/stream') return await chatStream(env, request, url);
-      if (request.method === 'POST' && url.pathname === '/v1/telegram/webhook') return await webhook(env, request);
+      if (request.method === 'POST' && url.pathname === '/v1/telegram/webhook') return await webhook(env, request, ctx);
 
       // Trang landing nằm ở domain khác (github.io) nên phải trả CORS cho nó.
       // Route này nằm TRƯỚC nhánh 404 và trước khi parse body chung, vì nó không

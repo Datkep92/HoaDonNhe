@@ -272,3 +272,75 @@ test('endpoint editor persists custom chat/models/key paths, rejects foreign hos
   assert.equal(endpoint({url:'https://openrouter.ai/api/v1/chat/completions'},'chat'),'https://openrouter.ai/api/v1/chat/completions');
   assert.equal(endpoint({url:'https://openrouter.ai/api/v1/chat/completions'},'key'),'https://openrouter.ai/api/v1/key');
 });
+
+// ── Bảng điều khiển theo URL: 1 URL là 1 bảng, thêm/xoá model và API ngay tại chỗ ──
+test('bảng URL hiện danh sách model và API, mọi nút đều trong hạn 64 byte', async () => {
+  const f = fixture(); const c = await f.manager.ensure(env); const u = c.urls[0];
+  // Tên model/API nằm ở NHÃN NÚT; nội dung tin chỉ có phần đầu và số đếm.
+  const boardOf = () => f.telegram.filter(x => (x.method === 'sendMessage' || x.method === 'editMessageText') && String(x.body.text || '').includes('MODEL ·')).at(-1);
+  const labelsOf = call => (call.body.reply_markup?.inline_keyboard || []).flat().map(b => b.text);
+  await f.tap('view:' + u.id);
+  const call = boardOf(), text = call.body.text, labels = labelsOf(call);
+  assert.ok(text.includes('MODEL · 2'), 'phải hiện số model: ' + text.slice(0, 120));
+  assert.ok(text.includes('API · 3'), 'phải hiện số API đã gom theo giá trị key (key-one, key-two, key-three)');
+  assert.ok(labels.some(t => t.includes('m1')) && labels.some(t => t.includes('m2')), 'mỗi model phải có một dòng: ' + labels.join(' | '));
+  assert.ok(labels.some(t => t.includes('Test URL · 2 model × 3 API')), 'phải có nút test cả URL');
+  assert.ok(labels.filter(t => t === '🗑').length >= 2, 'mỗi model phải có nút xoá nhanh');
+  for (const call of f.telegram) for (const row of call.body.reply_markup?.inline_keyboard || []) for (const b of row) assert.ok(Buffer.byteLength(b.callback_data) <= 64, b.callback_data);
+});
+
+test('thêm API cho URL thì áp cho MỌI model, không lộ key ra ngoài', async () => {
+  const f = fixture(); const c = await f.manager.ensure(env); const u = c.urls[0];
+  await f.tap('addapi:' + u.id); await f.say('shared-api-key-9999');
+  const next = await f.manager.config(env);
+  assert.equal(next.urls[0].models.length, 2);
+  for (const m of next.urls[0].models) assert.ok(m.keys.some(k => k.secret === 'shared-api-key-9999'), m.name + ' phải nhận API dùng chung');
+  assert.equal(next.urls[1].models[0].keys.some(k => k.secret === 'shared-api-key-9999'), false, 'không được rò sang URL khác');
+  const sent = f.telegram.filter(x => x.method === 'sendMessage');
+  assert.equal(JSON.stringify(sent).includes('shared-api-key-9999'), false, 'không được gửi key vào chat');
+  // Bảng URL giờ gom API dùng chung thành MỘT dòng: 3 API cũ + 1 API mới = 4.
+  const board = f.telegram.filter(x => (x.method === 'sendMessage' || x.method === 'editMessageText') && String(x.body.text || '').includes('MODEL ·')).at(-1);
+  const labels = (board.body.reply_markup?.inline_keyboard || []).flat().map(b => b.text);
+  assert.ok(board.body.text.includes('API · 4'), 'phải gom API dùng chung: ' + board.body.text.slice(0, 200));
+  assert.ok(labels.some(t => t.includes('dùng cho 2 model')), 'API mới phải ghi rõ dùng cho 2 model: ' + labels.join(' | '));
+});
+
+test('xoá nhanh một model ngay trên bảng URL, phải xác nhận mới xoá', async () => {
+  const f = fixture(); const c = await f.manager.ensure(env); const m = c.urls[0].models[1];
+  await f.tap('rmmodel:' + m.id);
+  assert.equal((await f.manager.config(env)).urls[0].models.length, 2, 'chưa xác nhận thì không được xoá');
+  await f.tap('dormmodel:' + m.id);
+  const next = await f.manager.config(env);
+  assert.equal(next.urls[0].models.length, 1);
+  assert.equal(next.urls[0].models.some(x => x.id === m.id), false);
+  assert.equal(next.urls[0].models[0].name, 'm1', 'model còn lại phải nguyên vẹn');
+});
+
+test('xoá một API thì xoá khỏi MỌI model của URL', async () => {
+  const f = fixture(); await f.manager.ensure(env);
+  let c = await f.manager.config(env);
+  await f.tap('addapi:' + c.urls[0].id); await f.say('shared-api-key-9999');
+  c = await f.manager.config(env);
+  const target = c.urls[0].models[0].keys.find(k => k.secret === 'shared-api-key-9999');
+  assert.ok(target, 'API dùng chung phải tồn tại');
+  await f.tap('rmapi:' + target.id);
+  await f.tap('dormapi:' + target.id);
+  c = await f.manager.config(env);
+  for (const m of c.urls[0].models) assert.equal(m.keys.some(k => k.secret === 'shared-api-key-9999'), false, m.name + ' vẫn còn API đã xoá');
+  assert.equal(c.urls[0].models[0].keys.length, 2, 'các API khác phải giữ nguyên');
+});
+
+test('thêm lại đúng API cũ thì bị từ chối, không tạo bản trùng', async () => {
+  const f = fixture(); const c = await f.manager.ensure(env); const u = c.urls[0];
+  await f.tap('addapi:' + u.id); await f.say('shared-api-key-9999');
+  await f.tap('addapi:' + u.id); await f.say('shared-api-key-9999');
+  const next = await f.manager.config(env);
+  assert.equal(next.urls[0].models[0].keys.filter(k => k.secret === 'shared-api-key-9999').length, 1);
+});
+
+test('API key sai định dạng bị từ chối, không ghi vào kho', async () => {
+  const f = fixture(); const c = await f.manager.ensure(env); const u = c.urls[0];
+  const before = JSON.stringify((await f.manager.config(env)).urls[0]);
+  await f.tap('addapi:' + u.id); await f.say('key co dau cach');
+  assert.equal(JSON.stringify((await f.manager.config(env)).urls[0]), before, 'kho phải nguyên vẹn');
+});

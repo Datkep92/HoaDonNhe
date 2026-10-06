@@ -1,27 +1,32 @@
-# CN Tax Tools v1.1.4
+# CN Tax Tools v1.1.5
 
 ## Có gì mới
 
-- Chat AI dùng Cloudflare làm nguồn cấu hình chung cho EXE và Telegram; có AUTO—Cloudflare và MANUAL—API riêng.
-- Quản lý URL → nhiều model → nhiều key bằng nút Telegram; thêm/sửa/xóa, thêm nhiều model, kiểm tra và xem lịch sử.
-- Deep health check, phân loại lỗi, resolver Chat Completions/Responses, tự chuyển dự phòng, cooldown, phục hồi, sticky conversation và cập nhật revision tại runtime.
-- Sửa nút Telegram không nhận callback và lỗi kết nối riêng của Cloudflare; model lỗi không làm mất key/cấu hình.
-- Copy URL/model; lấy key/full config riêng cho admin, không gửi full key vào group.
-- Chat có trạng thái đang xử lý, hỗ trợ ảnh/file, gọi công cụ và xuất Excel theo quyền đã cấp.
-- Giữ chức năng hiện có: tải hóa đơn nhiều MST, XML/PDF gốc, CAPTCHA/OCR, kho dữ liệu, tổng quan, sao kê/đối chiếu, xuất Excel/MISA, tra cứu MST/tờ khai, hỗ trợ và cập nhật ứng dụng.
+- **Khung Hỗ trợ chung AI/Admin**: một khung chat duy nhất. AI trả lời ngay, admin tiếp quản được bất cứ lúc nào; lịch sử AI và admin ghép theo thứ tự thời gian nên không bị mất tin. Bấm lại nút Hỗ trợ là mở đúng tin mới nhất.
+- **Chủ động chọn “Tiếp tục với AI” hay “Đợi gặp admin/support”** khi câu hỏi liên quan bản quyền/key — app hỏi trước, không tự đoán theo từ khoá. Bản quyền hết hạn vẫn liên hệ được admin.
+- **Admin tiếp quản / trả lại phiên**: khi admin giữ phiên thì AI tạm dừng ngay và huỷ tác vụ đang chạy; admin gõ `/stop` là AI trả lời tiếp. Người không có quyền admin không thể đóng phiên.
+- **AI không lỗ âm thầm**: nếu model cắt ngang giữa chừng, phần đã trả vẫn còn lại kèm lý do thay vì mất trắng; có trạng thái rõ từng bước (đọc yêu cầu → chạy công cụ → tổng hợp → tìm cấu hình AI) và không lộ suy luận nội bộ của model.
+- **Chờ AI tự tìm cấu hình nhanh hơn**: app chọn đúng dạng yêu cầu ngay từ đầu, lùi dần tới mức chat thuần thay vì chờ hàng phút; có trần chờ và báo rõ cấu hình nào đang kiểm tra.
+- **Thêm adapter provider native**: OpenAI Chat, OpenAI Responses, Anthropic và Gemini, giữ function-call/thought signature và JSON Schema; key chỉ nằm trong header, không lọt vào URL hay nhật ký.
+- **Telegram quản trị AI**: `/ai` → **➕ Cấu hình · 3 dòng** (URL, model, key) tự kiểm tra và chọn cấu hình; thêm nút `/stop`, bảng điều khiển cập nhật tại chỗ, deep health check phân loại lỗi và lịch sử kiểm tra.
+- **Giữ nguyên toàn bộ chức năng cũ**: tải hóa đơn nhiều MST, XML/PDF gốc, CAPTCHA/OCR, kho dữ liệu, tổng quan, sao kê/đối chiếu, xuất Excel/MISA, tra cứu MST/tờ khai, bản quyền và cập nhật ứng dụng.
 
 ## Tải và cập nhật
 
-- Cài mới: tải **CN-Tax-Tools-Setup-v1.1.4.exe**, chọn cài đặt hoặc portable.
-- Cập nhật thủ công/self-update: **CN-Tax-Tools-v1.1.4.exe** và file **.sha256** tương ứng.
-- Dữ liệu trong thư mục du_lieu được giữ theo cơ chế cập nhật hiện có. Yêu cầu Windows x64 và Chrome/Edge.
+- Cài mới: tải **CN-Tax-Tools-Setup-v1.1.5.exe** ở phần Assets bên dưới, chọn cài đặt vào Windows hoặc portable.
+- Cập nhật thủ công / self-update: **CN-Tax-Tools-v1.1.5.exe** kèm file **.sha256** tương ứng.
+- Máy đang dùng từ v1.0.2 trở lên: mở app, app tự báo bản mới rồi tải, tự kiểm SHA-256, thay chương trình và khởi động lại. Dữ liệu trong `du_lieu` được giữ nguyên.
+- Yêu cầu: Windows 64-bit (x64), có sẵn Google Chrome hoặc Microsoft Edge. Không cần Node.js/Python/Quyền Administrator.
 
-## Kiểm chứng và giới hạn
+## Kiểm chứng
 
-Bản phát hành qua bộ kiểm thử, xác minh tài nguyên, OCR và smoke của chính EXE, cùng kiểm tra giao diện bản đóng gói. Báo cáo chi tiết: CHATAI_CHECKLIST_FINAL_REPORT.md trong mã nguồn.
+- Bộ kiểm thử toàn dự án: **1020 tests — 1013 PASS, 0 FAIL, 7 SKIP** (bài SKIP không được tính PASS).
+- Bản build này được Actions tự kiểm trước khi phát hành: đủ tài nguyên nhúng bắt buộc, `--ocr-check` giải đúng ảnh CAPTCHA mẫu, `--smoke-test` tải hết tài nguyên giao diện.
+- Báo cáo chi tiết trong mã nguồn: `AI_AUTOMATIC_FLOW_REPORT.md` và `SUPPORT_AI_UPDATE_REPORT.md`.
 
-Kiểm thử cuối: **979 tests — 972 PASS, 0 FAIL, 7 SKIP**; EXE đủ **80/80** tài nguyên bắt buộc. Packaged browser, OCR và smoke đều PASS. Các mục SKIP không được tính PASS.
+## Dịch vụ thật và giới hạn
 
-Cloudflare thật đã chat và gọi health_ping thành công qua openrouter/free với key hiện tại. Model stealth/space-bunny-alpha trả MODEL_NOT_FOUND và được giữ lại để quản trị. Dịch vụ free đôi lúc trả rỗng/rate limit; cần cấu hình dự phòng còn quota để tăng độ ổn định.
-
-Keyboard đã được Telegram API thật chấp nhận; thao tác nhấn/copy riêng trên điện thoại chưa được thử trực tiếp. Responses được kiểm tra bằng fixture; capability vision/reasoning/structured từ metadata chưa thay thế thử nghiệm provider thật. Python/shell tự do vẫn theo feature flag và quyền hiện có; bản này không tự bật các quyền đó.
+- Worker + Cron đã deploy, `/healthz` trả HTTP 200; Telegram API thật chấp nhận các panel và lệnh `/stop`.
+- Adapter Anthropic/Gemini/Responses mới được kiểm bằng fixture — **chưa** có credential native để thử với dịch vụ thật trong đợt này.
+- Pool provider free đôi lúc hết hạn mức hoặc chậm; hệ thống tự chuyển dự phòng và tự phục hồi nhưng không thể đảm bảo provider luôn có quota.
+- Chưa thử trực tiếp thao tác nhấn/copy trên điện thoại Telegram; API bàn phím và quyền admin đã được kiểm.

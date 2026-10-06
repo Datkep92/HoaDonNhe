@@ -30,6 +30,7 @@ const DEFAULT_LANGUAGE = 'vi';
 // thường). `description` tối đa 256 ký tự — giữ ngắn gọn vì Telegram hiện trên
 // nút hẹp, dài quá bị cắt. Thứ tự = thứ tự hiện trong menu.
 const COMMANDS = [
+  { command: 'stop', description: 'Đóng phiên admin trong topic này, cho AI hoạt động lại' },
   { command: 'ai', description: 'Cấu hình AI của bot (menu nút bấm: xem/bật/thêm key/kiểm tra key)' },
   { command: 'ai_add', description: 'Tạo mới hoặc sửa cấu hình AI: /ai add <tên> <url> <model>' },
   { command: 'ai_use', description: 'Bật một cấu hình AI cho mọi máy: /ai use <tên>' },

@@ -70,6 +70,7 @@
     const signature = JSON.stringify(messages);
     if (signature === lastSignature) return;
     lastSignature = signature;
+    window.dispatchEvent(new CustomEvent('hd:support-messages',{detail:messages}));
     announce(messages);
     const container = $('support-messages');
     container.replaceChildren();

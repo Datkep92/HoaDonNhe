@@ -1342,7 +1342,7 @@ function ensureSupportStream() {
   supportStreamController = controller;
   let openedAt = 0;
   support.watchMessages(
-    messages => { lastSupportMessages = messages; broadcastSupport({ type: 'messages', messages }); },
+    messages => { lastSupportMessages = messages;support.observeAiControl(messages);const control=messages.filter(m=>m.controlMode).sort((a,b)=>(a.controlRevision||0)-(b.controlRevision||0)).at(-1);if(control&&control.controlMode!=='auto')aiService?.pauseForAdmin(); broadcastSupport({ type: 'messages', messages }); },
     { signal: controller.signal, onOpen: () => { openedAt = Date.now(); setSupportRealtime(true); log('Đã nối luỒng chat realtime tới Gateway.'); } },
   ).then(result => finishSupportStream(controller, result, openedAt)).catch(error => finishSupportStream(controller, { ok: false, reason: error.message }, openedAt));
 }
@@ -2364,6 +2364,7 @@ async function endpoint(req, res, url) {
         dataDir, secrets, app: getAgentServices(), checkLicense: ensureLicenseAllowed,
         // Đường AI qua Gateway: app không cầm API key (xem SupportStore.aiGateway).
         agentGateway: () => support.aiGateway(),
+        supportFlow: support,
         licenseSignature: () => {
           const value = support.publicLicense();
           return JSON.stringify([value.status, value.expiryAt, value.keyName, value.trial]);

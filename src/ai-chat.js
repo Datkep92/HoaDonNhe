@@ -112,11 +112,11 @@
     nav.querySelectorAll('[data-provider]').forEach(el => el.remove());
     for (const p of config.providers) {
       const button = document.createElement('button'); button.type = 'button'; button.dataset.mode = p.id; button.dataset.provider = p.id;
-      button.textContent = p.label; button.title = p.label; nav.insertBefore(button, $('ai-add'));
+      button.textContent = p.label; button.title = p.label;if(p.id==='agent')button.hidden=true; nav.insertBefore(button, $('ai-add'));
     }
     markMode();
   }
-  function markMode() { $('chat-modes').querySelectorAll('[data-mode]').forEach(button => button.setAttribute('aria-pressed', String(button.dataset.mode === (active?.id || 'support')))); }
+  function markMode() { $('chat-modes').querySelectorAll('[data-mode]').forEach(button => {const id=button.dataset.mode==='support'?'agent':button.dataset.mode;button.setAttribute('aria-pressed',String(id===(active?.id||'agent')));}); }
   // Vẽ giao diện cho một chế độ. Tách riêng khỏi selectMode() để bấm nút đổi
   // giao diện ngay, còn phần hỏi máy chủ chạy sau; khi phần sau lỗi thì gọi lại
   // hàm này với chế độ cũ để quay về đúng trạng thái trước đó.
@@ -128,6 +128,8 @@
     if ($('ai-python').disabled) $('ai-python').checked = false;
     panel.classList.toggle('is-ai', !!active);
     for (const [el, hidden] of initialHidden) el.hidden = active ? true : hidden;
+    panel.querySelector('.support-license').hidden=false;
+    $('support-error').hidden=false;
     $('ai-mode-label').hidden = !active;
     $('ai-mode-label').textContent = active ? active.label + ' · ' + (config.companyId === 'GLOBAL' ? 'Tài liệu chung' : 'MST ' + config.companyId) : '';
     $('ai-workspace').hidden = !active;
@@ -138,9 +140,13 @@
     if (!loading) loading = call('/api/ai/providers').then(value => { config = value; $('ai-legacy').hidden = !value.legacyHistoryAvailable; drawModes(); }).finally(() => { loading = null; });
     return loading;
   }
+  setInterval(async()=>{
+    if(panel.hidden||active?.id!=='agent'||supportMode!=='auto')return;
+    try{const value=await call('/api/ai/providers'),p=value.providers.find(p=>p.id===active.id);if(p?.cloudModel){active.cloudModel=p.cloudModel;active.configRevision=p.configRevision;$('ai-mode-label').textContent=active.label+' · AUTO · '+p.cloudModel+' · rev '+p.configRevision;}}catch{/* Reconnect on the next tick; chat routing remains server-side. */}
+  },15000);
   function message(role, content) {
     const el = document.createElement('article'); el.className = 'ai-message ' + role;
-    const author = document.createElement('small'); author.textContent = role === 'user' ? 'Bạn' : (active?.label || 'AI');
+    const author = document.createElement('small'); author.textContent = role === 'user' ? 'Bạn' : role==='admin'?'Admin':role==='system'?'Hỗ trợ':(active?.label || 'AI');
     const text = document.createElement('div'); renderText(text, content);
     el.append(author, text); $('ai-thread').append(el); $('ai-thread').scrollTop = $('ai-thread').scrollHeight;
     return text;
@@ -203,6 +209,21 @@
     card.append(heading, description, target, params, scope, allow, deny, state); container.append(card);
     $('ai-thread').scrollTop = $('ai-thread').scrollHeight;
   }
+  // NGƯỜI DÙNG tự chọn: tiếp tục với AI hay đợi admin/support. Không tự động đẩy sang admin
+  // theo từ khoá — câu hỏi về bản quyền/key vẫn được hỏi ý trước, và chọn AI thì AI trả lời.
+  function supportOfferCard(container, request, choose) {
+    const card = document.createElement('section'); card.className = 'ai-approval';
+    const heading = document.createElement('strong'); heading.textContent = 'Bạn muốn tiếp tục thế nào?';
+    const description = document.createElement('p'); description.textContent = request.reason;
+    const toAi = document.createElement('button'); toAi.type = 'button'; toAi.className = 'primary'; toAi.textContent = 'Tiếp tục với AI';
+    const toAdmin = document.createElement('button'); toAdmin.type = 'button'; toAdmin.textContent = 'Đợi gặp admin/support';
+    const state = document.createElement('p'); state.className = 'ai-approval-state';
+    const disable = () => { toAi.disabled = true; toAdmin.disabled = true; };
+    toAi.addEventListener('click', () => { disable(); state.textContent = 'Đang tiếp tục với AI…'; choose('ai'); });
+    toAdmin.addEventListener('click', () => { disable(); state.textContent = 'Đang chuyển tới admin/support…'; choose('admin'); });
+    card.append(heading, description, toAi, toAdmin, state); container.append(card);
+    $('ai-thread').scrollTop = $('ai-thread').scrollHeight;
+  }
   async function drawPermissions() {
     if (!active) return;
     const provider = active, records = await call('/api/ai/permissions?id=' + encodeURIComponent(provider.id));
@@ -237,10 +258,29 @@
   }
   async function drawHistory() {
     const id = active.id;
-    const rows = await call('/api/ai/history?id=' + encodeURIComponent(id));
-    if (active?.id !== id) return;
-    $('ai-thread').replaceChildren(); rows.forEach(row => { const text = message(row.role, row.content); attachmentNames(text.parentElement, row.attachments); for (const file of row.files || []) attachFile(text.parentElement, file); });
+    const [rows,supportRows]=await Promise.all([call('/api/ai/history?id='+encodeURIComponent(id)),id==='agent'?call('/api/support/chat',{}).then(v=>v.messages||[]).catch(()=>[]):Promise.resolve([])]);
+    if (active?.id !== id || stream || queue.length) return;
+    const combined=rows.map(row=>({...row,stamp:Date.parse(row.createdAt)||0}));
+    seenSupport.clear();for(const row of supportRows){seenSupport.add(row.id);if(['admin','system'].includes(row.sender))combined.push({role:row.sender,content:row.text,stamp:row.timestamp});}
+    $('ai-thread').replaceChildren();combined.sort((a,b)=>a.stamp-b.stamp).forEach(row=>{const text=message(row.role,row.content);attachmentNames(text.parentElement,row.attachments);for(const file of row.files||[])attachFile(text.parentElement,file);});
+    if(id==='agent')integrateSupport(supportRows);
+    requestAnimationFrame(()=>{$('ai-thread').scrollTop=$('ai-thread').scrollHeight;});
   }
+  const seenSupport=new Set();let supportMode='auto';
+  function integrateSupport(messages) {
+    const controls=(messages||[]).filter(m=>m.controlMode).sort((a,b)=>(a.controlRevision||0)-(b.controlRevision||0));
+    supportMode=controls.at(-1)?.controlMode||'auto';
+    if(active?.id!=='agent')return;
+    if(supportMode!=='auto'){if(supportMode==='admin')stream?.abort();$('ai-mode-label').textContent=supportMode==='admin'?'Admin đang hỗ trợ · AI tạm dừng':'Đang chờ admin liên hệ';}
+    else $('ai-mode-label').textContent='Hỗ trợ chung · AI đang hoạt động';
+    for(const row of messages||[]) {
+      if(row.source==='handoff'&&!seenSupport.has(row.id)){seenSupport.add(row.id);if(!stream&&!$('ai-thread').textContent.includes(row.text))message('assistant',row.text);continue;}
+      if(!['admin','system'].includes(row.sender)||seenSupport.has(row.id))continue;
+      seenSupport.add(row.id);message(row.sender,row.text);
+    }
+  }
+  async function loadSupportHistory(){try{integrateSupport((await call('/api/support/chat',{})).messages);}catch{/* Chat can reconnect through support events. */}}
+  window.addEventListener('hd:support-messages',event=>integrateSupport(event.detail));
   let switchToken = 0, persistActive = Promise.resolve();
   // Gửi các lần ghi "chế độ đang chọn" theo đúng thứ tự bấm: xếp hàng trên một
   // chuỗi promise để lần bấm sau luôn ghi đè lần bấm trước trên máy chủ.
@@ -249,6 +289,7 @@
     return persistActive;
   }
   async function selectMode(id) {
+    if(id==='support')id='agent';
     // Mỗi lần bấm sinh một token. Kết quả tải về của lần bị bấm đè sau sẽ bị bỏ
     // qua (token cũ) nên không ghi đè giao diện của chế độ mới hơn.
     const token = ++switchToken;
@@ -285,7 +326,9 @@
   });
   $('support-toggle').addEventListener('click', () => queueMicrotask(() => {
     syncDock();
-    if (!panel.hidden && !config) loadConfig().catch(e => error(e.message));
+    if (!panel.hidden && !config) loadConfig().then(()=>selectMode('support')).catch(e => error(e.message));
+    else if(!panel.hidden&&!active)void selectMode('support');
+    else if(!panel.hidden&&active&&!stream&&!queue.length)void drawHistory().catch(e=>error(e.message));
   }));
   function draft() {
     const type = $('ai-provider-type').value;
@@ -359,6 +402,11 @@
     try { await call('/api/ai/history', { id: active.id }); await drawHistory(); error(''); } catch (e) { error(e.message); }
   });
   $('ai-stop').addEventListener('click', () => { cancelQueue(); stream?.abort(); });
+  // Chỉ hỏi khi đang dùng chat tích hợp (có phiên hỗ trợ) và phiên đang do AI quản lý.
+  const SUPPORT_INTENT = /(?:admin|quản trị|nhân viên|hỗ trợ viên|người thật|gặp người|nói chuyện với người|liên hệ người|bản quyền|license|licence|kích hoạt|gia hạn|mã key|license key|\bkey\b|khóa ứng dụng)/iu;
+  function needsSupportChoice(text) {
+    return active?.id === 'agent' && supportMode === 'auto' && SUPPORT_INTENT.test(String(text));
+  }
   $('ai-form').addEventListener('submit', event => {
     event.preventDefault(); const text = $('ai-input').value.trim() || (pendingFiles.length ? 'Phân tích các file đính kèm giúp tôi.' : ''); if (!text || !active) return;
     if (queue.length >= 5) { error('Đã có 5 tin nhắn chờ. Chờ AI trả lời hoặc bấm Dừng.'); return; }
@@ -366,18 +414,30 @@
     $('ai-input').value = ''; clearPending(); error('');
     const user = message('user', text); attachmentNames(user.parentElement, selected);
     const output = message('assistant', stream ? 'Đã nhận. Đang chờ lượt xử lý…' : 'Đã nhận. Đang xử lý…');
-    queue.push({ p: active, companyId: config.companyId, text, selected, output, screen: screenContext(), options: { web: !$('ai-web').disabled && $('ai-web').checked, python: !$('ai-python').disabled && $('ai-python').checked } });
-    $('ai-input').focus(); void drainQueue();
+    const item = { p: active, companyId: config.companyId, text, selected, output, screen: screenContext(), options: { web: !$('ai-web').disabled && $('ai-web').checked, python: !$('ai-python').disabled && $('ai-python').checked } };
+    $('ai-input').focus();
+    // Câu hỏi về bản quyền/key, hoặc muốn gặp người thật: hỏi ý TRƯỚC khi gửi. Chọn AI thì
+    // AI trả lời; chọn đợi admin thì mới chuyển phiên (AI tạm dừng tới khi admin /stop).
+    if (needsSupportChoice(text)) {
+      output.removeAttribute('aria-busy');
+      output.textContent = 'Bạn muốn tiếp tục với AI hay đợi admin/support?';
+      supportOfferCard(output.parentElement, { reason: 'Câu này liên quan bản quyền/key, hoặc bạn muốn gặp người trực tiếp.' }, choice => {
+        item.supportChoice = choice;
+        queue.push(item); void drainQueue();
+      });
+      return;
+    }
+    queue.push(item); void drainQueue();
   });
   async function drainQueue() {
     if (stream || !queue.length) return;
-    const { p, companyId, text, selected, output, screen, options } = queue.shift();
+    const { p, companyId, text, selected, output, screen, options, supportChoice } = queue.shift();
     if (active !== p) { output.textContent = 'Đã hủy tin nhắn chờ.'; void drainQueue(); return; }
     const controller = new AbortController(); stream = controller;
     $('ai-send').textContent = 'Gửi tiếp'; $('ai-stop').hidden = false;
-    let completed = false,workingFrame=0;
+    let completed = false,workingFrame=0,workingText='AI đang xử lý',answer='';
     output.setAttribute('aria-busy','true');
-    const working=setInterval(()=>{if(output.getAttribute('aria-busy')==='true')output.textContent='AI đang xử lý'+'.'.repeat(1+(workingFrame++%3));},500);
+    const working=setInterval(()=>{if(output.getAttribute('aria-busy')==='true')output.textContent=workingText+'.'.repeat(1+(workingFrame++%3));},500);
     try {
       const attachments = [];
       for (const file of selected) {
@@ -388,8 +448,8 @@
         const uploaded = await fetch('/api/ai/upload?id=' + encodeURIComponent(p.id) + '&companyId=' + encodeURIComponent(companyId) + '&role=source&filename=' + encodeURIComponent(file.name), { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: file, signal: controller.signal });
         const result = await uploaded.json(); if (!result.ok) throw new Error(result.error || 'Không gửi được file.'); attachments.push(result.value.id);
       }
-      output.textContent = 'Đang xử lý yêu cầu…'; let answer = '';
-      const response = await fetch('/api/ai/stream', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: p.id, companyId, text, screen, attachments, options }), signal: controller.signal });
+      output.textContent = 'Đang xử lý yêu cầu…';
+      const response = await fetch('/api/ai/stream', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: p.id, unified:p.id==='agent', companyId, text, screen, attachments, options, ...(supportChoice?{supportChoice}:{}) }), signal: controller.signal });
       if (!response.ok) throw new Error((await response.json()).error || 'Không kết nối được AI.');
       const reader = response.body.getReader(), decoder = new TextDecoder(); let buffer = '';
       while (true) {
@@ -399,10 +459,11 @@
           const line = buffer.slice(0, boundary); buffer = buffer.slice(boundary + 2);
           if (!line.startsWith('data: ')) continue;
           const data = JSON.parse(line.slice(6));
+          if(data.routing){workingText='Đang tự tìm cấu hình AI';$('ai-status').textContent=workingText+' · '+(data.routing.processed||0)+'/'+(data.routing.total||'?');}
           if (data.reset) { answer = '';output.setAttribute('aria-busy','true');output.textContent = 'Đang xử lý…'; }
           if (typeof data.replace === 'string') { output.setAttribute('aria-busy','false');answer = data.replace; renderText(output, answer); }
           if (data.error) throw new Error(data.error);
-          if (data.status && active === p) $('ai-status').textContent = data.status;
+          if (data.status && active === p) {$('ai-status').textContent=data.status;workingText=data.status.replace(/[…\s.]+$/,'');}
           if (data.file) attachFile(output.parentElement, data.file);
           if (data.approval_required) approvalCard(output.parentElement, data.approval_required, p);
           if (data.delta) { output.setAttribute('aria-busy','false');answer += data.delta; renderText(output, answer); $('ai-thread').scrollTop = $('ai-thread').scrollHeight; }
@@ -410,7 +471,7 @@
         }
       }
       if (!completed) throw new Error('Kết nối bị ngắt trước khi AI trả lời xong.');
-    } catch (e) { if (active === p) { output.textContent = e.name === 'AbortError' ? 'Đã dừng trả lời.' : 'Không hoàn tất: ' + e.message; error(e.name === 'AbortError' ? 'Đã dừng trả lời.' : e.message); } }
+    } catch (e) { if (active === p) { const notice=e.name==='AbortError'?'Đã dừng trả lời.':(answer?'Phản hồi dang dở: ':'')+e.message;if(answer){renderText(output,answer);const note=document.createElement('p');note.textContent=notice;output.append(note);}else output.textContent=notice;error(e.name==='AbortError'?'Đã dừng trả lời.':e.message); } }
     finally {
       clearInterval(working);output.setAttribute('aria-busy','false');
       output.parentElement.querySelectorAll('.ai-approval button,.ai-approval select').forEach(el => { el.disabled = true; });
@@ -420,4 +481,6 @@
       void drainQueue();
     }
   }
+  // The widget may be opened before this deferred script has finished loading.
+  if(!panel.hidden)loadConfig().then(()=>selectMode('support')).catch(e=>error(e.message));
 })();

@@ -19,7 +19,7 @@ function licenseGate(check, signature, now = Date.now) {
 }
 // agentGateway() trả về null khi không có Gateway/token phiên — cấu hình AI quay
 // về key trên máy như trước. Nhận qua tham số để test không phải dựng Gateway giả.
-function createAiService({ dataDir, secrets, app, checkLicense, licenseSignature, fetchImpl = fetch, agentGateway = () => null }) {
+function createAiService({ dataDir, secrets, app, checkLicense, licenseSignature, fetchImpl = fetch, agentGateway = () => null, supportFlow=null }) {
   const files = { providers: path.join(dataDir, 'ai-providers.json'), history: path.join(dataDir, 'ai-history.json') };
   function read(file, fallback) {
     try { return JSON.parse(fs.readFileSync(file, 'utf8')); }
@@ -57,13 +57,13 @@ function createAiService({ dataDir, secrets, app, checkLicense, licenseSignature
   const keyId = id => 'ai-' + id;
   let cloudConfig=null,cloudAt=0,cloudRefresh;
   async function refreshCloud() {
-    const p=config.providers.find(p=>p.id==='agent');if(p?.routingMode!=='auto')return;
+    const p=config.providers.find(p=>p.id==='agent');if(p?.routingMode!=='auto'&&!supportFlow)return;
     const relay=agentGateway();if(!relay?.configURL||Date.now()-cloudAt<15000)return;
     if(cloudRefresh)return cloudRefresh;
     cloudRefresh=(async()=>{try{const r=await fetchImpl(relay.configURL,{headers:{Authorization:'Bearer '+relay.token},signal:AbortSignal.timeout(5000),redirect:'error'});if(r.ok){const j=await r.json();if(j.ok){cloudConfig=j.value;cloudAt=Date.now();}}}catch{/* The relay resolves every turn even if metadata refresh is unavailable. */}finally{cloudRefresh=null;}})();
     return cloudRefresh;
   }
-  function publicConfig() { return { active: config.active, cloudConfig, identity, flags: access.flags, legacyHistoryAvailable: Object.keys(history).length > 0, companyId: app ? companyId() : null, providers: config.providers.map(p => ({ ...p,...(p.id==='agent'&&p.routingMode==='auto'&&cloudConfig?.active?{cloudModel:cloudConfig.active.model,configRevision:cloudConfig.revision}:{}),hasKey: !!secrets.read(keyId(p.id), ['token']).token || (p.id === 'agent' && !!environment.apiKey) })) }; }
+  function publicConfig() { return { active: config.active, cloudConfig, identity, flags: access.flags, legacyHistoryAvailable: Object.keys(history).length > 0, companyId: app ? companyId() : null, providers: config.providers.map(p => ({ ...p,...(p.id==='agent'&&supportFlow?{routingMode:'auto'}:{}),...(p.id==='agent'&&(p.routingMode==='auto'||supportFlow)&&cloudConfig?.active?{cloudModel:cloudConfig.active.model,configRevision:cloudConfig.revision}:{}),hasKey: !!secrets.read(keyId(p.id), ['token']).token || (p.id === 'agent' && !!environment.apiKey) })) }; }
   function provider(id) { const p = config.providers.find(p => p.id === id); if (!p) throw new Error('Không tìm thấy chế độ AI.'); return p; }
   const save = (file, value) => atomicWrite(file, JSON.stringify(value, null, 2));
   function endpoint(p, suffix) { return p.baseURL.replace(/\/$/, '') + suffix; }
@@ -80,7 +80,37 @@ function createAiService({ dataDir, secrets, app, checkLicense, licenseSignature
   async function handle(req, res, url, readBody, reply) {
     if (!url.pathname.startsWith('/api/ai/')) return false;
     if (closing) throw new Error('AI đang đóng; yêu cầu chưa bắt đầu sẽ không chạy.');
-    await gate();
+    // Human support remains accessible when the license has expired.
+    if(url.pathname==='/api/ai/stream'&&req.method==='POST'&&supportFlow) {
+      const input=await readBody(req);
+      if(input.unified===true) {
+        input.id='agent';
+        const text=String(input.text||'').trim();if(!text||text.length>16000)throw Error('Tin nhắn không hợp lệ.');
+        if(input.companyId&&input.companyId!==companyId())throw Error('MST đã đổi. Gửi lại trong công ty hiện tại.');
+        const session=sessionOf(provider('agent'));
+        const ids=input.attachments||[];if(!Array.isArray(ids)||ids.length>4)throw Error('Tối đa 4 file.');
+        const names=ids.map(id=>uploads.load(id,'agent',session.companyId).filename);
+        const handoff=await supportFlow.beginUnified(text,session.companyId,names,input.supportChoice==='admin');
+        input.supportTurn=handoff;
+        req.unifiedBody=input;
+        if(!handoff.aiAllowed) {
+          sessions().append(session,{role:'user',content:text});
+          const answer=handoff.reply||'Đã gửi tin nhắn tới admin.';
+          sessions().append(session,{role:'assistant',content:answer});
+          res.writeHead(200,{'Content-Type':'text/event-stream; charset=utf-8'});
+          res.end('data: '+JSON.stringify({delta:answer})+'\n\ndata: '+JSON.stringify({done:true,handoff:true,control:handoff.control})+'\n\n');return true;
+        }
+        try{await gate();}catch {
+          // Bản quyền không cho dùng AI ⇒ không thể để người dùng "chọn tiếp tục với AI" (AI bị
+          // chặn), nên chuyển thẳng sang admin. Phải nêu wantsAdmin rõ ràng: trước đây nhánh này
+          // sống nhờ regex đoán từ khoá trong Gateway, bỏ regex là reply rỗng.
+          const value=await supportFlow.beginUnified('Cần admin hỗ trợ bản quyền để dùng AI. '+text,session.companyId,names,true);
+          const answer=value.reply||'Đã chuyển yêu cầu tới admin. Admin sẽ liên hệ lại với bạn.';
+          res.writeHead(200,{'Content-Type':'text/event-stream; charset=utf-8'});res.end('data: '+JSON.stringify({delta:answer})+'\n\ndata: '+JSON.stringify({done:true,handoff:true,control:value.control})+'\n\n');return true;
+        }
+      }else req.unifiedBody=input;
+    }
+    if(!(supportFlow&&url.pathname==='/api/ai/providers'&&req.method==='GET'))await gate();
     if (url.pathname === '/api/ai/upload' && req.method === 'POST') {
       const p = provider(url.searchParams.get('id'));
       const requestedCompany = url.searchParams.get('companyId');
@@ -91,7 +121,7 @@ function createAiService({ dataDir, secrets, app, checkLicense, licenseSignature
       });
       reply(res, 200, { ok: true, value: file }); return true;
     }
-    const input = req.method === 'POST' ? await readBody(req) : Object.fromEntries(url.searchParams);
+    const input = req.method === 'POST' ? req.unifiedBody||await readBody(req) : Object.fromEntries(url.searchParams);
     const send = value => reply(res, 200, { ok: true, value });
     const scopedFile = id => {
       if (!/^[a-f0-9-]{36}$/.test(id || '') || !exported[id]) throw new Error('Không tìm thấy file AI.');
@@ -135,7 +165,7 @@ function createAiService({ dataDir, secrets, app, checkLicense, licenseSignature
     } else if (url.pathname === '/api/ai/history/legacy' && req.method === 'GET') {
       provider(input.id); send({ scope: 'UNKNOWN', readOnly: true, rows: (history[input.id] || []).slice(-80) });
     } else if (url.pathname === '/api/ai/history' && ['GET', 'POST'].includes(req.method)) {
-      const p = provider(input.id);
+      const saved = provider(input.id),p=input.unified===true?{...saved,routingMode:'auto'}:saved;
       const session = sessionOf(p);
       if (req.method === 'POST') {
         if (activeStreams.has(p.id)) throw new Error('Dừng trả lời trước khi xoá cuộc trò chuyện.');
@@ -172,7 +202,7 @@ function createAiService({ dataDir, secrets, app, checkLicense, licenseSignature
         'Content-Disposition': "attachment; filename*=UTF-8''" + encodeURIComponent(file.filename), 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' });
       fs.createReadStream(filePath).on('error', () => res.destroy()).pipe(res);
     } else if (url.pathname === '/api/ai/stream' && req.method === 'POST') {
-      const p = provider(input.id);
+      const savedProvider=provider(input.id),p=input.unified===true?{...savedProvider,routingMode:'auto'}:savedProvider;
       if (input.companyId && input.companyId !== companyId()) throw new Error('MST đã đổi; tin nhắn chờ không được chuyển sang công ty khác.');
       const session = sessionOf(p), turnHistory = sessions().history(session, 80);
       const text = String(input.text || '').trim();
@@ -188,7 +218,8 @@ function createAiService({ dataDir, secrets, app, checkLicense, licenseSignature
       const controller = new AbortController();
       const abort = () => controller.abort();
       res.on('close', abort);
-      const timer = setTimeout(abort, 180000);
+      // AUTO may wait for durable recovery; cancellation/disconnection still aborts immediately.
+      const timer = p.id==='agent'&&p.routingMode==='auto'?null:setTimeout(abort,180000);
       activeStreams.add(p.id);
       activeControllers.add(controller);
       const userMessage = { role: 'user', content: text, attachments: currentAttachments.map(uploads.publicRecord) };
@@ -213,7 +244,10 @@ function createAiService({ dataDir, secrets, app, checkLicense, licenseSignature
         const relay = p.id === 'agent' && p.routingMode==='auto' ? agentGateway() : null;
         const useEnvironment = !relay && p.id === 'agent' && !token && !!environment.apiKey;
         const aiConfig = relay
-          ? { endpoint: relay.baseURL, model: p.model, apiKey: relay.token, viaGateway: true }
+          // Shared AUTO uses basic chat; local JSON tools do not require native tool/stream discovery.
+          ? { endpoint: relay.baseURL, model: p.model, apiKey: relay.token, viaGateway: true,
+              stream: false,
+              nativeTools: false }
           : useEnvironment ? environment : { endpoint: endpoint(p, '/chat/completions'), model: p.model, apiKey: token || (p.type === 'local' ? 'ollama' : '') };
         if(p.id==='agent'&&p.routingMode==='auto'&&!relay)throw new Error('Chưa kết nối Cloudflare. Kiểm tra đăng ký/bản quyền hoặc chọn MANUAL.');
         if(relay){aiConfig.conversationId=session.id;aiConfig.onGatewayConfig=value=>{cloudConfig={revision:value.revision,active:{...(cloudConfig?.active||{}),model:value.model}};cloudAt=Date.now();};}
@@ -224,7 +258,8 @@ function createAiService({ dataDir, secrets, app, checkLicense, licenseSignature
         const screen = { currentPage: /^[a-z-]{1,40}$/.test(input.screen?.currentPage || '') ? input.screen.currentPage : 'unknown', filters: {} };
         for (const key of ['from', 'to', 'direction']) if (typeof input.screen?.filters?.[key] === 'string' && input.screen.filters[key].length <= 20) screen.filters[key] = input.screen.filters[key];
         let streamed = false;
-        const answer = await runAgent({ config: aiConfig, history: turnHistory, text, screen, app, dataDir, files: exported, signal: controller.signal, fetchImpl, attachments, attachmentParts: uploads.parts(attachments), options, checkLicense, session, contextBundle, contextTools,
+        const turnLicense=async()=>{const license=await checkLicense();if(input.supportTurn)await supportFlow.aiAllowed();controller.signal.throwIfAborted();return license;};
+        const answer = await runAgent({ config: aiConfig, history: turnHistory, text, screen, app, dataDir, files: exported, signal: controller.signal, fetchImpl, attachments, attachmentParts: uploads.parts(attachments), options, checkLicense:turnLicense, session, contextBundle, contextTools,
           // Cho tool PDF đọc được bytes GỐC của file đính kèm + lần về bản gốc khi gặp bản dẫn xuất (.pdf.txt).
           attachmentFiles: { bytes: record => uploads.bytes(record), source: record => uploads.sourceRecord(record) },
           permissionContext: () => permissionContext(session), permissions: { consume: (...args) => permissionEngine().consume(...args) },
@@ -242,13 +277,14 @@ function createAiService({ dataDir, secrets, app, checkLicense, licenseSignature
             emit(value);
           } });
         controller.signal.throwIfAborted();
+        if(input.supportTurn){const posted=await supportFlow.completeUnified(input.supportTurn.id,input.supportTurn.control.revision,answer);if(!posted?.accepted)throw Error('Admin đã tiếp quản. AI tạm dừng.');}
         sessions().append(session, { role: 'assistant', content: answer, files: turnFiles });
         emit(streamed ? { replace: answer } : { delta: answer });
         sessions().updateJob(jobId, 'completed'); completed = true; emit({ done: true, ...(relay?{configRevision:cloudConfig?.revision,cloudModel:cloudConfig?.active?.model}:{}),sessionId: session.id, companyId: session.companyId, selectedCompanyId: companyId(), jobId }); res.end();
       } catch (error) {
         sessions().append(session, { role: 'assistant', content: 'Không hoàn tất: ' + (controller.signal.aborted ? 'Tác vụ đã dừng.' : error.message), files: turnFiles });
         if (!res.headersSent) throw error;
-        if (!res.destroyed) { res.write('data: ' + JSON.stringify({ reset: true, error: controller.signal.aborted ? 'Tác vụ AI đã dừng hoặc hết thời gian.' : error.message }) + '\n\n'); res.end(); }
+        if (!res.destroyed) { res.write('data: ' + JSON.stringify({ error: controller.signal.aborted ? 'Tác vụ AI đã dừng hoặc admin đã tiếp quản.' : error.message }) + '\n\n'); res.end(); }
       } finally {
         if (!completed) sessions().updateJob(jobId, controller.signal.aborted ? 'cancelled' : 'failed');
         controller.abort(); clearTimeout(timer); res.off('close', abort); activeStreams.delete(p.id);
@@ -257,6 +293,6 @@ function createAiService({ dataDir, secrets, app, checkLicense, licenseSignature
     } else reply(res, 404, { ok: false, error: 'Không có chức năng AI này.' });
     return true;
   }
-  return { handle, close() { closing = true; for (const controller of activeControllers) controller.abort(); permissionStore?.close(); if (!activeControllers.size) closeStores(); } };
+  return { handle, pauseForAdmin() { for(const controller of activeControllers)controller.abort(); }, close() { closing = true; for (const controller of activeControllers) controller.abort(); permissionStore?.close(); if (!activeControllers.size) closeStores(); } };
 }
 module.exports = { createAiService, licenseGate };

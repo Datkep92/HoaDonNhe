@@ -49,6 +49,26 @@ function findMakensis() {
 // thứ người dùng nhận được (bản 1.0.7 phát hành thiếu hẳn tab Sao kê ngân hàng mà không ai biết).
 // Bản không có trong bảng thì bỏ qua mục này, phần cài đặt/cập nhật vẫn đầy đủ.
 const WHATS_NEW = {
+  '1.1.5': [
+    '- **Khung Hỗ trợ chung AI/Admin**: một khung chat duy nhất. AI trả lời ngay, admin tiếp quản',
+    '  được bất cứ lúc nào; lịch sử AI và admin ghép theo thứ tự thời gian nên không bị mất tin.',
+    '  Bấm lại nút Hỗ trợ là mở đúng tin mới nhất.',
+    '- **Chủ động chọn "Tiếp tục với AI" hay "Đợi gặp admin/support"** khi câu hỏi liên quan bản',
+    '  quyền/key — app hỏi trước, không tự đoán theo từ khoá. Bản quyền hết hạn vẫn liên hệ được admin.',
+    '- **Admin tiếp quản / trả lại phiên**: khi admin giữ phiên thì AI tạm dừng ngay và huỷ tác vụ đang',
+    '  chạy; admin gõ `/stop` là AI trả lời tiếp. Người không có quyền admin không thể đóng phiên.',
+    '- **AI không lỗ âm thầm**: nếu model cắt ngang giữa chừng, phần đã trả vẫn còn lại kèm lý do',
+    '  thay vì mất trắng; có trạng thái rõ từng bước (đọc yêu cầu → chạy công cụ → tổng hợp →',
+    '  tìm cấu hình AI) và không lộ suy luận nội bộ của model.',
+    '- **Chờ AI tự tìm cấu hình nhanh hơn**: app chọn đúng dạng yêu cầu ngay từ đầu, lùi dần tới mức',
+    '  chat thuần thay vì chờ hàng phút; có trần chờ và báo rõ cấu hình nào đang kiểm tra.',
+    '- **Thêm adapter provider native**: OpenAI Chat, OpenAI Responses, Anthropic và Gemini,',
+    '  giữ function-call/thought signature và JSON Schema; key chỉ nằm trong header, không lọt vào URL.',
+    '- Telegram: `/ai` → **➕ Cấu hình · 3 dòng** (URL, model, key), tự kiểm tra và chọn cấu hình;',
+    '  thêm nút `/stop`, bảng điều khiển cập nhật tại chỗ, có deep health check và lịch sử kiểm tra.',
+    '- **Giữ nguyên toàn bộ chức năng cũ**: tải hóa đơn nhiều MST, XML/PDF gốc, CAPTCHA/OCR, kho dữ liệu,',
+    '  tổng quan, sao kê/đối chiếu, xuất Excel/MISA, tra cứu MST/tờ khai, bản quyền và cập nhật ứng dụng.',
+  ],
   '1.1.0': [
     '- **Một kỳ lọc chung cho toàn bộ app**: trước mỗi tab một bộ lọc riêng và tự khởi đầu bằng',
     '  kỳ khác nhau (Tổng quan = tháng này, Kho dữ liệu = năm, Sao kê = tất cả) nên chuyển tab thấy',

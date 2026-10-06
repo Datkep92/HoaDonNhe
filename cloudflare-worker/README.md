@@ -82,6 +82,40 @@ updates when repairing this filter.
 
 ## AI router v3 — registry chung cho Telegram và EXE
 
+### Luồng tự động (06/10/2026)
+
+Trong `/ai`, chọn **➕ Cấu hình · 3 dòng**, trả lời URL, model và API key (mỗi giá trị
+một dòng). Hệ thống tự tạo tên, dedupe, nhận diện giao thức, deep test và chọn cấu hình.
+Không cần sửa endpoint hoặc bấm chuyển model. Tin chứa key được xóa sau khi lưu.
+
+Các wire format hỗ trợ: OpenAI Chat Completions, Responses, Anthropic Messages và
+Gemini native. URL/model chỉ là gợi ý thứ tự discovery; phản hồi thực tế xác nhận
+giao thức. Anthropic dùng header x-api-key/version, Gemini dùng x-goog-api-key;
+không đưa key vào query string và không theo redirect. Gemini giữ thought signatures,
+function-call IDs và JSON Schema theo [tài liệu function calling](https://ai.google.dev/gemini-api/docs/generate-content/function-calling).
+
+Giới hạn thử của một request được giữ để bảo vệ ngân sách Worker, nhưng phần chưa xét
+được chuyển sang job bền vững trong registry mã hóa, có cursor, lease và HMAC continuation.
+Cron mỗi phút tiếp tục job bị gián đoạn và kiểm tra cấu hình đến hạn phục hồi. Cấu hình
+khỏe không bị deep-test lại toàn bộ theo phút. Các isolate chia sẻ lease và CAS; job
+READY cũ mất hiệu lực không che job failover mới.
+
+Gateway trả HTTP 503 với `AI_ROUTING_PENDING` hoặc `HEALTH_CHECK_IN_PROGRESS`, `jobId`,
+progress và retry metadata khi đang tìm cấu hình. `GET /v1/ai/jobs/<jobId>` cần phiên/bản
+quyền như chat; chỉ trả status/progress/error counts/revision, không trả request hoặc key.
+EXE AUTO tự poll và gửi lại cùng messages khi READY, hủy ngay khi user bấm dừng/đóng kết
+nối. `AI_CONFIG_EXHAUSTED` chỉ xuất hiện khi đã xét toàn bộ pool phù hợp; lỗi tạm thời
+giữ trạng thái chờ phục hồi. Không retry sau khi đã stream nội dung cho client.
+
+Telegram tự cập nhật panel đã có, gom refresh theo 5 giây và cron. Trạng thái key phân
+biệt chat đã xác minh với chỉ xác thực key; chi tiết có protocol, thời điểm check/retry.
+Quota chỉ lan sang model dùng chung credential khi có bằng chứng phạm vi key/account;
+quota model/rate limit không tự làm chết mọi model ở URL đó. Tôn trọng Retry-After.
+
+EXE kiểm thử riêng: `release/CN-Tax-Tools-v1.1.4-automatic.exe`. Cần dùng client mới một
+lần để có luồng tự chờ job và refresh metadata; sau đó đổi cấu hình không cần tải lại
+EXE. Release 1.1.4 trên GitHub không bị ghi đè. Xem `../AI_AUTOMATIC_FLOW_REPORT.md`.
+
 Bật `AI_ADMIN_V2_ENABLED=1` và `AI_ROUTER_V3_ENABLED=1` bằng cấu hình Wrangler hiện tại.
 Triển khai bằng `npx wrangler deploy` để bundle các module `index.js`, `ai-admin.js` và
 `ai-routing.js`. Registry mã hóa lưu trong Firebase; cập nhật bằng ETag/CAS, không lưu

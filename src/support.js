@@ -385,7 +385,7 @@ class SupportStore {
     const remote = this.gateway('/v1/chats/status', this.publicDevice(), true);
     if (!remote) return { messages: this.data.messages };
     const value = await remote;
-    return { messages: value.messages || [] };
+    return { messages: value.messages || [], control:value.control||{mode:'auto',revision:0} };
   }
 
   // ---- CHAT REALTIME: lắng nghe thay đổi, KHÔNG hỏi định kỳ ----
@@ -669,6 +669,31 @@ class SupportStore {
     if (this.data.messages.length > MAX_MESSAGES) this.data.messages.splice(0, this.data.messages.length - MAX_MESSAGES);
     this.save();
     return message;
+  }
+  async beginUnified(text,companyId,attachments=[],wantsAdmin=false) {
+    // wantsAdmin: do NGƯỜI DÙNG tự chọn "Đợi admin/support" trong app. Gateway chỉ ghi nhận,
+    // không tự đoán theo từ khoá — nhờ vậy khách hỏi về bản quyền vẫn được hỏi ý trước.
+    const remote=this.gateway('/v1/chats/messages',{...this.publicDevice(),text,companyId,attachments,unified:true,wantsAdmin:wantsAdmin===true},true);
+    if(!remote)throw Error('Chưa kết nối máy chủ hỗ trợ. Đăng ký thiết bị trước khi gửi.');
+    const value=await remote;this.aiControl=value.control;this.aiControlAt=Date.now();return value;
+  }
+  async aiAllowed() {
+    // CHỈ chặn khi admin THẬT SỰ đang giữ phiên. Lệch số phiên bản một mình không phải lý do
+    // chặn: sau khi admin /stop, số phiên bản đổi nhưng phiên đã trả về AI, nên chặn ở đây
+    // làm app báo "Admin đang hỗ trợ" oan. Việc admin tiếp quản GIỮA lượt vẫn được chốt ở
+    // completeUnified (câu trả lời không được ghi nếu phiên đã đổi chủ).
+    const control=this.aiControl&&Date.now()-this.aiControlAt<750?this.aiControl:await this.gateway('/v1/chats/control',this.publicDevice(),true);
+    if(!control)throw Error('Không xác minh được phiên hỗ trợ.');
+    this.aiControl=control;this.aiControlAt=Date.now();
+    if(control.mode!=='auto')throw Object.assign(Error('Admin đang hỗ trợ. AI đã tạm dừng.'),{code:'SUPPORT_ADMIN_ACTIVE'});
+    return control;
+  }
+  observeAiControl(messages) {
+    const value=messages.filter(m=>m.controlMode).sort((a,b)=>(a.controlRevision||0)-(b.controlRevision||0)).at(-1);
+    if(value&&(!this.aiControl||(value.controlRevision||0)>=this.aiControl.revision)){this.aiControl={mode:value.controlMode,revision:value.controlRevision||0};this.aiControlAt=Date.now();}
+  }
+  async completeUnified(turnId,revision,text) {
+    return this.gateway('/v1/chats/ai-reply',{...this.publicDevice(),turnId,revision,text},true);
   }
 }
 

@@ -102,7 +102,7 @@ const click = id => evaluate(`document.getElementById(${JSON.stringify(id)}).cli
   await until(() => evaluate("document.getElementById('support-panel').classList.contains('is-ai')"), 'agent mode');
   assert.equal(await evaluate("document.getElementById('support-panel').getBoundingClientRect().height"), supportBounds.height);
   await evaluate("document.getElementById('ai-input').value='Kiểm tra hóa đơn';document.getElementById('ai-send').click()");
-  await until(() => evaluate("document.getElementById('ai-error').textContent.includes('Cloudflare')"), 'AUTO unavailable message');
+  await until(() => evaluate("document.getElementById('ai-error').textContent.includes('máy chủ hỗ trợ')"), 'AUTO support unavailable message');
   await click('ai-edit');await until(()=>evaluate("document.getElementById('ai-provider-dialog').open"),'AUTO editor');
   assert.equal(await evaluate("document.getElementById('ai-routing-mode').value"),'auto');
   assert.equal(await evaluate("document.getElementById('ai-key-label').hidden && document.getElementById('ai-provider-api').hidden"),true);
@@ -112,7 +112,7 @@ const click = id => evaluate(`document.getElementById(${JSON.stringify(id)}).cli
   await click('support-close'); assert.equal(await evaluate("document.getElementById('support-panel').hidden"), true);
   await click('support-toggle');
   await evaluate("document.querySelector('[data-mode=support]').click()");
-  await until(() => evaluate("!document.getElementById('support-form').hidden"), 'support restored');
+  await until(() => evaluate("!document.getElementById('ai-form').hidden && document.getElementById('support-form').hidden"), 'one shared support composer');
   await click('ai-add'); await until(() => evaluate("document.getElementById('ai-provider-dialog').open"), 'editor');
   await evaluate(`document.getElementById('ai-provider-label').value='AI trên máy thử nghiệm';document.getElementById('ai-provider-type').value='local';document.getElementById('ai-provider-type').dispatchEvent(new Event('change'));document.getElementById('ai-provider-url').value='http://127.0.0.1:${upstream.address().port}/v1';document.getElementById('ai-provider-model').value='fixture'`);
   await click('ai-models'); await until(() => evaluate("document.getElementById('ai-model-list').children.length===1"), 'models');
@@ -128,7 +128,7 @@ const click = id => evaluate(`document.getElementById(${JSON.stringify(id)}).cli
   await evaluate("document.getElementById('ai-input').value='Hóa đơn gần nhất mua vào của nhà cung cấp nào';document.getElementById('ai-send').click()");
   await until(() => evaluate("document.getElementById('ai-thread').textContent.includes('Hóa đơn số 309, tổng tiền 1500000, nhà cung cấp Nhà cung cấp thử nghiệm')&&document.getElementById('ai-stop').hidden"), 'actual latest buy supplier');
   await evaluate("document.querySelector('[data-mode=support]').click()");
-  await until(() => evaluate("!document.getElementById('support-form').hidden"), 'support after export');
+  await until(() => evaluate("!document.getElementById('ai-form').hidden && document.getElementById('support-form').hidden"), 'shared support after export');
   await evaluate("[...document.querySelectorAll('[data-provider]')].at(-1).click()");
   await until(() => evaluate("[...document.querySelectorAll('[data-provider]')].at(-1).getAttribute('aria-pressed')==='true' && document.querySelectorAll('.ai-file').length===1"), 'history restores file');
   await evaluate("document.querySelector('.ai-file-actions button:last-child').click()");
@@ -175,7 +175,7 @@ const click = id => evaluate(`document.getElementById(${JSON.stringify(id)}).cli
   await until(() => evaluate("(()=>{const r=document.getElementById('support-panel').getBoundingClientRect();return r.left>=0&&r.right<=innerWidth&&r.top>=0&&r.bottom<=innerHeight})()"), 'narrow dock bounds');
   if (screenshotDir) fs.writeFileSync(path.join(screenshotDir, 'ai-mobile.png'), Buffer.from((await client.Page.captureScreenshot()).data, 'base64'));
   await evaluate("document.querySelector('[data-mode=support]').click()");
-  await until(() => evaluate("!document.getElementById('support-form').hidden"), 'support restored again');
+  await until(() => evaluate("!document.getElementById('ai-form').hidden && document.getElementById('support-form').hidden"), 'shared support restored again');
   await click('support-close'); assert.equal(await evaluate("document.getElementById('support-panel').hidden"), true);
   assert.deepEqual(errors, []); assert.deepEqual(await evaluate('window.aiCspErrors'), []);
   console.log('PASS: concatenated tool JSON; CSV → full analysis → Excel; instant queue/image; approval deny/revoke/allow → real app selection; company history/artifact isolation; responsive chat, support and clean CSP');

@@ -97,6 +97,10 @@ function installFetchStub() {
       try { body = options.body ? JSON.parse(options.body) : null; } catch { body = options.body || null; }
       calls.firebase.push({ method: options.method || 'GET', path, body });
       const handler = backend.firebase;
+      if(path.endsWith('/control.json')) {
+        const response=toResponse(typeof handler==='function'?handler(path,options.method||'GET',body):null);
+        response.headers.set('ETag','fixture-control');return response;
+      }
       if (typeof handler === 'function') return toResponse(handler(path, options.method || 'GET', body));
       return jsonResponse(handler === undefined ? null : handler);
     }
@@ -121,6 +125,7 @@ function installFetchStub() {
       let sent = null;
       try { sent = options.body ? JSON.parse(options.body) : null; } catch { sent = options.body || null; }
       calls.telegram.push({ url: target, method: options.method || 'GET', body: sent });
+      if(target.endsWith('/getChatMember'))return jsonResponse({ok:true,result:{status:backend.memberStatus||'administrator'}});
       const handler = backend.telegram;
       if (typeof handler === 'function') return toResponse(handler(target));
       return jsonResponse({ ok: true, result: { message_id: 1, message_thread_id: 7 } });
@@ -134,7 +139,7 @@ const post = (path, body, headers = {}) => worker.fetch(
   new Request(WORKER_URL + path, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...headers },
-    body: JSON.stringify(body || {}),
+    body: JSON.stringify(body?.message ? {...body,message:{chat:{id:ENV.TELEGRAM_CHAT_ID},from:{id:123},...body.message}} : body || {}),
   }),
   ENV,
 );
@@ -326,7 +331,7 @@ test('tạo topic: khoá trong isolate chặn hai request song song tạo trùng
 const webhook = (text, headers = {}) => worker.fetch(new Request('https://gateway.test/v1/telegram/webhook', {
   method: 'POST',
   headers: { 'Content-Type': 'application/json', 'X-Telegram-Bot-Api-Secret-Token': 'test-webhook-secret', ...headers },
-  body: JSON.stringify({ message: { message_id: 1, from: { id: 1, is_bot: false }, message_thread_id: 10, date: Math.floor(Date.now() / 1000), text } }),
+  body: JSON.stringify({ message: { chat:{id:ENV.TELEGRAM_CHAT_ID}, message_id: 1, from: { id: 1, is_bot: false }, message_thread_id: 10, date: Math.floor(Date.now() / 1000), text } }),
 }), ENV);
 
 // NÚT BẤM của /ai: Telegram gửi callback_query (không có `message`).
@@ -342,7 +347,7 @@ const tap = (data, threadId = 10) => worker.fetch(new Request('https://gateway.t
 const say = (text, options = {}) => worker.fetch(new Request('https://gateway.test/v1/telegram/webhook', {
   method: 'POST',
   headers: { 'Content-Type': 'application/json', 'X-Telegram-Bot-Api-Secret-Token': 'test-webhook-secret' },
-  body: JSON.stringify({ message: { message_id: 2, from: { id: 1, is_bot: false }, message_thread_id: options.threadId || 10, date: Math.floor(Date.now() / 1000), text, ...(options.replyTo ? { reply_to_message: { message_id: options.replyTo } } : {}) } }),
+  body: JSON.stringify({ message: { chat:{id:ENV.TELEGRAM_CHAT_ID},message_id: 2, from: { id: 1, is_bot: false }, message_thread_id: options.threadId || 10, date: Math.floor(Date.now() / 1000), text, ...(options.replyTo ? { reply_to_message: { message_id: options.replyTo } } : {}) } }),
 }), ENV);
 
 const sentKeyboards = () => calls.telegram.map(c => (c.body && c.body.reply_markup && c.body.reply_markup.inline_keyboard) || []).filter(rows => rows.length);
@@ -729,6 +734,37 @@ const aiPost = (token, body) => worker.fetch(new Request(WORKER_URL + '/v1/ai/ch
   headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: 'Bearer ' + token } : {}) },
   body: JSON.stringify(body || { model: 'client-model', messages: [{ role: 'user', content: 'chào' }] }),
 }), ENV);
+
+test('admin reply stops AI at Gateway; /stop releases the same room; non-admin cannot release', async()=>{
+  const token=await aiToken();let control=null;
+  setBackend({firebase:(p,method,body)=>{
+    if(p.includes('/telegramTopics/'))return {chatRoomId:ROOM};
+    if(p.endsWith('/control.json')){if(method==='PUT')control=body;return control;}
+    if(method==='POST')return {name:'support-message'};
+    return null;
+  }});
+  await webhook('Tôi đang kiểm tra bản quyền cho bạn');
+  assert.equal(control.mode,'admin');assert.equal((await aiPost(token)).status,409);
+  backend.memberStatus='member';await webhook('/stop');assert.equal(control.mode,'admin');
+  backend.memberStatus='administrator';await webhook('/stop');assert.equal(control.mode,'auto');
+  assert.ok(calls.firebase.some(c=>c.body?.controlMode==='auto'));
+  assert.ok(calls.firebase.some(c=>c.body?.sender==='admin'));
+});
+
+test('unified support license request reaches Telegram and acknowledges without spending AI quota',async()=>{
+  const token=await aiToken('Expired');let control=null;
+  setBackend({firebase:(p,method,body)=>{
+    if(p.endsWith('/control.json')){if(method==='PUT')control=body;return control;}
+    if(p.endsWith('/meta.json'))return {telegramThreadId:10};
+    if(p.includes('/telegramTopics/'))return {chatRoomId:ROOM};
+    return {name:'request-license'};
+  }});
+  const r=await post('/v1/chats/messages',{machineId:MACHINE,installationId:UUID,chatRoomId:ROOM,text:'Xin key bản quyền',unified:true,wantsAdmin:true},{Authorization:'Bearer '+token});
+  assert.equal(r.status,200);const value=(await r.json()).value;
+  assert.equal(value.aiAllowed,false);assert.match(value.reply,/Admin sẽ liên hệ/);assert.equal(control.mode,'waiting');
+  assert.ok(calls.telegram.some(c=>c.body?.text==='Xin key bản quyền'));
+  assert.equal(calls.ai.length,0);
+});
 
 test('proxy AI đổi model của client sang model admin đặt, và key không bao giờ lộ ra app', async () => {
   const token = await aiToken();

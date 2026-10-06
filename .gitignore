@@ -36,6 +36,8 @@ DANH SÁCH HÓA ĐƠN - 2026-09-19T140856.168.xlsx
 # Secrets - real credentials, never commit
 code.txt
 support-gateway/README.md
+# scriptId cua du an Google Apps Script rieng cua may dang dung (tools/deploy-apps-script.cjs)
+support-gateway/apps-script/.clasp.json
 # Thông tin CRM vừa dựng + shared secret (tools/provision-crm.cjs ghi ra)
 .crm-new.json
 

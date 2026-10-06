@@ -1,5 +1,5 @@
 // Telegram AI administration. The store is encrypted and updated with Firebase ETags.
-import { classify, configurationId, compatible, requiredCapabilities, healthResult, deepCheck, resolveCall } from './ai-routing.js';
+import { classify, configurationId, compatible, requiredCapabilities, healthResult, deepCheck, chatCheck, resolveCall } from './ai-routing.js';
 const enc = new TextEncoder();
 const id = () => crypto.randomUUID().replaceAll('-', '').slice(0, 16);
 const mask = x => x.length > 10 ? x.slice(0, 4) + '…' + x.slice(-4) : '***';
@@ -64,9 +64,57 @@ function locate(c, nodeId) {
 function allKeys(c) { return c.urls.flatMap(u => u.models.flatMap(m => m.keys.map(k => ({ u, m, k })))); }
 function state(k) {
   if (!k.enabled) return '⏸ tắt';
+  if(k.testLease?.until>Date.now()||k.health?.status==='checking')return '🔵 đang kiểm tra';
   if (!k.health?.checkedAt) return '⚪ chưa kiểm tra';
-  const h = k.health;
+  const h = k.route?.checkedAt?k.route:k.health;
+  if(h.status==='ok'&&!k.route?.confirmed)return '🟡 key hợp lệ · cấu hình chưa xác minh';
   return (h.status === 'ok' ? '🟢 ' : h.status === 'auth' ? '🔴 ' : h.status === 'quota' ? '🟠 ' : '🟡 ') + h.label;
+}
+// ── Bảng điều khiển theo URL ────────────────────────────────────────────────
+// Một URL là MỘT bảng: danh sách model + danh sách API + nút test toàn bộ.
+// Che mọi giá trị key khỏi văn bản trước khi lưu hoặc gửi ra ngoài.
+function redactSecret(text, c) {
+  let out = String(text || '');
+  for (const x of allKeys(c)) if (x.k.secret && x.k.secret.length >= 8) out = out.split(x.k.secret).join('[key ẩn]');
+  return out;
+}
+export function apiName(secret) { return secret.length > 14 ? secret.slice(0, 10) + '…' + secret.slice(-4) : secret; }
+// Gom API của một URL theo GIÁ TRỊ key: một API dùng chung cho 7 model chỉ hiện MỘT dòng.
+export function urlApis(u) {
+  const groups = new Map();
+  for (const m of u.models) for (const k of m.keys) {
+    let g = groups.get(k.secret);
+    if (!g) { g = { secret: k.secret, name: k.name, keys: [], models: [] }; groups.set(k.secret, g); }
+    g.keys.push(k);
+    if (!g.models.includes(m.name)) g.models.push(m.name);
+  }
+  return [...groups.values()];
+}
+function urlState(u) {
+  const keys = u.models.flatMap(m => m.keys);
+  if (!keys.length) return '⚪ chưa có API';
+  if (keys.some(k => k.route?.status === 'ok' && k.route?.confirmed)) return '🟢';
+  if (keys.some(k => k.health?.status === 'ok')) return '🟡';
+  return keys.some(k => k.health?.checkedAt || k.route?.checkedAt) ? state(keys.find(k => k.health?.checkedAt || k.route?.checkedAt)).split(' ')[0] : '⚪ chưa kiểm tra';
+}
+// Thêm MỘT API cho cả URL: mọi model dùng chung key đó — đúng cách Telegram gọi AI.
+export function attachApi(u, secret) {
+  const name = apiName(secret);
+  let added = 0;
+  for (const m of u.models) {
+    if (m.keys.some(k => k.secret === secret) || m.keys.length >= 30) continue;
+    m.keys.push({ id: id(), name, secret, enabled: true, health: {} });
+    added++;
+  }
+  return added;
+}
+// Xoá một API khỏi MỌI model của URL (theo giá trị key, không chỉ một bản ghi).
+export function detachApi(u, keyId) {
+  const target = u.models.flatMap(m => m.keys).find(k => k.id === keyId);
+  if (!target) throw Error('Không tìm thấy API.');
+  let removed = 0;
+  for (const m of u.models) { const before = m.keys.length; m.keys = m.keys.filter(k => k.secret !== target.secret); removed += before - m.keys.length; }
+  return { name: target.name, secret: target.secret, removed };
 }
 export function candidates(c, now = Date.now()) {
   const urls = c.urls.filter(u => u.enabled && (u.retryAt || 0) <= now);
@@ -92,14 +140,19 @@ export function createAiAdmin(deps) {
   }
   async function read(env) { const r = await deps.read(env); return { ...r, value: await unseal(r.value, env.TOKEN_SECRET) }; }
   async function update(env, fn, actor = 'system') {
-    for (let attempt = 0; attempt < 5; attempt++) {
+    for (let attempt = 0; attempt < 24; attempt++) {
       const r = await read(env);
       const c = r.value || migrate(await deps.legacy(env));
       const result = await fn(c);
       if (result?.skip) return { c, result };
+      for(const j of Object.values(c.jobs||{}))if(j.kind==='routing'&&j.epoch!==(c.configEpoch||0))j.status='superseded';
+      const finished=Object.values(c.jobs||{}).filter(j=>['complete','ready','superseded'].includes(j.status)).sort((a,b)=>b.startedAt-a.startedAt);
+      const keep=new Set(finished.slice(0,100).filter(j=>Date.now()-j.startedAt<86400000).map(j=>j.id));
+      c.jobs=Object.fromEntries(Object.entries(c.jobs||{}).filter(([key,j])=>!['complete','ready','superseded'].includes(j.status)||keep.has(key)));
       c.revision++; c.updatedAt = Date.now();
       c.audit = [...(c.audit || []), { at: c.updatedAt, actor: String(actor), operation: result?.operation || 'update' }].slice(-100);
       if (await deps.write(env, await seal(c, env.TOKEN_SECRET), r.etag)) return { c, result };
+      await new Promise(resolve=>setTimeout(resolve,5+Math.floor(Math.random()*20)));
     }
     throw Error('Có người đang sửa đồng thời. Thử lại.');
   }
@@ -133,6 +186,7 @@ export function createAiAdmin(deps) {
   }
   async function show(env, thread, target = 'root', page = 0, expanded = false, notice = '') {
     const c = await ensure(env);
+    if(env.AI_ROUTER_V3_ENABLED==='1'&&thread&&c.adminThread!==thread)await update(env,c=>{c.adminThread=thread;return {operation:'admin-panel'};});
     const usedModel=c.currentConfig?.id?.split('.')[1]||c.activeModel;
     let title, rows, children;
     if (target === 'root') {
@@ -144,7 +198,7 @@ export function createAiAdmin(deps) {
           for (const k of m.keys) title += '  │  └ ' + k.name + ' ' + mask(k.secret) + ' · ' + state(k) + '\n';
         }
       }
-      children = c.urls; rows = [[button('➕ URL', 'newurl'), button('🌳 Xem cây', 'tree')], [button('🔍 Check key', 'check:all'), button('🩺 Deep test…', 'deep:all')], [button('🕒 Nhật ký', 'audit'),button('ℹ Trợ giúp','help')],[button('💬 Hỏi AI','chat')]];
+      children = c.urls; rows = [[button('➕ Cấu hình · 3 dòng','configure')],[button('➕ URL', 'newurl'), button('🌳 Xem cây', 'tree')], [button('🔍 Check + fallback', 'check:all'), button('🩺 Deep test…', 'deep:all')], [button('🕒 Nhật ký', 'audit'),button('ℹ Trợ giúp','help')],[button('💬 Hỏi AI','chat')]];
       const jobs = Object.values(c.jobs || {}).filter(j => j.status === 'running' || j.status === 'interrupted');
       for (const j of jobs.slice(-2)) rows.push([button('▶ Tiếp tục check ' + j.cursor + '/' + j.items.length, 'resume:' + j.id)]);
     } else {
@@ -152,8 +206,32 @@ export function createAiAdmin(deps) {
       title = (l.type === 'url' ? '🌐 ' : l.type === 'model' ? '🧠 ' : '🔑 ') + label(n) + '\nURL: ' + l.u.url;
       if (l.m) title += '\nModel: ' + l.m.name;
       if (l.k) title += '\n' + mask(n.secret) + ' · ' + state(n);
+      if(l.k&&n.route?.checkedAt)title+='\nCheck: '+new Date(n.route.checkedAt).toLocaleString('vi-VN',{timeZone:'Asia/Ho_Chi_Minh'})+(n.route.retryAt>Date.now()?'\nTự thử lại: '+new Date(n.route.retryAt).toLocaleString('vi-VN',{timeZone:'Asia/Ho_Chi_Minh'}):'')+'\nProtocol: '+(n.route.protocol||'chưa xác minh')+(n.route.detail?'\n⚠ Nhà cung cấp báo: '+redactSecret(n.route.detail,c):'');
       rows = [[button('✏ Đổi tên', 'edit:name:' + target), button(n.enabled ? '⏸ Tắt' : '▶ Bật', 'toggle:' + target)]];
-      if (l.type === 'url') { rows.push([button('✏ URL', 'edit:url:' + target), button('➕ Model', 'newmodel:' + target)]); rows.push([button('➕ Nhiều model + test', 'bulk:' + target),button('🔗 Endpoint', 'endpoints:' + target)]); rows.push([{text:'📋 URL',copy_text:{text:l.u.url}}]); children = n.models; }
+      if (l.type === 'url') {
+        // MỘT URL = MỘT BẢNG: model ở trên, API ở dưới, mỗi dòng có nút xoá riêng.
+        const apis = urlApis(n);
+        title = (n.enabled ? '🌐 ' : '⏸ ') + label(n) + '\n' + n.url + '\n\nMODEL · ' + n.models.length + '        API · ' + apis.length + '        ' + urlState(n);
+        rows = [];
+        for (const m of n.models.slice(0, 8)) {
+          const dot = (m.keys.length ? state(m.keys[0]) : '⚪ chưa có API').split(' ')[0];
+          rows.push([button('🧠 ' + label(m) + (m.enabled ? '' : ' ⏸') + '  ' + dot + '  ' + m.keys.length + ' API', 'view:' + m.id), button('🗑', 'rmmodel:' + m.id)]);
+        }
+        if (n.models.length > 8) rows.push([button('… còn ' + (n.models.length - 8) + ' model nữa', 'view:' + n.id)]);
+        for (const g of apis.slice(0, 4)) {
+          const dot = (g.keys.length ? state(g.keys[0]) : '⚪').split(' ')[0];
+          rows.push([button('🔑 ' + apiName(g.secret) + '  ' + dot + '  dùng cho ' + g.keys.length + ' model', 'view:' + g.keys[0].id), button('🗑', 'rmapi:' + g.keys[0].id)]);
+        }
+        if (apis.length > 4) rows.push([button('… còn ' + (apis.length - 4) + ' API nữa', 'view:' + n.id)]);
+        if (!n.models.length) rows.push([button('⚠ Chưa có model — thêm model trước', 'newmodel:' + n.id)]);
+        rows.push([button('➕ Model', 'newmodel:' + n.id), button('📋 Dán nhiều model', 'bulk:' + n.id)]);
+        rows.push([button('➕ API (áp cho mọi model)', 'addapi:' + n.id), button('🔗 Endpoint', 'endpoints:' + n.id)]);
+        if (n.models.length) rows.push([button('🩺 Test URL · ' + n.models.length + ' model × ' + apis.length + ' API', 'check:' + n.id)]);
+        rows.push([button('✏ Đổi URL', 'edit:url:' + n.id), button('🗑 Xoá URL', 'delete:' + n.id)]);
+        rows.push([button('⬅ Danh sách URL', 'view:root'), button('🔄 Làm mới', 'view:' + n.id)]);
+        if (title.length > 3800) title = title.slice(0, 3700) + '\n…';
+        return send(env, thread, (notice ? notice + '\n' : '') + title, rows);
+      }
       if (l.type === 'model') { rows.push([button('✏ Sửa model', 'edit:model:' + target), button('➕ Key', 'newkey:' + target)]); rows.push([button('▶ Ưu tiên model này', 'active:' + target),{text:'📋 Model',copy_text:{text:l.m.name}}]); children = n.keys; }
       if (l.type === 'key') { rows.push([button('✏ Thay key', 'edit:secret:' + target), button('ℹ Trạng thái', 'info:' + target)]); rows.push([button('🧪 Test model…', 'test:' + target),button('🩺 Deep test…','deep:'+target)]); rows.push([button('📋 Key riêng','copykey:'+target),button('📋 Cấu hình riêng','copyconfig:'+target)]); }
       rows.push([button('🔍 Kiểm tra', 'check:' + target)]);
@@ -162,7 +240,7 @@ export function createAiAdmin(deps) {
     }
     const list = children || [], pages = Math.max(1, Math.ceil(list.length / 8));
     page = Math.min(Math.max(0, page), pages - 1);
-    rows.push(...list.slice(page * 8, page * 8 + 8).map(n => [button((n.enabled ? '' : '⏸ ') + label(n) + (n.secret ? ' ' + mask(n.secret) + ' ' + state(n).split(' ')[0] : n.models ? ' · ' + n.models.length + ' model' : ' · ' + n.keys.length + ' key'), 'view:' + n.id)]));
+    rows.push(...list.slice(page * 8, page * 8 + 8).map(n => [button((n.enabled ? '' : '⏸ ') + label(n) + (n.secret ? ' ' + mask(n.secret) + ' ' + state(n).split(' ')[0] : n.models ? ' · ' + n.models.length + ' model · ' + urlApis(n).length + ' API  ' + urlState(n) : ' · ' + n.keys.length + ' key'), 'view:' + n.id)]));
     if (pages > 1) rows.push([button('◀', 'page:' + target + ':' + Math.max(0, page - 1)), button((page + 1) + '/' + pages + ' ▶', 'page:' + target + ':' + Math.min(pages - 1, page + 1))]);
     rows.push([button('🌳 Cây / Làm mới', 'view:root')]);
     if (title.length > 3800) title = title.slice(0, 3700) + '\n… Mở từng URL để xem đầy đủ.';
@@ -189,11 +267,26 @@ export function createAiAdmin(deps) {
       if (!validName(value)) throw Error('Tên key từ 1–80 ký tự.');
       return ask(env, from, thread, { ...prompt, name: value }, '🔑 Dán API key. Tin chứa key sẽ được xoá sau khi lưu.');
     }
+    // Ghi chú dựng sẵn TRƯỚC khi gọi update: biến `notice` bên dưới khai báo sau, dùng trong
+    // callback sẽ lỗi "cannot access before initialization".
+    let apiNotice = '';
     const result = await update(env, c => {
       const current = c.prompts[from.id];
       if (!current || current.message !== prompt.message || current.expires < Date.now()) throw Error('Phiên nhập đã hết hạn/đã xử lý.');
       let selected;
-      if (prompt.kind === 'newurl') {
+      if(prompt.kind==='configure') {
+        const lines=value.split(/\r?\n/).map(s=>s.trim()).filter(Boolean);
+        if(lines.length!==3)throw Error('Nhập đúng 3 dòng: URL, model, API key.');
+        const url=validURL(lines[0].replace(/^URL\s*:\s*/i,'')),model=lines[1].replace(/^MODEL\s*:\s*/i,''),secret=lines[2].replace(/^(?:API KEY|API|KEY)\s*:\s*/i,'');
+        if(!/^[A-Za-z0-9._:/|-]{1,120}$/.test(model)||!/^[\x21-\x7e]{8,200}$/.test(secret))throw Error('Model hoặc key không đúng định dạng.');
+        let u=c.urls.find(u=>u.url===url);
+        if(!u){if(c.urls.length>=20)throw Error('Tối đa 20 URL.');u={id:id(),name:new URL(url).hostname,url,enabled:true,models:[]};c.urls.push(u);}
+        let m=u.models.find(m=>m.name===model);
+        if(!m){if(u.models.length>=30)throw Error('Tối đa 30 model/URL.');m={id:id(),name:model,enabled:true,keys:[]};u.models.push(m);}
+        let k=m.keys.find(k=>k.secret===secret);
+        if(!k){if(m.keys.length>=30||allKeys(c).length>=500)throw Error('Vượt giới hạn key.');k={id:id(),name:'Key '+(m.keys.length+1),secret,enabled:true,health:{}};m.keys.push(k);}
+        u.enabled=m.enabled=k.enabled=true;u.retryAt=m.retryAt=0;k.health={};k.route={};selected=k.id;
+      } else if (prompt.kind === 'newurl') {
         const url = validURL(value);
         if (c.urls.some(u => u.url === url)) throw Error('URL đã có; mở URL đó để thêm model.');
         if (c.urls.length >= 20) throw Error('Tối đa 20 URL.');
@@ -222,6 +315,16 @@ export function createAiAdmin(deps) {
           if (n.keys.length >= 30) throw Error('Tối đa 30 key/model.');
           if (allKeys(c).length >= 500) throw Error('Tối đa 500 key trong kho.');
           const k = { id: id(), name: prompt.name, secret: value, enabled: true, health: {} }; n.keys.push(k); selected = k.id;
+        } else if (prompt.kind === 'addapi') {
+          // Một API cho cả URL: áp cùng key vào MỌI model, đúng cách Telegram gọi AI.
+          if (l.type !== 'url') throw Error('Chọn URL.');
+          if (!/^[\x21-\x7e]{8,200}$/.test(value)) throw Error('Key 8–200 ký tự, không chứa khoảng trắng.');
+          if (urlApis(n).some(g => g.secret === value)) throw Error('API này đã có trong URL.');
+          if (allKeys(c).length + n.models.length > 500) throw Error('Tối đa 500 key trong kho.');
+          const attached = attachApi(n, value);
+          if (!attached) throw Error('Không áp được API cho model nào (mỗi model tối đa 30 API).');
+          selected = n.id;
+          apiNotice = '🔑 Đã áp API cho ' + attached + '/' + n.models.length + ' model của URL này.';
         } else if (prompt.field === 'url') {
           const url = validURL(value);
           if (c.urls.some(u => u.id !== n.id && u.url === url)) throw Error('URL này đã có.');
@@ -250,15 +353,18 @@ export function createAiAdmin(deps) {
         } else { if (!validName(value)) throw Error('Tên không hợp lệ.'); if (l.type === 'model') n.label = value; else n.name = value; }
       }
       delete c.prompts[from.id];
+      c.adminThread=thread;
+      if(prompt.field!=='name')c.configEpoch=(c.configEpoch||0)+1;
       return { selected, operation: prompt.kind + (prompt.field ? ':' + prompt.field : '') };
     }, from.id);
-    let notice = '';
+    let notice = apiNotice;
     for (const message of [prompt.message, prompt.inputMessage]) try { await deps.telegram(env, 'deleteMessage', { chat_id: env.TELEGRAM_CHAT_ID, message_id: message }); }
     catch {
       // The caller supplies the exact input message ID; no secret is echoed.
-      if (message === prompt.inputMessage && (prompt.kind === 'newkey' || prompt.field === 'secret')) notice = '⚠ Bạn xoá tin chứa key giúp mình.';
+      if (message === prompt.inputMessage && (prompt.kind === 'newkey' || prompt.kind==='configure' || prompt.field === 'secret')) notice = '⚠ Bạn xoá tin chứa key giúp mình.';
     }
-    if(prompt.kind==='bulk'||(prompt.kind==='newmodel'&&locate(result.c,result.result.selected).m.keys.length))return startCheck(env,from,thread,result.result.selected,ctx,origin,true);
+    if(prompt.kind==='bulk'||(prompt.kind==='newmodel'&&locate(result.c,result.result.selected).m.keys.length))return startCheck(env,from,thread,result.result.selected,ctx,origin,true,env.AI_ROUTER_V3_ENABLED==='1');
+    if(env.AI_ROUTER_V3_ENABLED==='1'&&prompt.field!=='name'&&allKeys(result.c).some(x=>[x.u.id,x.m.id,x.k.id].includes(result.result.selected)))return startCheck(env,from,thread,result.result.selected,ctx,origin,true,true);
     return show(env, thread, result.result.selected, 0, false, notice);
   }
   async function inspect(env, item, testModel = false) {
@@ -286,16 +392,17 @@ export function createAiAdmin(deps) {
     } catch(error) { result = classify(0,'',error); }
     return { ...result, checkedAt: Date.now() };
   }
-  async function startCheck(env, from, thread, target, ctx, origin, deep=false) {
+  async function startCheck(env, from, thread, target, ctx, origin, deep=false, automatic=false) {
     const c = await ensure(env);
     const items = allKeys(c).filter(x => target === 'all' || [x.u.id, x.m.id, x.k.id].includes(target)).map(x => x.k.id);
     if (!items.length) return send(env, thread, 'Chưa có key để kiểm tra.');
-    const job = { id: id(), actor: from.id, thread, items, deep, cursor: 0, status: 'running', startedAt: Date.now(), token: id() + id() };
-    await update(env, c => { c.jobs = Object.fromEntries(Object.entries(c.jobs || {}).filter(([, j]) => Date.now() - j.startedAt < 86400000)); if(Object.values(c.jobs).some(j => j.status === 'running' && Date.now() - (j.leaseUntil || j.startedAt) < 60000)) throw Error('Đang kiểm tra key; chờ hoàn tất hoặc mở cây để tiếp tục.'); c.jobs[job.id] = job; return { operation: 'check-start' }; }, from.id);
+    const job = { id: id(), actor: from.id, thread, items, deep, automatic, cursor: 0, status: 'running', startedAt: Date.now(), token: id() + id() };
+    await update(env, c => { c.jobs = Object.fromEntries(Object.entries(c.jobs || {}).filter(([, j]) => Date.now() - j.startedAt < 86400000)); if(!automatic&&Object.values(c.jobs).some(j => !j.kind&&j.status === 'running' && Date.now() - (j.leaseUntil || j.startedAt) < 60000)) throw Error('Đang kiểm tra key; chờ hoàn tất.'); c.jobs[job.id] = job; return { operation: 'check-start' }; }, from.id);
     await send(env, thread, '🔍 Đang check ' + items.length + ' key…', [[button('🌳 Bảng quản lý', 'view:root')]]);
     ctx.waitUntil(runCheck(env, job.id, job.token, origin));
   }
   async function runCheck(env, jobId, token, origin) {
+    if((await config(env))?.jobs?.[jobId]?.kind==='routing')return runRouting(env,jobId,origin);
     let lease;
     const locked = await update(env, c => {
       const j = c.jobs[jobId];
@@ -306,11 +413,13 @@ export function createAiAdmin(deps) {
     const j = locked.c.jobs[jobId];
     const results = [];
     for (const keyId of j.items.slice(j.cursor, j.cursor + (j.deep?1:3))) {
-      try { const x = locate(locked.c, keyId); results.push({ id: keyId, secret: x.k.secret, url: x.u.url, model: x.m.name, endpoint: endpoint(x.u, j.deep?'chat':new URL(x.u.url).hostname === 'openrouter.ai' ? 'key' : 'models'), health: j.deep?await deepCheck(x,endpoint):await inspect(env, x) }); } catch { results.push({ id: keyId }); }
+      if(j.deep){const claim=await update(env,c=>{const x=locate(c,keyId);if(x.k.testLease?.until>Date.now())return {skip:true};x.k.testLease={id:lease,until:Date.now()+30000};return {operation:'check-key-lease'};});if(claim.result.skip){await update(env,c=>{if(c.jobs[jobId].lease===lease){c.jobs[jobId].leaseUntil=0;c.jobs[jobId].status='interrupted';}return {operation:'check-key-busy'};});return;}}
+      try { const x = locate(locked.c, keyId); results.push({ id: keyId, secret: x.k.secret, url: x.u.url, model: x.m.name, endpoint: endpoint(x.u, j.deep?'chat':new URL(x.u.url).hostname === 'openrouter.ai' ? 'key' : 'models'), health: j.automatic?await chatCheck(x,endpoint):j.deep?await deepCheck(x,endpoint):await inspect(env, x) }); } catch { results.push({ id: keyId }); }
     }
+    if(j.deep)for(const r of results)if(r.health)try{await recordRoute(env,locate(locked.c,r.id),r.health,r.health.status==='ok'?'':false,lease);}catch{/* Changed/deleted configuration is discarded. */}
     const saved = await update(env, c => {
       const job = c.jobs[jobId]; if (job.lease !== lease) return { skip: true, operation: 'check-stale' };
-      for (const r of results) try { const x = locate(c, r.id); if (r.health && x.k.secret === r.secret && x.u.url === r.url && x.m.name === r.model && endpoint(x.u, j.deep?'chat':new URL(x.u.url).hostname === 'openrouter.ai' ? 'key' : 'models') === r.endpoint) { x.k.health = r.health; if(j.deep){x.k.route=healthResult(x.k.route,r.health);if(r.health.status==='ok')x.k.route.fingerprint=endpoint(x.u,'chat')+'|'+x.m.name;} } } catch { /* deleted/edited while checking */ }
+      for (const r of results) try { const x = locate(c, r.id); if (r.health && x.k.secret === r.secret && x.u.url === r.url && x.m.name === r.model && endpoint(x.u, j.deep?'chat':new URL(x.u.url).hostname === 'openrouter.ai' ? 'key' : 'models') === r.endpoint) x.k.health=j.deep?{...x.k.route}:r.health; } catch { /* deleted/edited while checking */ }
       job.cursor += results.length; job.leaseUntil = 0;
       job.status = job.cursor >= job.items.length ? 'complete' : 'running';
       return { operation: 'check-progress' };
@@ -327,7 +436,7 @@ export function createAiAdmin(deps) {
       try {
         const response = await fetch(origin + '/internal/ai/check', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-AI-Job-Signature': await jobSignature(env, jobId, token) }, body: JSON.stringify({ jobId, token }), signal: AbortSignal.timeout(10000) });
         if (!response.ok) throw Error('continuation');
-      } catch { await update(env, c => { c.jobs[jobId].status = 'interrupted'; return { operation: 'check-interrupted' }; }); await send(env, job.thread, '⚠ Kiểm tra bị ngắt. Bấm tiếp tục để kiểm tra phần còn lại.', [[button('▶ Tiếp tục', 'resume:' + jobId)]]); }
+      } catch { await update(env, c => { c.jobs[jobId].status = 'interrupted'; return { operation: 'check-interrupted' }; }); await send(env, job.thread, '🔄 Tự tiếp tục kiểm tra khi kết nối phục hồi.'); }
     }
   }
   async function internal(env, request, ctx) {
@@ -354,7 +463,7 @@ export function createAiAdmin(deps) {
     if (cb && /^(help|info)(:|$)/.test(data.slice(3))) {
       let text;
       try {
-        if (data === 'a2:help') text = 'URL → nhiều model → nhiều key. Bấm từng mục để sửa. Tự chuyển key → model → URL. Check miễn phí; Test model có thể tính phí.';
+        if (data === 'a2:help') text = 'Dán URL/model/key bằng 3 dòng. Tự nhận diện, test và chuyển key → model → URL. Probe ngắn có thể tính phí. Xem cây để biết từng cấu hình đang hoạt động/lỗi.';
         else { const l = locate(await ensure(env), data.slice(8)); text = label(l.node) + '\n' + (l.k ? mask(l.k.secret) + '\n' + state(l.k) : '') + '\nModel: ' + l.m?.name; }
       } catch (error) { text = error.message; }
       try { await deps.telegram(env, 'answerCallbackQuery', { callback_query_id: cb.id, text: text.slice(0, 200), show_alert: true }); } catch { /* expired popup */ }
@@ -384,8 +493,47 @@ export function createAiAdmin(deps) {
       }
       else if (action === 'audit') { const c = await ensure(env); await send(env, thread, '🕒 GẦN ĐÂY\n' + (c.failoverHistory||[]).slice(-5).reverse().map(e=>new Date(e.at).toLocaleTimeString('vi-VN',{timeZone:'Asia/Ho_Chi_Minh'})+' · '+(e.from||'mới')+' → '+e.to+' · '+e.errorClass+' · rev '+e.revision).concat(c.audit.slice(-3).reverse().map(e => new Date(e.at).toLocaleTimeString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' }) + ' · ' + e.operation)).join('\n'), [[button('⬅ Quay lại', 'view:root')]]); }
       else if(action==='chat')await ask(env,from,thread,{kind:'chat'},'💬 Nhập câu hỏi cho AI.');
+      else if(action==='configure')await ask(env,from,thread,{kind:'configure'},'Dán 3 dòng: URL, model, API key. Tự nhận diện và test; probe ngắn có thể tính phí. Tin nhập sẽ được xoá.');
       else if (action === 'newurl') await ask(env, from, thread, { kind: 'newurl' }, '🌐 Nhập tên URL/nhà cung cấp.');
       else if (action === 'newmodel') await ask(env, from, thread, { kind: 'newmodel', target: a }, '🧠 Nhập mã model. Nếu URL có key, tự test; có thể tính phí.');
+      else if (action === 'addapi') {
+        const l = locate(await ensure(env), a);
+        if (l.type !== 'url') throw Error('Chọn URL.');
+        if (!l.node.models.length) throw Error('URL chưa có model. Thêm model trước.');
+        await ask(env, from, thread, { kind: 'addapi', target: a }, '🔑 Dán API key. Key sẽ được áp cho TẤT CẢ ' + l.node.models.length + ' model của URL này.');
+      }
+      else if (action === 'rmmodel' || action === 'rmapi') {
+        const c = await ensure(env), l = locate(c, a);
+        const what = action === 'rmmodel'
+          ? 'model ' + label(l.node) + ' (' + l.node.keys.length + ' API)'
+          : 'API ' + apiName(l.k.secret) + ' khỏi ' + urlApis(l.u).find(g => g.secret === l.k.secret).keys.length + ' model';
+        await update(env, c => { c.prompts[from.id] = { kind: action, target: a, revision: c.revision + 1, expires: Date.now() + 120000 }; return { operation: action + '-confirm' }; }, from.id);
+        await send(env, thread, '🗑 Xoá ' + what + '?\nURL: ' + l.u.url, [[button('🗑 Xác nhận xoá', 'do' + action + ':' + a), button('Huỷ', 'view:' + l.u.id)]]);
+      }
+      else if (action === 'dormmodel' || action === 'dormapi') {
+        const real = action === 'dormmodel' ? 'rmmodel' : 'rmapi';
+        let notice = '', backTo = 'root';
+        await update(env, c => {
+          const p = c.prompts[from.id];
+          if (!p || p.kind !== real || p.target !== a || p.expires < Date.now() || p.revision !== c.revision) throw Error('Cấu hình đã thay đổi hoặc xác nhận hết hạn. Bấm xoá lại.');
+          const l = locate(c, a);
+          backTo = l.u.id;
+          if (real === 'rmmodel') {
+            if (l.type !== 'model') throw Error('Chỉ xoá được model ở đây.');
+            const idx = l.u.models.findIndex(m => m.id === a);
+            notice = '🗑 Đã xoá model ' + label(l.u.models[idx]) + '.';
+            l.u.models.splice(idx, 1);
+            if (!c.urls.some(u => u.models.some(m => m.id === c.activeModel))) c.activeModel = '';
+          } else {
+            const delta = detachApi(l.u, a);
+            notice = '🗑 Đã xoá API ' + apiName(delta.secret) + ' khỏi ' + delta.removed + ' model.';
+          }
+          delete c.prompts[from.id];
+          c.configEpoch = (c.configEpoch || 0) + 1;
+          return { operation: action };
+        }, from.id);
+        await show(env, thread, backTo, 0, false, notice);
+      }
       else if (action === 'bulk') await ask(env,from,thread,{kind:'bulk',target:a},'🧠 Dán model, mỗi dòng một mã. Dùng key của URL này để test; có thể tính phí.');
       else if (action === 'copykey' || action === 'copyconfig') {
         const l=locate(await ensure(env),a);if(!l.k)throw Error('Chọn key.');
@@ -410,10 +558,11 @@ export function createAiAdmin(deps) {
           } else if (action === 'toggle') { n.enabled = !n.enabled; if(n.enabled) { n.retryAt = 0; if(l.k)n.health.retryAt = 0; } }
           else if (action === 'active') { if (l.type !== 'model') throw Error('Chọn model.'); c.activeModel = n.id;c.routingPreference=n.id;c.sticky={}; n.enabled = true; n.retryAt = 0; l.u.enabled = true; l.u.retryAt = 0; }
           else { const i = l.list.indexOf(n), next = Math.max(0, Math.min(l.list.length - 1, i + (action === 'up' ? -1 : 1))); l.list.splice(i, 1); l.list.splice(next, 0, n); }
+          c.configEpoch=(c.configEpoch||0)+1;
           return { operation: action };
         }, from.id);
         await show(env, thread, action === 'confirm' ? 'root' : a);
-      } else if (action === 'check') await startCheck(env, from, thread, a, ctx, origin);
+      } else if (action === 'check') await startCheck(env, from, thread, a, ctx, origin,env.AI_ROUTER_V3_ENABLED==='1');
       else if(action==='deep') {
         await update(env,c=>{c.prompts[from.id]={kind:'deep',target:a,revision:c.revision+1,expires:Date.now()+120000};return {operation:'deep-confirm'};},from.id);
         await send(env,thread,'🩺 Test chat, stream và tools. Có thể tính phí.',[[button('Chạy deep test','deepgo:'+a),button('Huỷ','view:root')]]);
@@ -468,44 +617,150 @@ export function createAiAdmin(deps) {
     }catch{await send(env,thread,'AI đang tạm gián đoạn. Thử lại sau.');}
     finally{clearInterval(typing);}
   }
-  async function routerProxy(env, body, conversation='') {
+  const enabledKeys=c=>allKeys(c).filter(x=>x.u.enabled&&x.m.enabled&&x.k.enabled);
+  const basicChat=required=>!required.stream&&!required.tools&&!required.vision&&!required.structured;
+  // `tools` không tính vào điều kiện phải kiểm tra lại (xem ghi chú ở compatible): model chat tốt
+  // vẫn phục vụ được, app tự lo phần gọi tool bằng JSON protocol.
+  const needsTest=(x,required)=>x.k.route?.fingerprint!==endpoint(x.u,'chat')+'|'+x.m.name||x.k.route?.circuit==='OPEN'||Object.entries(required).some(([k,v])=>v&&k!=='tools'&&x.k.route?.capabilities?.[k]!==true);
+  async function enqueueRouting(env,required,thread=0) {
+    return (await update(env,c=>{
+      const signature=JSON.stringify(required)+':'+(c.configEpoch||0);
+      const previous=Object.values(c.jobs||{}).find(j=>j.kind==='routing'&&j.signature===signature&&['running','interrupted','waiting','ready','exhausted'].includes(j.status)&&(j.status!=='ready'||enabledKeys(c).some(x=>configurationId(x)===j.readyId&&x.k.route?.status==='ok'&&compatible(x.k.route,required)&&(x.k.route.retryAt||0)<=Date.now())));
+      if(previous)return {skip:true,jobId:previous.id};
+      const job={id:id(),kind:'routing',required,signature,epoch:c.configEpoch||0,thread,items:enabledKeys(c).map(x=>x.k.id),cursor:0,status:'running',startedAt:Date.now(),token:id()+id(),errors:{}};
+      c.jobs||={};c.jobs=Object.fromEntries(Object.entries(c.jobs).filter(([,j])=>Date.now()-j.startedAt<86400000||j.status==='running'||j.status==='waiting'));c.jobs[job.id]=job;return {operation:'routing-enqueue',jobId:job.id};
+    })).result.jobId;
+  }
+  async function publicJob(env,jobId) {
+    const c=await config(env),j=c?.jobs?.[jobId];if(!j||j.kind!=='routing')return null;
+    const ready=['running','interrupted','waiting'].includes(j.status)&&enabledKeys(c).some(x=>x.k.route?.status==='ok'&&(x.k.route.retryAt||0)<=Date.now()&&(x.k.health?.retryAt||0)<=Date.now()&&!needsTest(x,j.required)&&compatible(x.k.route,j.required));
+    return {jobId:j.id,status:ready?'ready':j.status,processed:j.cursor,total:j.items.length,retryAt:j.retryAt||0,retryAfter:3,errors:j.errors||{},reasons:j.reasons||{},revision:c.activeRevision||0};
+  }
+  async function continueJob(env,j,origin) {
+    if(!origin||!['running','interrupted'].includes(j.status))return;
+    try {const r=await fetch(origin+'/internal/ai/check',{method:'POST',redirect:'manual',headers:{'Content-Type':'application/json','X-AI-Job-Signature':await jobSignature(env,j.id,j.token)},body:JSON.stringify({jobId:j.id,token:j.token}),signal:AbortSignal.timeout(5000)});if(!r.ok)throw Error('continuation');}
+    catch {await update(env,c=>{const current=c.jobs[j.id];if(current?.status==='running')current.status='interrupted';return {operation:'routing-continuation-wait'};});}
+  }
+  async function runRouting(env,jobId,origin='') {
+    const lease=id();
+    const locked=await update(env,c=>{
+      const j=c.jobs?.[jobId];if(!j||j.kind!=='routing'||['ready','exhausted','superseded'].includes(j.status)||j.leaseUntil>Date.now()||j.retryAt>Date.now())return {skip:true};
+      if(j.epoch!==(c.configEpoch||0)){j.status='superseded';return {operation:'routing-superseded'};}
+      j.lease=lease;j.leaseUntil=Date.now()+35000;j.status='running';return {operation:'routing-batch'};
+    });
+    if(locked.result.skip)return;
+    const j=locked.c.jobs[jobId];if(j.status==='superseded')return;
+    // MỘT cấu hình mỗi lượt. Đã thử chạy 3 cái song song: vượt hạn mức thời gian của Worker,
+    // bị ngắt giữa chừng nên khoá thử nghiệm bị treo và vòng quét ĐỨNG YÊN ở 0/9. Tuần tự thì
+    // chậm hơn nhưng TIẾN ĐỀU và không bao giờ kẹt — quan trọng hơn tốc độ.
+    const keyId=j.items[j.cursor];let checked,chosen='',busy=false;
+    if(keyId)try {
+      const x=locate(locked.c,keyId);
+      if(x.u.enabled&&x.m.enabled&&x.k.enabled&&(x.k.route?.retryAt||0)<=Date.now()&&(x.k.health?.retryAt||0)<=Date.now()) {
+        if(!needsTest(x,j.required)&&compatible(x.k.route,j.required)&&x.k.route.status==='ok')chosen=configurationId(x);
+        else {
+          const claim=await update(env,c=>{const y=locate(c,keyId);if(y.k.testLease?.until>Date.now())return {skip:true};y.k.testLease={id:lease,until:Date.now()+30000};return {operation:'routing-key-lease'};});
+          busy=claim.result.skip;
+          if(!busy){checked=basicChat(j.required)?await chatCheck(x,endpoint):await deepCheck(x,endpoint,{tools:j.required.tools,vision:j.required.vision,structured:j.required.structured});await recordRoute(env,x,checked,checked.status==='ok'&&compatible(checked,j.required)?'':false,lease);if(checked.status==='ok'&&!Object.entries(j.required).some(([k,v])=>v&&checked.capabilities?.[k]!==true))chosen=configurationId(x);}
+        }
+      }
+    }catch{/* Edits/deletions are handled by epoch and snapshot validation. */}
+    const saved=await update(env,c=>{
+      const current=c.jobs[jobId];if(current.lease!==lease)return {skip:true};current.leaseUntil=0;
+      if(current.epoch!==(c.configEpoch||0)){current.status='superseded';return {operation:'routing-superseded'};}
+      if(busy){current.status='waiting';current.retryAt=Date.now()+3000;return {operation:'routing-lease-wait'};}
+      current.cursor++;
+      if(checked?.errorClass){
+        current.errors[checked.errorClass]=(current.errors[checked.errorClass]||0)+1;
+        // Lưu NGUYÊN VĂN thông báo của nhà cung cấp (đã che key) để biết chính xác vì sao hỏng,
+        // thay vì chỉ thấy nhóm lỗi chung chung.
+        if(checked.detail)current.reasons={...(current.reasons||{}),[checked.errorClass]:redactSecret(String(checked.detail).slice(0,240),c)};
+      }
+      if(chosen){current.status='ready';current.readyId=chosen;current.retryAt=0;}
+      else if(current.cursor>=current.items.length){
+        const pool=enabledKeys(c),permanent=pool.length===0||pool.every(x=>['INVALID_KEY','EXPIRED_KEY','AUTH_ERROR','QUOTA_EXCEEDED','MODEL_NOT_FOUND','PROTOCOL_UNSUPPORTED','CAPABILITY_MISMATCH','FREE_TIER_LOCKED'].includes(x.k.route?.lastError)||x.k.route?.status==='ok'&&!compatible(x.k.route,current.required));
+        current.errors={};for(const x of pool){const reason=x.k.route?.lastError||(x.k.route?.status==='ok'&&!compatible(x.k.route,current.required)?'CAPABILITY_MISMATCH':'UNVERIFIED');current.errors[reason]=(current.errors[reason]||0)+1;}
+        const times=pool.map(x=>Math.max(x.k.route?.retryAt||0,x.k.health?.retryAt||0)).filter(t=>t>Date.now());
+        current.status=permanent?'exhausted':'waiting';current.retryAt=times.length?Math.min(...times):Date.now()+(permanent?300000:30000);current.cursor=current.items.length;
+      }
+      return {operation:'routing-progress'};
+    });
+    if(saved.result.skip)return;
+    const next=saved.c.jobs[jobId];
+    if(next.thread&&['ready','exhausted'].includes(next.status))await show(env,next.thread,'root',0,true,next.status==='ready'?'✅ Đã tự chọn cấu hình hoạt động.':'⚠ Hiện không có cấu hình phù hợp; tự kiểm tra lại khi đến hạn.');
+    await continueJob(env,next,origin);
+  }
+  async function scheduled(env,ctx,origin='') {
+    if(env.AI_ROUTER_V3_ENABLED!=='1')return;
+    const c=await ensure(env);
+    await notifyPanel(env);
+    // One provider check per invocation; durable cursors cover the entire registry.
+    const manual=Object.values(c.jobs||{}).find(j=>!j.kind&&['running','interrupted'].includes(j.status)&&!(j.leaseUntil>Date.now()));
+    if(manual){await runCheck(env,manual.id,manual.token,origin);return;}
+    await update(env,c=>{let changed=false;for(const j of Object.values(c.jobs||{}))if(j.kind==='routing'&&['waiting','exhausted'].includes(j.status)&&(j.retryAt||0)<=Date.now()){j.status='running';j.cursor=j.cursor>=j.items.length?0:j.cursor;j.retryAt=0;j.errors={};changed=true;}return changed?{operation:'routing-recovery'}:{skip:true};});
+    const latest=await config(env);let job=Object.values(latest.jobs||{}).find(j=>j.kind==='routing'&&['running','interrupted'].includes(j.status)&&!(j.leaseUntil>Date.now()));
+    if(!job) {
+      const recover=enabledKeys(latest).filter(x=>(!x.k.route?.checkedAt||x.k.route?.circuit==='OPEN')&&(x.k.route?.retryAt||0)<=Date.now()&&(x.k.health?.retryAt||0)<=Date.now()).sort((a,b)=>(a.k.route?.checkedAt||0)-(b.k.route?.checkedAt||0))[0];
+      if(recover){const next={id:id(),actor:'system',thread:latest.adminThread||0,items:[recover.k.id],deep:true,automatic:true,cursor:0,status:'running',startedAt:Date.now(),token:id()+id()};await update(env,c=>{c.jobs[next.id]=next;return {operation:'automatic-recovery'};});await runCheck(env,next.id,next.token,origin);return;}
+    }
+    if(job)await runRouting(env,job.id,origin);
+  }
+  async function routerProxy(env, body, conversation='',ctx=null,origin='') {
     let c=await config(env);if(!c)return null;
     const required=requiredCapabilities(body), sticky=conversation&&c.sticky?.[conversation];
-    let chain=candidates(c).filter(x=>compatible(x.k.route,required));
+    // Cấu hình đã xác minh ĐỦ khả năng đi trước, nhưng KHÔNG loại phần còn lại khỏi chuỗi:
+    // bản ghi khả năng có thể đã cũ, và vòng lặp dưới tự kiểm tra lại rồi mới dùng. Trước đây
+    // lọc cứng nên chuỗi rỗng ngay ⇒ trả 503 "đang tự tìm cấu hình" và khách phải đợi hàng phút,
+    // trong khi Telegram chỉ cần chat thuần nên vẫn được phục vụ tức thì.
+    const all=candidates(c);
+    const compatibleChain=all.filter(x=>compatible(x.k.route,required));
+    let chain=compatibleChain.length===all.length?all:[...compatibleChain,...all.filter(x=>!compatible(x.k.route,required))];
     const preferred=sticky?.id||(!c.routingPreference?c.currentConfig?.id:'');
     // Preserve manual URL/model priority; use health score to choose keys within a model.
     chain=chain.map((x,i)=>({...x,priority:i})).sort((a,b)=>a.m.id===b.m.id?(b.k.route?.healthScore||70)-(a.k.route?.healthScore||70)||a.priority-b.priority:a.priority-b.priority);
     const rank=x=>2*Number(configurationId(x)===preferred)+Number(!c.routingPreference&&configurationId(x)===c.lastKnownGood?.id);
     chain.sort((a,b)=>rank(b)-rank(a));
-    let attempts=0,discoveries=0,lastError='UNKNOWN_ERROR';const visited=new Set(),unusableKeys=new Set();
+    let attempts=0,discoveries=0,lastError='UNKNOWN_ERROR';const visited=new Set(),unusableKeys=new Set();const routingStarted=Date.now();
     for(const x of chain) {
       const configId=configurationId(x);if(visited.has(configId)||unusableKeys.has(x.u.id+':'+x.k.secret)||++attempts>8)continue;visited.add(configId);
-      if(x.k.route?.fingerprint!==endpoint(x.u,'chat')+'|'+x.m.name||x.k.route?.circuit==='OPEN'||(required.tools&&x.k.route?.capabilities?.tools!==true)) {
+      let chatLease='';
+      if(needsTest(x,required)) {
         // Reserve capacity for Firebase/OAuth and a successful response on the free Worker limit.
         if(++discoveries>3)continue;
         const lease=id();
         const claim=await update(env,c=>{const y=locate(c,x.k.id);if(y.k.testLease?.until>Date.now())return {skip:true};y.k.testLease={id:lease,until:Date.now()+30000};return {operation:'resolver-lease'};});
         if(claim.result?.skip){lastError='HEALTH_CHECK_IN_PROGRESS';continue;}
+        // Basic chat validates the actual user request; no preliminary stream/tool probes.
+        if(basicChat(required))chatLease=lease;
+        else {
         let checked;
-        try{checked=await deepCheck(x,endpoint,{tools:required.tools});}catch(e){checked=classify(0,'',e);}
+        try{checked=await deepCheck(x,endpoint,{tools:required.tools,vision:required.vision,structured:required.structured});}catch(e){checked=classify(0,'',e);}
         await recordRoute(env,x,checked,false,lease);
         x.k.route=healthResult(x.k.route,checked);
-        if(checked.status!=='ok'||!compatible(checked,required)||(required.tools&&checked.capabilities?.tools!==true)){lastError=checked.errorClass||'CAPABILITY_MISMATCH';if(['INVALID_KEY','EXPIRED_KEY','QUOTA_EXCEEDED'].includes(lastError))unusableKeys.add(x.u.id+':'+x.k.secret);continue;}
+        if(checked.status!=='ok'||!compatible(checked,required)){lastError=checked.errorClass||'CAPABILITY_MISMATCH';if(checked.failureScope==='credential'||['INVALID_KEY','EXPIRED_KEY'].includes(lastError))unusableKeys.add(x.u.id+':'+x.k.secret);if(lastError==='PROTOCOL_UNSUPPORTED'||Date.now()-routingStarted>20000)break;continue;}
+        }
       }
       let result,failedAttempts=0;const requestStarted=Date.now();
+      x.onStreamFailure=async error=>{await recordRoute(env,x,{...error,streamFailure:true});if(ctx)ctx.waitUntil(notifyPanel(env));};
+      x.onStreamComplete=async()=>{await update(env,c=>{const y=locate(c,x.k.id);if(!y.k.route?.streamFailures||(y.k.route.lastFailure||0)>requestStarted)return {skip:true};y.k.route.streamFailures=0;y.k.health={...y.k.route};return {operation:'stream-complete'};});};
       for(let retry=0;retry<2;retry++) {
         result=await resolveCall(x,body,endpoint);
         if(!result.response)failedAttempts++;
         if(result.response||!['TIMEOUT','NETWORK_ERROR','PROVIDER_ERROR'].includes(result.error.errorClass))break;
       }
-      if(!result.response){lastError=result.error.errorClass;await recordRoute(env,x,{...result.error,failureEvents:failedAttempts});if(['INVALID_KEY','EXPIRED_KEY','QUOTA_EXCEEDED'].includes(lastError))unusableKeys.add(x.u.id+':'+x.k.secret);continue;}
-      await recordRoute(env,x,{status:'ok',label:'gọi model thành công',resolved:result.resolved,protocol:result.resolved.protocol,capabilities:x.k.route.capabilities,latency:result.latency,confirmed:true,requestStarted},conversation);
-      const active=await publicActive(env), headers=new Headers(result.response.headers);
-      headers.set('X-AI-Revision',String(active.revision));headers.set('X-AI-Model',x.m.name);headers.set('Cache-Control','no-store');
+      if(!result.response){lastError=result.error.errorClass;await recordRoute(env,x,{...result.error,failureEvents:failedAttempts},false,chatLease);if(result.error.failureScope==='credential'||['INVALID_KEY','EXPIRED_KEY'].includes(lastError))unusableKeys.add(x.u.id+':'+x.k.secret);continue;}
+      const published=await recordRoute(env,x,{status:'ok',label:'gọi model thành công',resolved:result.resolved,protocol:result.resolved.protocol,capabilities:{...x.k.route?.capabilities,chat:true},latency:result.latency,confirmed:true,requestStarted},conversation,chatLease);
+      if(ctx)ctx.waitUntil(notifyPanel(env));
+      const headers=new Headers(result.response.headers);
+      headers.set('X-AI-Revision',String(published.c.activeRevision||0));headers.set('X-AI-Model',x.m.name);headers.set('Cache-Control','no-store');
       return new Response(result.response.body,{status:200,headers});
     }
-    // A previous verified configuration remains available; failures never delete registry entries.
-    return Response.json({error:{message:'AI đang tạm gián đoạn. Vui lòng thử lại sau.',code:lastError}},{status:503,headers:{'Retry-After':'3'}});
+    const jobId=await enqueueRouting(env,required,c.adminThread||0);
+    if(ctx)ctx.waitUntil(runRouting(env,jobId,origin));
+    const job=await publicJob(env,jobId);
+    if(ctx)ctx.waitUntil(notifyPanel(env));
+    const code=job.status==='exhausted'?'AI_CONFIG_EXHAUSTED':lastError==='HEALTH_CHECK_IN_PROGRESS'?'HEALTH_CHECK_IN_PROGRESS':'AI_ROUTING_PENDING';
+    return Response.json({error:{message:code==='AI_CONFIG_EXHAUSTED'?'Toàn bộ cấu hình đã kiểm tra hiện không dùng được.':'Đang tự tìm cấu hình phù hợp.',code},...job},{status:503,headers:{'Retry-After':'3'}});
   }
   async function recordRoute(env,x,result,conversation=false,lease='') {
     return update(env,c=>{
@@ -515,12 +770,15 @@ export function createAiAdmin(deps) {
       if(result.status==='ok'&&result.requestStarted&&(y.k.route?.lastFailure||0)>result.requestStarted)return {skip:true};
       if(lease&&y.k.testLease?.id!==lease)return {skip:true};
       if(lease)delete y.k.testLease;
-      y.k.route=healthResult(y.k.route,result);
+      const streamFailures=result.streamFailure?(y.k.route?.streamFailures||0)+1:y.k.route?.streamFailures||0;
+      y.k.route=healthResult(y.k.route,result.streamFailure?{...result,failureEvents:streamFailures}:result);
+      y.k.route.streamFailures=streamFailures;
       y.k.route.cooldownUntil=y.k.route.retryAt;
       Object.assign(y.k.route,{provider:y.u.name,baseUrl:y.u.url,model:y.m.name,keyReference:y.k.id,configurationId:configurationId(y),priority:{url:c.urls.indexOf(y.u),model:y.u.models.indexOf(y.m),key:y.m.keys.indexOf(y.k)}});
       y.k.route.fingerprint=result.status==='ok'?endpoint(x.u,'chat')+'|'+x.m.name:y.k.route.fingerprint;
       y.k.health={...y.k.health,...y.k.route};
-      if(['INVALID_KEY','EXPIRED_KEY','QUOTA_EXCEEDED'].includes(result.errorClass))for(const z of allKeys(c))if(z.u.id===y.u.id&&z.k.id!==y.k.id&&z.k.secret===y.k.secret){z.k.route=healthResult(z.k.route,result);z.k.health={...z.k.health,...z.k.route};}
+      c.panelDirtyAt=Date.now();
+      if(result.failureScope==='credential'||['INVALID_KEY','EXPIRED_KEY'].includes(result.errorClass))for(const z of allKeys(c))if(z.u.id===y.u.id&&z.k.id!==y.k.id&&z.k.secret===y.k.secret){z.k.route=healthResult(z.k.route,result);z.k.health={...z.k.health,...z.k.route};}
       if(result.confirmed&&result.status==='ok'&&conversation!==false) {
         const next={id:configurationId(y),at:Date.now()};
         c.lastKnownGood ||= c.currentConfig || next;
@@ -539,8 +797,15 @@ export function createAiAdmin(deps) {
       return {operation:result.status==='ok'?'route-success':'route-failure'};
     });
   }
-  async function proxy(env, body, conversation='') {
-    if(env.AI_ROUTER_V3_ENABLED==='1')return routerProxy(env,body,conversation);
+  async function notifyPanel(env) {
+    let dirty=0;
+    try {
+      const claimed=await update(env,c=>{if(!c.adminThread||!c.panelDirtyAt||c.panelDirtyAt<=(c.panelSyncedAt||0)||Date.now()-(c.panelNotifyAt||0)<5000)return {skip:true};c.panelNotifyAt=Date.now();c.panelSyncedAt=c.panelDirtyAt;return {operation:'panel-refresh'};});
+      if(!claimed.result.skip){dirty=claimed.c.panelSyncedAt;await show(env,claimed.c.adminThread,'root',0,true);}
+    }catch{if(dirty)try{await update(env,c=>{if(c.panelSyncedAt===dirty)c.panelSyncedAt=0;return {operation:'panel-retry'};});}catch{/* Scheduler retries notification, never blocks chat. */}}
+  }
+  async function proxy(env, body, conversation='',ctx=null,origin='') {
+    if(env.AI_ROUTER_V3_ENABLED==='1')return routerProxy(env,body,conversation,ctx,origin);
     const c = await config(env); if (!c) return null;
     const chain = candidates(c);
     if (!chain.length) return new Response('Không có key khả dụng. Mở /ai để kiểm tra hoặc bật key.', { status: 503 });
@@ -586,5 +851,5 @@ export function createAiAdmin(deps) {
       return { operation: 'failover-health' };
     }); } catch { console.log('AI health persistence unavailable'); }
   }
-  return { handle, internal, proxy, config, ensure, show, inspect, runCheck, publicActive, recordRoute, registerVerifiedModel };
+  return { handle, internal, proxy, config, ensure, show, inspect, runCheck, publicActive, recordRoute, registerVerifiedModel, scheduled, runRouting, publicJob, enqueueRouting };
 }

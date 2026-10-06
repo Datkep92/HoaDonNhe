@@ -45,7 +45,7 @@ async function runAgent({ config, history, text, screen, app, dataDir, files, em
   for (let step = 0; step < maxSteps; step++) {
     await access.license();
     assertScope();
-    signal.throwIfAborted(); emit({ status: step ? 'Đang kiểm tra kết quả…' : 'Đang xử lý yêu cầu…' });
+    signal.throwIfAborted(); emit({ status: step ? 'Đang tổng hợp kết quả…' : 'Đang đọc yêu cầu…' });
     require('./context-manager').fitToolContext(messages);
     const turn = await provider.stream({ messages, tools: router.schemas, signal, structured, onDelta: emit });
     structured ||= !!turn.structured;

@@ -1,4 +1,5 @@
 import { createAiAdmin } from './ai-admin.js';
+import { createSupportFlow } from './support-flow.js';
 const text = new TextEncoder();
 const b64 = value => btoa(String.fromCharCode(...new Uint8Array(value instanceof ArrayBuffer ? value : text.encode(value)))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 const json64 = value => b64(JSON.stringify(value));
@@ -144,6 +145,20 @@ const aiAdmin = createAiAdmin({
 // Database: Firebase CHỈ đẩy sự kiện khi dữ liệu thay đổi, nên EXE không phải hỏi lại định kỳ.
 // Không có khoá Firebase nào đi xuống máy khách — chỉ có token phiên do Gateway tự ký.
 // (Kết nối có thể bị edge thu hồi; phía EXE tự nối lại với backoff, không polling.)
+const supportFlow = createSupportFlow({
+  read: async (env,path) => {
+    const r=await fetch(env.FIREBASE_DATABASE_URL.replace(/\/$/,'')+path+'.json',{headers:{Authorization:'Bearer '+await firebaseToken(env),'X-Firebase-ETag':'true'}});
+    if(!r.ok)throw Error('Không đọc được phiên hỗ trợ.');
+    return {value:await r.json(),etag:r.headers.get('ETag')};
+  },
+  write: async (env,path,value,etag) => {
+    if(!etag)throw Error('Thiếu ETag phiên hỗ trợ.');
+    const r=await fetch(env.FIREBASE_DATABASE_URL.replace(/\/$/,'')+path+'.json',{method:'PUT',headers:{Authorization:'Bearer '+await firebaseToken(env),'Content-Type':'application/json','If-Match':etag},body:JSON.stringify(value)});
+    if(r.status===412)return false;if(!r.ok)throw Error('Không lưu được phiên hỗ trợ.');return true;
+  },
+  post: (env,path,value,method='POST')=>firebase(env,path,method,value),
+  send: (env,room,text)=>sendToRoom(env,room,text.slice(0,4000)),
+});
 async function chatStream(env, request, url) {
   let token;
   try { token = await claims(env, request); }
@@ -373,6 +388,20 @@ async function webhook(env, request, ctx) {
   const map = await firebase(env, '/telegramTopics/' + message.message_thread_id);
   const text = String(message.text).trim().slice(0, 2000);
   const threadId = message.message_thread_id;
+  if(String(message.chat?.id)!==String(env.TELEGRAM_CHAT_ID))return reply({ok:true,ignored:true});
+  const member=await telegram(env,'getChatMember',{chat_id:env.TELEGRAM_CHAT_ID,user_id:message.from?.id});
+  if(!['creator','administrator'].includes(member?.status))return reply({ok:true,ignored:true});
+  if(/^\/stop(?:@\w+)?(?:\s|$)/i.test(text)) {
+    if(!map?.chatRoomId) {
+      // Trước đây im lặng bỏ qua nên admin tưởng đã đóng hỗ trợ mà thực ra chưa: khách
+      // nhắn tiếp vẫn bị đẩy sang admin. Phải nói rõ để admin biết gõ đúng topic.
+      await telegram(env,'sendMessage',{chat_id:env.TELEGRAM_CHAT_ID,message_thread_id:threadId,text:'⚠️ Topic này chưa gắn với thiết bị nào nên KHÔNG đóng được phiên.\nHãy gõ /stop trong đúng topic của khách, hoặc gõ /link ROOM_WIN_… để gắn lại topic này.'});
+      return reply({ok:true,value:{command:'/stop',unlinked:true}});
+    }
+    await supportFlow.owner(env,map.chatRoomId,'auto',String(message.from.id));
+    await telegram(env,'sendMessage',{chat_id:env.TELEGRAM_CHAT_ID,message_thread_id:threadId,text:'✅ Đã đóng hỗ trợ. AI hoạt động lại.'});
+    return reply({ok:true,value:{command:'/stop'}});
+  }
 
   // Bot đang chờ admin nhập giá trị sau khi bấm nút (thêm key / tạo cấu hình):
   // tin này là GIÁ TRỊ, không phải lệnh — nuốt trước khi rơi xuống các nhánh
@@ -476,6 +505,9 @@ if (/^\/who(\s|$)/i.test(text) || /^\/trang-thai(\s|$)/i.test(text)) {
         const notice = customerNotice_(command, value);
         if (notice) {
           try {
+            // CẤP KEY / GIA HẠN KHÔNG chiếm phiên: admin chỉ gửi thông tin bản quyền sang
+            // app của khách. Trước đây chỗ này gọi owner(room,'admin') nên vừa cấp key xong
+            // là AI bị khoá, khách hỏi tiếp lại bị đẩy sang admin — trái đúng mong muốn.
             await firebase(env, '/chats/' + encodeURIComponent(room) + '/messages', 'POST', {
               sender: 'admin',
               text: notice,
@@ -509,6 +541,7 @@ if (/^\/who(\s|$)/i.test(text) || /^\/trang-thai(\s|$)/i.test(text)) {
     return reply({ ok: true, value: { unlinked: true } });
   }
   const value = { sender: 'admin', text, timestamp: (message.date || Math.floor(Date.now() / 1000)) * 1000, source: 'telegram', telegramMessageId: message.message_id, telegramThreadId: message.message_thread_id, deliveryStatus: 'firebase' };
+  await supportFlow.owner(env,map.chatRoomId,'admin',String(message.from.id));
   const result = await firebase(env, '/chats/' + encodeURIComponent(map.chatRoomId) + '/messages', 'POST', value);
   return reply({ ok: true, value: { id: result.name } });
 }
@@ -845,8 +878,10 @@ async function aiPrompt_(env, message, threadId) {
 // Bắt buộc trước khi gọi AI: token phiên hợp lệ (token đã ký, chỉ đúng máy đang
 // gọi) và bản quyền còn dùng được. Thiếu hai bước này thì bất kỳ ai biết URL
 // Gateway cũng dùng được key của bạn.
-async function aiProxy_(env, request) {
+async function aiProxy_(env, request, ctx) {
   const value = await claims(env, request);
+  const control=await supportFlow.state(env,value.chatRoomId);
+  if(control.mode!=='auto')return Response.json({error:{code:'SUPPORT_ADMIN_ACTIVE',message:control.mode==='waiting'?'Đã chuyển tới admin. Admin sẽ liên hệ lại.':'Admin đang hỗ trợ. AI đã tạm dừng.'}},{status:409});
   if (/expired|locked/i.test(String(value.license || ''))) throw Error('Bản quyền không cho phép dùng AI.');
   const raw = await request.text();
   if (!raw || raw.length > 2 * 1024 * 1024) throw Error('Request AI quá lớn.');
@@ -854,7 +889,7 @@ async function aiProxy_(env, request) {
   try { body = JSON.parse(raw); } catch { throw Error('Body AI không phải JSON hợp lệ.'); }
   if (env.AI_ADMIN_V2_ENABLED === '1') {
     const conversation = String(body.metadata?.conversation_id || '').slice(0,80);
-    const managed = await aiAdmin.proxy(env, body, String(value.installationId || value.machineId || '') + ':' + conversation);
+    const managed = await aiAdmin.proxy(env, body, String(value.installationId || value.machineId || '') + ':' + conversation,ctx,new URL(request.url).origin);
     if (managed) return managed;
   }
   const config = await aiConfig_(env);
@@ -1214,9 +1249,14 @@ async function phoneReport_(env, phone) {
 }
 
 export default {
+  async scheduled(event,env,ctx) {ctx.waitUntil(aiAdmin.scheduled(env,ctx,'https://hoadon-support-gateway.linhnhaxac10.workers.dev'));},
   async fetch(request, env, ctx) {
     try {
       const url = new URL(request.url);
+      if(request.method==='GET'&&/^\/v1\/ai\/jobs\/[a-f0-9]{16}$/.test(url.pathname)) {
+        const value=await claims(env,request);if(/expired|locked/i.test(String(value.license||'')))throw Error('Bản quyền không cho phép dùng AI.');
+        const job=await aiAdmin.publicJob(env,url.pathname.split('/').at(-1));return job?reply({ok:true,value:job}):reply({ok:false,error:'Không có tác vụ.'},404);
+      }
       if (request.method === 'GET' && url.pathname === '/v1/ai/config') {
         const value = await claims(env, request);
         if (/expired|locked/i.test(String(value.license || ''))) throw Error('Bản quyền không cho phép dùng AI.');
@@ -1228,7 +1268,7 @@ export default {
       // `try { return p } catch {}` KHÔNG bắt được lỗi của p: hàm async thoát ra
       // ngay, lỗi nổi lên thành unhandled rejection và Cloudflare trả 500 dạng
       // HTML — còn app chỉ biết JSON.parse thất bại và báo câu chữ vô nghĩa.
-      if (request.method === 'POST' && url.pathname === '/v1/ai/chat/completions') return await aiProxy_(env, request);
+      if (request.method === 'POST' && url.pathname === '/v1/ai/chat/completions') return await aiProxy_(env, request,ctx);
 
       if (request.method === 'GET' && url.pathname === '/v1/chats/stream') return await chatStream(env, request, url);
       if (request.method === 'POST' && url.pathname === '/v1/telegram/webhook') return await webhook(env, request, ctx);
@@ -1256,7 +1296,7 @@ export default {
       if (request.method !== 'POST') return reply({ ok: false, error: 'Not found.' }, 404);
 
       const input = await request.json();      const path = url.pathname;
-      const action = path.includes('notices') ? 'notice' : path.includes('activate') ? 'activate' : path.includes('messages') ? 'message' : path.includes('chats/status') ? 'chat' : path.includes('status') ? 'status' : path.includes('register') ? 'register' : '';
+      const action = path.includes('notices') ? 'notice' : path.includes('activate') ? 'activate' : path.includes('messages') || path==='/v1/chats/ai-reply' ? 'message' : path==='/v1/chats/control'||path.includes('chats/status') ? 'chat' : path.includes('status') ? 'status' : path.includes('register') ? 'register' : '';
       if (!action) return reply({ ok: false, error: 'Not found.' }, 404);
       if (limited(request, action, action === 'activate' ? 8 : 60)) return reply({ ok: false, error: 'Too many requests.' }, 429);
 
@@ -1288,6 +1328,7 @@ export default {
       if (action === 'activate') {
         const key = String(input.key || input.licenseKey || '').trim();
         if (key.length < 6 || key.length > 160) throw Error('Invalid license key.');
+        await supportFlow.begin(env,d.chatRoomId,'Yêu cầu kích hoạt bản quyền từ EXE · key '+key.slice(0,4)+'…'+key.slice(-4),{wantsAdmin:true});
 
         // Lưới an toàn: máy có thể chưa có dòng trong Sheet (lần đầu mở app bị
         // mất mạng, hoặc dữ liệu cục bộ bị xoá). Gặp lỗi này thì đăng ký luôn
@@ -1309,10 +1350,13 @@ export default {
 
       const token = await claims(env, request);
       if (token.installationId !== d.installationId || token.chatRoomId !== d.chatRoomId) throw Error('Support session does not match this device.');
+      if(path==='/v1/chats/control')return reply({ok:true,value:await supportFlow.state(env,d.chatRoomId)});
       if (action === 'chat') {
         const raw = await firebase(env, '/chats/' + encodeURIComponent(d.chatRoomId) + '/messages');
-        return reply({ ok: true, value: { messages: Object.entries(raw || {}).map(([id, value]) => ({ id, ...value })).sort((a, b) => a.timestamp - b.timestamp).slice(-100) } });
+        return reply({ ok: true, value: { control:await supportFlow.state(env,d.chatRoomId),messages: Object.entries(raw || {}).map(([id, value]) => ({ id, ...value })).sort((a, b) => a.timestamp - b.timestamp).slice(-100) } });
       }
+      if(path==='/v1/chats/ai-reply')return reply({ok:true,value:await supportFlow.complete(env,d.chatRoomId,String(input.turnId||''),Number(input.revision),input.text)});
+      if(input.unified===true)return reply({ok:true,value:await supportFlow.begin(env,d.chatRoomId,String(input.text||'').trim().slice(0,16000),{companyId:String(input.companyId||'GLOBAL').slice(0,20),attachments:Array.isArray(input.attachments)?input.attachments.map(x=>String(x).slice(0,160)).slice(0,4):[],wantsAdmin:input.wantsAdmin===true})});
 
       const message = { sender: 'user', text: String(input.text || '').trim().slice(0, 2000), timestamp: Date.now(), source: 'desktop', deliveryStatus: 'pending_telegram' };
       if (!message.text) throw Error('Invalid message.');

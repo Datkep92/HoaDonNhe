@@ -176,3 +176,151 @@ test('AUTO refreshes central metadata and receives a changed revision/model with
   const run=async(route,body,method='POST')=>{const req=new EventEmitter();req.method=method;const res=new EventEmitter();res.output='';res.writeHead=()=>{};res.write=s=>res.output+=s;res.end=()=>{};await service.handle(req,res,new URL(route,'http://localhost'),async()=>body,(_,status,result)=>{res.result=result});return res;};
   try{const initial=await run('/api/ai/providers',null,'GET');assert.equal(initial.result.value.cloudConfig.revision,31);upstreamRevision=32;const turn=await run('/api/ai/stream',{id:'agent',text:'Hi'});assert.match(turn.output,/"configRevision":32/);assert.match(turn.output,/"cloudModel":"model-B"/);assert.ok(seen.at(-1).body.metadata.conversation_id);const refreshed=await run('/api/ai/providers',null,'GET');assert.equal(refreshed.result.value.cloudConfig.revision,32);assert.equal(JSON.stringify(refreshed.result).includes(relay.token),false);}finally{service.close();f.cleanup();}
 });
+// Chờ máy chủ tự chọn cấu hình: KHÔNG được báo lỗi ngay (người dùng thấy mượt), nhưng
+// cũng KHÔNG được treo vô hạn khi máy chủ ngừng nhích tiến độ.
+const gatewayConfig = () => ({ endpoint: 'https://gateway.test/v1/ai/chat/completions', apiKey: 'session-token', model: 'fixture', viaGateway: true });
+const routingBusy = (jobId = 'job-1') => Response.json({ error: { code: 'AI_ROUTING_PENDING', message: 'Đang tự tìm cấu hình phù hợp.' }, jobId, status: 'running', processed: 0, total: 9 }, { status: 503 });
+const sseText = text => new Response('data: ' + JSON.stringify({ choices: [{ delta: { content: text } }] }) + '\n\ndata: [DONE]\n\n', { headers: { 'Content-Type': 'text/event-stream' } });
+test('gateway routing wait retries the call and reports progress instead of failing immediately', async () => {
+  let sends = 0, polls = 0; const progress = [];
+  const fetchImpl = async url => {
+    if (String(url).includes('/jobs/')) { polls++; return Response.json({ ok: true, value: { jobId: 'job-1', status: polls >= 3 ? 'ready' : 'running', processed: polls, total: 9 } }); }
+    sends++; return sends <= 3 ? routingBusy() : sseText('Đã xong');
+  };
+  const turn = await callAI({ config: gatewayConfig(), messages: [{ role: 'user', content: 'hi' }], tools: [], signal: new AbortController().signal,
+    fetchImpl, onDelta: event => { if (event.routing) progress.push(event.routing.processed); }, waitImpl: async () => {} });
+  assert.equal(turn.final, 'Đã xong');
+  assert.ok(sends >= 4, 'lùi hết 2 bước rồi mới gửi lại sau khi máy chủ sẵn sàng');
+  assert.ok(polls >= 3, 'phải hỏi tiến độ trước khi gửi lại');
+  assert.ok(progress.length >= 1, 'UI phải nhận tiến độ để hiện thay vì đứng im');
+});
+test('gateway exhaustion degrades in order, then fails fast with an actionable message', async () => {
+  const bodies = [];
+  const fetchImpl = async (url, init) => { bodies.push(JSON.parse(init.body)); return Response.json({ error: { code: 'AI_CONFIG_EXHAUSTED', message: 'x' } }, { status: 503 }); };
+  await assert.rejects(callAI({ config: gatewayConfig(), messages: [], tools: [], signal: new AbortController().signal, fetchImpl, waitImpl: async () => {} }), /Toàn bộ cấu hình AI đã kiểm tra/);
+  assert.equal(bodies.length, 3, 'lùi dần: truyền dần → bỏ truyền dần → bỏ tool native');
+  assert.deepEqual(bodies.map(body => body.stream), [true, false, false]);
+  // Đã biết cấu hình không truyền dần thì bỏ qua bước đầu, chỉ còn bước bỏ tool native.
+  let sends = 0;
+  const silent = async () => { sends++; return Response.json({ error: { code: 'AI_CONFIG_EXHAUSTED' } }, { status: 503 }); };
+  await assert.rejects(callAI({ config: { ...gatewayConfig(), stream: false }, messages: [], tools: [], signal: new AbortController().signal, fetchImpl: silent, waitImpl: async () => {} }), /Toàn bộ cấu hình AI/);
+  assert.equal(sends, 2);
+});
+test('gateway routing wait stops with a clear message when the server stops making progress', async () => {
+  let sends = 0, polls = 0;
+  const fetchImpl = async url => {
+    if (String(url).includes('/jobs/')) { polls++; return Response.json({ ok: true, value: { jobId: 'job-1', status: 'running', processed: 2, total: 9 } }); }
+    sends++; return routingBusy();
+  };
+  await assert.rejects(callAI({ config: gatewayConfig(), messages: [], tools: [], signal: new AbortController().signal, fetchImpl, waitImpl: async () => {} }), /vẫn đang tự kiểm tra cấu hình \(2\/9/);
+  assert.equal(sends, 3, 'lùi hết 2 bước rồi mới chờ; chưa sẵn sàng thì không gửi lại vô ích');
+  assert.ok(polls >= 30, 'phải theo dõi đủ lâu trước khi kết luận máy chủ kẹt');
+});
+test('gateway routing wait stays cancellable while the server is still checking', async () => {
+  const controller = new AbortController();
+  const fetchImpl = async url => { if (String(url).includes('/jobs/')) return Response.json({ ok: true, value: { jobId: 'job-1', status: 'running', processed: 1, total: 9 } }); return routingBusy(); };
+  const pending = callAI({ config: gatewayConfig(), messages: [], tools: [], signal: controller.signal, fetchImpl });
+  setTimeout(() => controller.abort(), 40);
+  await assert.rejects(pending, /abort/i);
+});
+// Telegram gửi stream:false nên cấu hình không hỗ trợ truyền dần vẫn dùng được cho Telegram.
+// App phải hành xử y hệt, nếu không Gateway loại cấu hình ra và app báo "hết cấu hình".
+test('gateway config without streaming still serves the app via a one-shot retry', async () => {
+  const bodies = [];
+  const fetchImpl = async (url, init) => {
+    bodies.push(JSON.parse(init.body));
+    if (bodies.length === 1) return Response.json({ error: { code: 'AI_CONFIG_EXHAUSTED', message: 'x' } }, { status: 503 });
+    return Response.json({ choices: [{ message: { role: 'assistant', content: 'Xin chào' }, finish_reason: 'stop' }] });
+  };
+  const turn = await callAI({ config: gatewayConfig(), messages: [{ role: 'user', content: 'hi' }], tools: [], signal: new AbortController().signal, fetchImpl });
+  assert.equal(turn.final, 'Xin chào');
+  assert.equal(bodies.length, 2, 'phải gửi lại đúng một lần');
+  assert.equal(bodies[0].stream, true);
+  assert.equal(bodies[1].stream, false, 'lần gửi lại phải KHÔNG truyền dần');
+});
+test('a gateway config declared without streaming is called without streaming from the start', async () => {
+  let body;
+  const fetchImpl = async (url, init) => { body = JSON.parse(init.body); return Response.json({ choices: [{ message: { role: 'assistant', content: 'OK' }, finish_reason: 'stop' }] }); };
+  const turn = await callAI({ config: { ...gatewayConfig(), stream: false }, messages: [{ role: 'user', content: 'hi' }], tools: [], signal: new AbortController().signal, fetchImpl });
+  assert.equal(turn.final, 'OK');
+  assert.equal(body.stream, false);
+});
+// Cấu hình chỉ chạy được chat thuần (như Telegram) mà không gọi tool native: app phải lùi tiếp
+// sang JSON protocol — vẫn gọi được tool — thay vì báo "hết cấu hình".
+test('gateway config that cannot call native tools degrades to the JSON protocol instead of failing', async () => {
+  const bodies = [];
+  const fetchImpl = async (url, init) => {
+    const body = JSON.parse(init.body);
+    bodies.push(body);
+    if (bodies.length <= 2) return Response.json({ error: { code: 'AI_CONFIG_EXHAUSTED', message: 'x' } }, { status: 503 });
+    return Response.json({ choices: [{ message: { role: 'assistant', content: '{"type":"final","message":"Đã trả lời"}' }, finish_reason: 'stop' }] });
+  };
+  const turn = await callAI({ config: gatewayConfig(), messages: [{ role: 'user', content: 'hi' }], tools: [{ type: 'function', function: { name: 'app__get_state', description: 'x', parameters: { type: 'object', properties: {}, required: [], additionalProperties: false } } }], signal: new AbortController().signal, fetchImpl });
+  assert.equal(turn.final, 'Đã trả lời');
+  assert.equal(bodies.length, 3, 'thử truyền dần → bỏ truyền dần → bỏ tool native');
+  assert.equal(bodies[0].stream, true);
+  assert.equal(bodies[1].stream, false);
+  assert.equal(bodies[2].stream, false);
+  assert.equal(bodies[2].tools, undefined, 'lần cuối KHÔNG gửi tool native, đúng mức Telegram cần');
+  assert.ok(bodies[2].messages.some(message => typeof message.content === 'string' && message.content.includes('JSON protocol')));
+});
+test('app follows the gateway streaming capability so a Telegram-working config also serves the app', async () => {
+  const f = fixture();
+  const relay = { baseURL: 'https://gateway.test/v1/ai/chat/completions', configURL: 'https://gateway.test/v1/ai/config', token: 'session-token' };
+  const seen = [];
+  const service = createAiService({ dataDir: f.dir, secrets: f.secrets, app: f.app, checkLicense: async () => ({ status: 'Active' }), agentGateway: () => relay,
+    fetchImpl: async (url, options) => {
+      if (url === relay.configURL) return Response.json({ ok: true, value: { revision: 5, active: { model: 'model-A', capabilities: { chat: true, stream: false, tools: true } } } });
+      seen.push(JSON.parse(options.body));
+      return response({ content: 'Đã trả lời.' });
+    } });
+  const run = async (route, body, method = 'POST') => { const req = new EventEmitter(); req.method = method; const res = new EventEmitter(); res.output = ''; res.writeHead = () => {}; res.write = value => { res.output += value; }; res.end = () => {}; await service.handle(req, res, new URL(route, 'http://localhost'), async () => body, () => {}); return res; };
+  try {
+    await run('/api/ai/providers', null, 'GET');
+    await run('/api/ai/stream', { id: 'agent', text: 'Hi' });
+    assert.ok(seen.length >= 1);
+    assert.equal(seen.at(-1).stream, false, 'máy chủ khai không truyền dần thì app phải gửi stream:false');
+  } finally { service.close(); f.cleanup(); }
+});
+// Nguyên tắc: CẤU HÌNH CHẠY ĐƯỢC LÀ DÙNG. Chưa chứng minh khả năng gì thì app hỏi ở dạng đơn
+// giản nhất (như Telegram) để máy chủ không phải kiểm tra — nhờ đó khách được trả lời ngay.
+test('app asks for the minimal shape unless the gateway has proven a richer capability', async () => {
+  const f = fixture();
+  const relay = { baseURL: 'https://gateway.test/v1/ai/chat/completions', configURL: 'https://gateway.test/v1/ai/config', token: 'session-token' };
+  const seen = [];
+  const service = createAiService({ dataDir: f.dir, secrets: f.secrets, app: f.app, checkLicense: async () => ({ status: 'Active' }), agentGateway: () => relay,
+    fetchImpl: async (url, options) => {
+      if (url === relay.configURL) return Response.json({ ok: true, value: { revision: 9, active: { model: 'model-A', capabilities: {} } } });
+      seen.push(JSON.parse(options.body));
+      return response({ content: 'Đã trả lời.' });
+    } });
+  const run = async (route, body, method = 'POST') => { const req = new EventEmitter(); req.method = method; const res = new EventEmitter(); res.output = ''; res.writeHead = () => {}; res.write = value => { res.output += value; }; res.end = () => {}; await service.handle(req, res, new URL(route, 'http://localhost'), async () => body, () => {}); return res; };
+  try {
+    await run('/api/ai/providers', null, 'GET');
+    await run('/api/ai/stream', { id: 'agent', text: 'Hi' });
+    assert.ok(seen.length >= 1);
+    assert.equal(seen.at(-1).stream, false, 'chưa chứng minh truyền dần ⇒ không xin truyền dần');
+    assert.equal(seen.at(-1).tools, undefined, 'chưa chứng minh tool native ⇒ dùng JSON protocol, KHÔNG đòi kiểm tra');
+    assert.ok(seen.at(-1).messages.some(message => typeof message.content === 'string' && message.content.includes('JSON protocol')), 'vẫn phải kèm hướng dẫn JSON protocol để gọi được tool');
+  } finally { service.close(); f.cleanup(); }
+});
+test('AUTO uses basic chat even when old gateway metadata advertises native streaming and tools', async () => {
+  const f = fixture();
+  const relay = { baseURL: 'https://gateway.test/v1/ai/chat/completions', configURL: 'https://gateway.test/v1/ai/config', token: 'session-token' };
+  const seen = [];
+  const service = createAiService({ dataDir: f.dir, secrets: f.secrets, app: f.app, checkLicense: async () => ({ status: 'Active' }), agentGateway: () => relay,
+    fetchImpl: async (url, options) => {
+      if (url === relay.configURL) return Response.json({ ok: true, value: { revision: 7, active: { model: 'model-A', capabilities: { chat: true, stream: true, tools: true } } } });
+      seen.push(JSON.parse(options.body));
+      return response({ content: 'Đã trả lời.' });
+    } });
+  const run = async (route, body, method = 'POST') => { const req = new EventEmitter(); req.method = method; const res = new EventEmitter(); res.output = ''; res.writeHead = () => {}; res.write = value => { res.output += value; }; res.end = () => {}; await service.handle(req, res, new URL(route, 'http://localhost'), async () => body, () => {}); return res; };
+  try {
+    await run('/api/ai/providers', null, 'GET');
+    await run('/api/ai/stream', { id: 'agent', text: 'Hi' });
+    assert.ok(seen.length >= 1);
+    assert.equal(seen.at(-1).stream, false, 'metadata cũ không được nâng yêu cầu định tuyến');
+    assert.equal(seen.at(-1).tools, undefined, 'không yêu cầu native tools khi map chat');
+    assert.ok(seen.at(-1).messages.some(m=>typeof m.content==='string'&&m.content.includes('JSON protocol')), 'vẫn giữ công cụ nội bộ qua JSON');
+  } finally { service.close(); f.cleanup(); }
+});

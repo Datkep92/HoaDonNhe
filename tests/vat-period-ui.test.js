@@ -7,7 +7,7 @@ const vm = require('node:vm');
 const source = fs.readFileSync(path.join(__dirname, '../src/data-ui.js'), 'utf8');
 const code = source.slice(source.indexOf('async function loadVat()'), source.indexOf("$('vat-reload').onclick"));
 function setup(periods, selected = '') {
-  const elements = { 'vat-period': { value: selected, innerHTML: '' }, 'vat-body': {}, 'vat-deduction': { value: '0' }, 'vat-export': {} };
+  const elements = { 'vat-period': { value: selected, innerHTML: '' }, 'vat-body': {}, 'vat-deduction': { value: '0' }, 'vat-export': {}, 'vat-export-pdf': {} };
   const calls = [];
   const context = vm.createContext({ $: id => elements[id], vatPeriods: [], num: { format: String }, safeOverviewText: String,
     api: async url => { calls.push(url); return { periods }; }, renderVat: () => {}, fail: error => { throw error; } });

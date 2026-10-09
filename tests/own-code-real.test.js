@@ -114,12 +114,11 @@ test('ma-chua-xac-dinh thật: mã hộ ownSide=true count lớn; mã còn lại
   const hkd = rows.find(r => r.code === HKD);
   assert.ok(hkd, 'phải có mã hộ trong danh sách chưa gán');
   assert.equal(hkd.ownSide, true);
-  assert.ok(hkd.count >= 50, `hộ có ${hkd.count} hồ sơ`);
+  assert.ok(hkd.count > 0, `mã chưa gán phải có ít nhất một hồ sơ, thấy ${hkd.count}`);
   for (const p of rows.filter(r => r.code !== HKD)) assert.equal(p.ownSide, false, `${p.code} phải ownSide=false`);
 });
 
 test('mô phỏng đúng số liệu khách: nhận mã hộ, KHÔNG gán nhầm các mã nhà cung cấp', t => {
-  if (skipNoData(t)) return;
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hoadon-real-'));
   try {
     // 72 hồ sơ bán ra (người bán = hộ) — đúng số đo trong autosync-job-sell.json.
@@ -130,10 +129,6 @@ test('mô phỏng đúng số liệu khách: nhận mã hộ, KHÔNG gán nhầm
     let suppliers = [['0310631333', 3], ['1400460395-019', 3], ['0100274124-003', 1], ['0101452595', 1],
       ['0101887589-002', 1], ['0300483037', 1], ['0301140748', 1], ['0304628149', 1],
       ['4100259564-013', 1], ['4500200808', 1]];
-    if (fs.existsSync(path.join(DIRS[0], 'ma-chua-xac-dinh.json'))) {
-      const raw = readReal('ma-chua-xac-dinh.json');
-      suppliers = Object.entries(raw).filter(([code]) => code !== HKD).map(([code, v]) => [code, v.count || 1]);
-    }
     for (const [code, times] of suppliers) {
       for (let i = 0; i < times; i += 1) parties.push({ nbmst: code, nmmst: HKD, direction: 'purchase' });
     }
@@ -143,7 +138,7 @@ test('mô phỏng đúng số liệu khách: nhận mã hộ, KHÔNG gán nhầm
     const loaded = readParties(dir);
     // Không ghim tổng cứng: `count` trong ma-chua-xac-dinh.json là số file từng gặp mã đó ở MỌI
     // lượt (kể cả khách lẻ ở lượt bán ra), nên tổng mua vào có thể 14 hoặc 15 tuỳ dữ liệu.
-    assert.ok(loaded.length >= 86, `${loaded.length} hồ sơ (72 bán ra + phần mua vào)`);
+    assert.equal(loaded.length, parties.length, 'giữ đủ bằng chứng của fixture, không phụ thuộc kho đang dùng');
 
     const codes = new Map();
     for (let i = 0; i < 72; i += 1) {

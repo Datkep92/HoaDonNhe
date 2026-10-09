@@ -10,7 +10,9 @@ const { openDatabase, closeDatabase } = require('../src/data/sqlite');
 const http = require('node:http');
 const CDP = require('chrome-remote-interface');
 const { browserPath } = require('../src/browser');
-test('real server exposes independent review API, preserves legacy routes and rejects another MST scope', async () => {
+// Other tests replace global fetch in the shared-process runner.
+const fetch = globalThis.fetch.bind(globalThis);
+test('real server exposes independent review API, preserves legacy routes and rejects another MST scope', async t => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'review-server-'));
   const runtime = path.join(root, 'runtime'), output = path.join(root, 'output');
   const mst = '0315058003', dir = path.join(output, 'MST-' + mst);
@@ -93,6 +95,10 @@ test('real server exposes independent review API, preserves legacy routes and re
   } finally {
     if (child.exitCode === null) { const stopped = once(child, 'exit'); child.kill(); await stopped; }
     assert.equal(path.dirname(path.resolve(root)), path.resolve(os.tmpdir())); assert.match(path.basename(root), /^review-server-/);
-    fs.rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+    try { fs.rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 }); }
+    catch (error) {
+      if (error.code !== 'EPERM' && error.code !== 'EBUSY') throw error;
+      t.diagnostic('Temporary Chrome profile remains locked during cleanup: ' + error.code);
+    }
   }
 });

@@ -17,6 +17,25 @@ const captchaSolver = require('./captcha-solver');
 
 const HOST = 'https://tracuuhoadon.gdt.gov.vn';
 
+function portalJson(res) {
+  const stop = (message, code = '') => { const error = new Error(message); error.portal = true; error.code = code; throw error; };
+  if (!res || res.status !== 200) stop(`Cổng tra cứu không trả dữ liệu (HTTP ${res?.status || 'không phản hồi'}). Thử lại sau và lấy CAPTCHA mới.`);
+  const text = String(res.text || '').trim();
+  if (/^</.test(text)) stop('Cổng tra cứu trả HTML thay vì JSON cho yêu cầu này; chưa xác định được thông tin MST. Thử lại sau với CAPTCHA mới.', 'PORTAL_HTML');
+  let data;
+  try { data = JSON.parse(text); } catch { stop('Cổng tra cứu trả dữ liệu JSON không hợp lệ. Lấy CAPTCHA mới và thử lại sau.'); }
+  if (!data || typeof data !== 'object' || Array.isArray(data)) stop('Cổng tra cứu trả dữ liệu không đúng cấu trúc.');
+  return data;
+}
+
+function taxOfficeName(value) {
+  const raw = String(value || '').trim();
+  // Legacy portal encodes [area F] office F year F month F day.
+  // Only decode a complete dated suffix; an ordinary F in a name is kept.
+  const encoded = raw.match(/^(.*?)F\d{4}F\d{1,2}F\d{1,2}$/);
+  return encoded ? encoded[1].split('F').filter(Boolean).at(-1)?.trim() || raw : raw;
+}
+
 class MstLookupController {
   /**
    * @param {object} deps
@@ -42,6 +61,7 @@ class MstLookupController {
     if (!res || res.status !== 200 || !res.body || res.body.length < 100) {
       throw new Error(`Không tải được CAPTCHA (HTTP ${res ? res.status : 'không phản hồi'}).`);
     }
+    if (/^\s*</.test(res.body.toString('utf8', 0, 100))) throw new Error('Cổng tra cứu trả HTML thay vì ảnh CAPTCHA. Thử lại sau.');
     const dataUrl = `data:image/jpeg;base64,${res.body.toString('base64')}`;
     let solvedText = '';
     try {
@@ -50,7 +70,8 @@ class MstLookupController {
       // Giải hỏng KHÔNG được làm hỏng cả luồng — người dùng gõ tay được.
       this.log(`Bộ giải CAPTCHA không chạy được: ${error.message}`, 'warn');
     }
-    return { dataUrl, solvedText };
+    const solverError = solvedText ? '' : captchaSolver.lastErrorMessage();
+    return { dataUrl, solvedText, solverError };
   }
 
   /** Kiểm tra mã CAPTCHA có đúng không (nếu cổng trả lỗi sai mã thì báo ngay). */
@@ -60,9 +81,9 @@ class MstLookupController {
       headers: { 'X-Requested-With': 'XMLHttpRequest', 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8' },
       body: `captchaCode=${encodeURIComponent(code)}`,
     });
-    if (!res || res.status !== 200) return true; // không kiểm được thì cho qua, lỗi sẽ lộ ở lần tra đầu
-    const message = String((res.text || '').match(/"strMess"\s*:\s*"([^"]*)"/)?.[1] || '');
-    if (/sai mã xác thực|mã xác thực không đúng/i.test(message)) {
+    const data = portalJson(res);
+    const message = String(data.strMess || data.message || '');
+    if (/sai|mã xác thực không đúng/i.test(message)) {
       throw new Error('Mã CAPTCHA không đúng hoặc đã hết hạn. Bấm 🔄 để lấy mã mới.');
     }
     return true;
@@ -78,28 +99,37 @@ class MstLookupController {
           headers: { 'X-Requested-With': 'XMLHttpRequest', 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8' },
         },
       );
-      if (!res || res.status !== 200) throw new Error(`HTTP ${res ? res.status : 'không phản hồi'}`);
-
-      const data = JSON.parse(res.text || '{}');
+      const data = portalJson(res);
       const model = data && data.tinModel;
       if (!model) {
         const msg = String((data && (data.strMess || data.message)) || '');
         // Cổng báo sai CAPTCHA bằng thông báo chứ không phải thiếu tin — phân biệt để báo đúng.
-        if (/sai mã xác thực/i.test(msg)) throw new Error('CAPTCHA sai — hãy lấy mã mới rồi thử lại.');
+        if (/sai|hết hạn|không đúng/i.test(msg) && /captcha|mã|xác thực/i.test(msg)) throw new Error('CAPTCHA sai hoặc hết hạn — hãy lấy mã mới rồi thử lại.');
+        if ((!Object.hasOwn(data, 'tinModel') || msg) && !/không tìm thấy|không tồn tại|không có thông tin/i.test(msg)) {
+          const error = new Error('Cổng tra cứu trả dữ liệu không đúng cấu trúc tinModel. Không thể kết luận MST không tồn tại.');
+          error.portal = true;
+          throw error;
+        }
         return { mst, found: false, ten: '', tThai: 'Không tìm thấy thông tin người nộp thuế', cThue: '', dChi: '' };
       }
-      let cqt = String(model.pay_taxo_name || '');
-      if (cqt.includes('F')) cqt = cqt.split('F')[0];
+      if (typeof model !== 'object' || !model.tin || !model.norm_name || String(model.tin).trim() !== String(mst).trim()) {
+        const error = new Error('Dữ liệu cổng trả về thiếu MST/tên hoặc không khớp MST yêu cầu.');
+        error.portal = true;
+        throw error;
+      }
+      const cqt = taxOfficeName(model.pay_taxo_name);
       return {
         mst: String(model.tin || mst),
         found: true,
         ten: String(model.norm_name || ''),
-        tThai: String(model.statusName || 'Đang hoạt động (đã được cấp GCN ĐKT)'),
-        cThue,
+        tThai: String(model.statusName || 'Cổng không cung cấp trạng thái'),
+        statusUnknown: !model.statusName,
+        cThue: cqt,
+        cThueRaw: String(model.pay_taxo_name || ''),
         dChi: String(model.tran_addr || ''),
       };
     } catch (error) {
-      return { mst, found: false, ten: '', tThai: `Lỗi: ${error.message}`, cThue: '', dChi: '', error: error.message };
+      return { mst, found: false, ten: '', tThai: `Lỗi: ${error.message}`, cThue: '', dChi: '', error: error.message, portalError: !!error.portal, errorCode: error.code || '' };
     }
   }
 
@@ -111,6 +141,7 @@ class MstLookupController {
     await this.validateCaptcha(captchaCode);
     const rows = [];
     const total = mstList.length;
+    let consecutiveHtml = 0;
     this.onProgress({ stage: 'start', total, done: 0, message: `Bắt đầu tra cứu ${total} MST…` });
 
     for (let i = 0; i < total; i += 1) {
@@ -123,7 +154,10 @@ class MstLookupController {
 
       const row = await this.queryOne(mst, captchaCode);
       rows.push(row);
-      this.onProgress({ stage: 'progress', done: rows.length, total, row });
+      this.onProgress({ stage: 'progress', done: rows.length, total, row, rows: [...rows] });
+      consecutiveHtml = row.errorCode === 'PORTAL_HTML' ? consecutiveHtml + 1 : 0;
+      if (consecutiveHtml >= 2) throw new Error('Cổng trả HTML cho hai MST liên tiếp. Đã dừng và giữ kết quả; lấy CAPTCHA mới rồi thử lại sau.');
+      if ((row.portalError && row.errorCode !== 'PORTAL_HTML') || (row.error && row.errorCode !== 'PORTAL_HTML' && /CAPTCHA|mã xác thực/i.test(row.error))) throw new Error(row.error);
 
       // Nghỉ giữa các lượt — cổng giới hạn nhịp, dội liên tục sẽ bị chặn.
       if (i < total - 1) await pace.wait();

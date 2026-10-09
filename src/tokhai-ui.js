@@ -22,6 +22,7 @@
     cacheElements();
     bindEvents();
     loadCaptcha();
+    loadSavedLogin();
     initDatePickers();
   }
 
@@ -57,6 +58,7 @@
     els.presetBtns = document.querySelectorAll('#pane-tokhai .preset-btn');
     els.btnSearch = document.getElementById('ttk-btn-search');
     els.btnBulkDownload = document.getElementById('ttk-btn-bulk-download');
+    els.btnStop = document.getElementById('ttk-btn-stop');
 
     // Results
     els.resultsSection = document.getElementById('ttk-results-section') || document.querySelector('.tokhai-results');
@@ -77,24 +79,29 @@
     els.btnTogglePass.addEventListener('click', togglePassword);
     els.btnReloadCaptcha.addEventListener('click', loadCaptcha);
     els.captchaImg.addEventListener('click', loadCaptcha);
+    els.captchaLoadingText.addEventListener('click', loadCaptcha);
     els.btnDoLogin.addEventListener('click', handleDirectLogin);
     if (els.btnOpenPortal) els.btnOpenPortal.addEventListener('click', openPortalInBrowser);
 
     // Portal tabs
     els.portalTabs.forEach(tab => {
       tab.addEventListener('click', () => {
+        if (state.isSearching || state.isDownloading || state.isLoadingCaptcha) return;
         els.portalTabs.forEach(t => t.classList.remove('active'));
         tab.classList.add('active');
         state.currentPortal = tab.dataset.portal;
         if (els.loginPortal) els.loginPortal.value = state.currentPortal;
+        resetConnection();
         loadCaptcha();
       });
     });
 
     if (els.loginPortal) {
       els.loginPortal.addEventListener('change', (e) => {
+        if (state.isSearching || state.isDownloading || state.isLoadingCaptcha) { e.target.value = state.currentPortal; return; }
         state.currentPortal = e.target.value;
         els.portalTabs.forEach(t => t.classList.toggle('active', t.dataset.portal === state.currentPortal));
+        resetConnection();
         loadCaptcha();
       });
     }
@@ -111,6 +118,10 @@
     // Search & Download
     els.btnSearch.addEventListener('click', searchDeclarations);
     els.btnBulkDownload.addEventListener('click', bulkDownload);
+    els.btnStop.addEventListener('click', async () => {
+      try { await api('/api/tokhai/stop', {}); log('Đang dừng tiến trình…', 'warn'); }
+      catch (error) { fail(error.message); }
+    });
 
     // Results table delegation
     if (els.resultsBody) {
@@ -119,7 +130,8 @@
         if (link) {
           e.preventDefault();
           const maHoSo = link.dataset.maHoSo;
-          // show detail modal
+          const item = state.results.find(row => row.maHoSo === maHoSo);
+          if (item) showDetails(item);
         }
         const dlBtn = e.target.closest('.ttk-btn-download');
         if (dlBtn) {
@@ -134,6 +146,9 @@
   }
 
   function initDatePickers() {
+    els.txtTuNgay.type = 'text';
+    els.txtDenNgay.type = 'text';
+    els.txtTuNgay.placeholder = els.txtDenNgay.placeholder = 'dd/mm/yyyy';
     const now = new Date();
     const firstDay = new Date(now.getFullYear(), now.getMonth(), 1);
     const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0);
@@ -141,6 +156,8 @@
     if (typeof flatpickr !== 'undefined') {
       flatpickr(els.txtTuNgay, { dateFormat: 'd/m/Y', allowInput: true, locale: flatpickr.l10ns.vn || 'default', defaultDate: firstDay });
       flatpickr(els.txtDenNgay, { dateFormat: 'd/m/Y', allowInput: true, locale: flatpickr.l10ns.vn || 'default', defaultDate: lastDay });
+    } else {
+      applyPreset('this_month');
     }
   }
 
@@ -173,7 +190,7 @@
     if (isHidden) {
       els.cardDirectLogin.hidden = false;
       els.btnShowLogin.classList.add('active');
-      loadCaptcha();
+      loadCaptcha('login');
     } else {
       els.cardDirectLogin.hidden = true;
       els.btnShowLogin.classList.remove('active');
@@ -186,41 +203,53 @@
     els.btnTogglePass.textContent = isPass ? '🙈' : '👁️';
   }
 
-  async function loadCaptcha() {
+  async function loadCaptcha(purpose) {
+    purpose = typeof purpose === 'string' ? purpose : (state.loggedIn && state.currentPortal === 'dvc' ? 'search' : 'login');
     if (state.isLoadingCaptcha) return;
     state.isLoadingCaptcha = true;
+    const scope = state.scope, portal = state.currentPortal;
 
     els.captchaLoadingText.classList.remove('hidden');
+    els.captchaLoadingText.hidden = false;
     els.captchaLoadingText.innerText = 'Đang nạp mã...';
     els.captchaImg.classList.add('hidden');
+    els.captchaImg.hidden = true;
     els.captchaImg.src = '';
     els.txtCaptcha.value = '';
     els.btnReloadCaptcha.disabled = true;
 
     try {
-      const res = await fetch('/api/tokhai/captcha', {
+      const res = await featureFetch('/api/tokhai/captcha', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
-        body: JSON.stringify({ portal: state.currentPortal })
+        body: JSON.stringify({ portal: state.currentPortal, purpose })
       });
       const data = await res.json();
+      if ((scope && scope !== state.scope) || portal !== state.currentPortal) return;
       if (!data.ok) throw new Error(data.error || 'Không lấy được CAPTCHA');
 
-      const { dataUrl, solvedText } = data.value;
+      const { dataUrl, solvedText, solverError, csrfToken } = data.value;
+      state.csrfToken = csrfToken || '';
+      state.captchaPurpose = purpose;
+      if (solverError) log('Không tự giải được CAPTCHA: ' + solverError + '. Bạn có thể nhập mã bằng tay.', 'warn');
       state.captchaDataUrl = dataUrl;
       state.captchaSolved = solvedText || '';
 
       els.captchaImg.src = dataUrl;
+      els.captchaImg.hidden = false;
       els.captchaImg.classList.remove('hidden');
       els.captchaLoadingText.classList.add('hidden');
+      els.captchaLoadingText.hidden = true;
       els.txtCaptcha.value = state.captchaSolved;
+      state.captchaConsumed = false;
 
       if (state.captchaSolved) {
         log(`[Captcha ${state.currentPortal.toUpperCase()}] Tự động giải mã: "${state.captchaSolved}"`, 'info');
       }
     } catch (err) {
       els.captchaLoadingText.innerText = 'Lỗi tải mã (Bấm để thử lại)';
+      els.captchaLoadingText.hidden = false;
       els.captchaLoadingText.classList.remove('hidden');
       log(`Lỗi tải CAPTCHA: ${err.message}`, 'error');
     } finally {
@@ -230,41 +259,74 @@
   }
 
   async function syncTokenFromWeb() {
+    if (state.isSyncingWeb || state.isSearching || state.isDownloading || state.isLoadingCaptcha) return;
+    state.isSyncingWeb = true;
+    const scope = state.scope, portal = state.currentPortal;
+    const version = state.webSyncVersion = (state.webSyncVersion || 0) + 1;
+    const label = els.btnSyncToken.textContent;
+    els.btnSyncToken.disabled = true;
+    els.btnSyncToken.textContent = 'Đang chờ đăng nhập…';
     els.connDot.className = 'status-dot';
-    els.userMst.textContent = 'Đang kiểm tra...';
-    els.userName.textContent = 'Quét tab và cookies...';
+    els.userMst.textContent = 'Đang chờ đăng nhập trên Chrome';
+    els.userName.textContent = 'Đăng nhập xong, ứng dụng tự đồng bộ và ẩn Chrome.';
 
     try {
-      const res = await fetch('/api/sync-token', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify({ portal: state.currentPortal })
-      });
-      const data = await res.json();
-      if (data.ok && data.value) {
+      await api('/api/tokhai/open', { portal });
+      const deadline = Date.now() + 300000;
+      let data;
+      while (Date.now() < deadline) {
+        if (version !== state.webSyncVersion || scope !== state.scope || portal !== state.currentPortal) return;
+        const res = await featureFetch('/api/sync-token', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'include',
+          body: JSON.stringify({ portal })
+        });
+        data = await res.json();
+        if (version !== state.webSyncVersion || scope !== state.scope || portal !== state.currentPortal) return;
+        if (!data.ok) throw new Error(data.error || 'Không đồng bộ được');
+        if (!data.value?.pending) break;
+        await new Promise(resolve => setTimeout(resolve, 1500));
+      }
+      if (data?.value?.pending) throw new Error('Đã hết thời gian chờ đăng nhập. Bấm Đồng bộ Web để thử lại.');
+      if (data?.ok && data.value) {
         state.currentUserMST = data.value.mst || '';
         state.currentUserName = data.value.name || 'Đã kết nối qua Web';
         state.loggedIn = true;
+        state.captchaConsumed = true;
         updateConnectionUI(true);
         log('Đồng bộ phiên thành công từ tab Web!', 'ok');
       } else {
-        throw new Error(data.error || 'Không đồng bộ được');
+        throw new Error('Không đồng bộ được');
       }
     } catch (err) {
+      if (version !== state.webSyncVersion || scope !== state.scope || portal !== state.currentPortal) return;
+      state.loggedIn = false;
       els.connDot.className = 'status-dot disconnected';
       els.userMst.textContent = 'Chưa kết nối';
-      els.userName.textContent = 'Bấm Đăng nhập hoặc mở cổng thuế';
+      els.userName.textContent = 'Bấm Đồng bộ Web để thử lại';
       log('Không đồng bộ được Token từ tab Web: ' + err.message, 'warn');
+    } finally {
+      if (version === state.webSyncVersion) {
+        state.isSyncingWeb = false;
+        els.btnSyncToken.disabled = false;
+        els.btnSyncToken.textContent = label;
+        if (scope === state.scope) await api('/api/tokhai/hide', {}).catch(() => {});
+      }
     }
   }
 
   async function handleDirectLogin() {
+    if (state.isSearching || state.isDownloading || state.isLoadingCaptcha) return;
+    if (state.currentPortal === 'dvc' && state.captchaPurpose !== 'login') {
+      await loadCaptcha('login');
+      if (!els.txtCaptcha.value.trim()) { fail('Nhập CAPTCHA đăng nhập mới rồi thử lại.'); return; }
+    }
     const username = els.txtUser.value.trim();
-    const password = els.txtPass.value.trim();
-    const captcha = els.txtCaptcha.value.trim().toUpperCase();
+    const password = els.txtPass.value;
+    const captcha = els.txtCaptcha.value.trim();
 
-    if (!username || !password) {
+    if (!username || (!password && !state.remembered)) {
       fail('Vui lòng nhập đầy đủ Tài khoản/MST và Mật khẩu!');
       return;
     }
@@ -277,18 +339,19 @@
     els.btnDoLogin.innerHTML = '⏳ ĐANG ĐĂNG NHẬP...';
 
     try {
-      const res = await fetch('/api/tokhai/login', {
+      const res = await featureFetch('/api/tokhai/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
-        body: JSON.stringify({ username, password, captcha, portal: state.currentPortal })
+        body: JSON.stringify({ username, password, captcha, portal: state.currentPortal, csrfToken: state.csrfToken, remember: els.chkRemember.checked })
       });
       const data = await res.json();
       if (!data.ok) throw new Error(data.error || 'Đăng nhập thất bại');
 
-      state.currentUserMST = username;
-      state.currentUserName = state.currentPortal === 'dvc' ? 'Cổng Dịch Vụ Công Thuế' : 'Cổng Thuế Điện Tử (eTax)';
+      state.currentUserMST = data.value.mst || username;
+      state.currentUserName = data.value.name || '';
       state.loggedIn = true;
+      state.captchaConsumed = true;
       updateConnectionUI(true);
 
       els.cardDirectLogin.hidden = true;
@@ -297,7 +360,7 @@
     } catch (err) {
       log(`Đăng nhập thất bại: ${err.message}`, 'error');
       fail(`Đăng nhập không thành công: ${err.message}`);
-      loadCaptcha();
+      loadCaptcha('login');
     } finally {
       els.btnDoLogin.disabled = false;
       els.btnDoLogin.innerHTML = '⚡ ĐĂNG NHẬP TRỰC TIẾP';
@@ -316,14 +379,15 @@
     }
   }
 
-  function openPortalInBrowser() {
-    const url = state.currentPortal === 'dvc' ? 'https://dichvucong.gdt.gov.vn/tthc/home' : 'https://thuedientu.gdt.gov.vn/etaxnnt/';
-    window.open(url, '_blank');
-    log(`Đã mở ${state.currentPortal === 'dvc' ? 'Dịch Vụ Công' : 'Thuế Điện Tử'} trên trình duyệt.`, 'info');
+  async function openPortalInBrowser() {
+    try {
+      await api('/api/tokhai/open', { portal: state.currentPortal });
+      log('Đã mở cổng trong cửa sổ Chrome của MST đang chọn.', 'info');
+    } catch (error) { fail(error.message); }
   }
 
   async function searchDeclarations() {
-    if (state.isSearching) return;
+    if (state.isSearching || state.isDownloading) return;
 
     if (!state.loggedIn) {
       fail('Vui lòng đăng nhập trước khi tra cứu!');
@@ -340,6 +404,7 @@
       return;
     }
 
+    state.operationScope = state.scope;
     state.isSearching = true;
     state.results = [];
     els.btnSearch.disabled = true;
@@ -352,14 +417,17 @@
 
       let captchaCode = '';
       if (state.currentPortal === 'dvc') {
+        if (state.captchaConsumed || state.captchaPurpose !== 'search') await loadCaptcha('search');
         captchaCode = els.txtCaptcha.value.trim();
         if (!captchaCode) {
+          els.cardDirectLogin.hidden = false;
           fail('Vui lòng nhập mã CAPTCHA cho DVC!');
           return;
         }
+        state.captchaConsumed = true;
       }
 
-      const res = await fetch('/api/tokhai/search', {
+      const res = await featureFetch('/api/tokhai/search', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
@@ -368,7 +436,8 @@
       const data = await res.json();
       if (!data.ok) throw new Error(data.error || 'Tra cứu thất bại');
 
-      state.results = data.value.results;
+      const progress = await waitForJob();
+      state.results = progress.rows || [];
       renderResults(state.results);
       els.resultCount.textContent = `${state.results.length} hồ sơ`;
       els.btnBulkDownload.disabled = state.results.length === 0;
@@ -382,6 +451,7 @@
       log(`Lỗi tra cứu: ${err.message}`, 'error');
       fail(`Lỗi: ${err.message}`);
     } finally {
+      state.operationScope = null;
       state.isSearching = false;
       els.btnSearch.disabled = false;
       els.btnSearch.innerHTML = '🔍 Tìm Kiếm';
@@ -389,7 +459,7 @@
   }
 
   async function bulkDownload() {
-    if (state.isDownloading) return;
+    if (state.isDownloading || state.isSearching) return;
     if (!state.results.length) {
       fail('Chưa có kết quả để tải!');
       return;
@@ -401,6 +471,7 @@
       return;
     }
 
+    state.operationScope = state.scope;
     state.isDownloading = true;
     els.btnBulkDownload.disabled = true;
     els.btnBulkDownload.innerHTML = '⏳ ĐANG TẢI...';
@@ -408,7 +479,7 @@
     try {
       log(`Bắt đầu tải ${maHoSoList.length} tờ khai...`, 'info');
 
-      const res = await fetch('/api/tokhai/download', {
+      const res = await featureFetch('/api/tokhai/download', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
@@ -417,18 +488,15 @@
       const data = await res.json();
       if (!data.ok) throw new Error(data.error || 'Tải thất bại');
 
-      const results = data.value;
-      let success = 0, failed = 0;
-      for (const r of results) {
-        if (r.success) success++;
-        else failed++;
-      }
+      const results = await waitForJob();
+      const success = results.succeeded || 0, failed = results.failed || 0;
 
       log(`Tải xong: ${success} thành công, ${failed} lỗi.`, success > 0 ? 'ok' : 'error');
     } catch (err) {
       log(`Lỗi tải hàng loạt: ${err.message}`, 'error');
       fail(`Lỗi: ${err.message}`);
     } finally {
+      state.operationScope = null;
       state.isDownloading = false;
       els.btnBulkDownload.disabled = false;
       els.btnBulkDownload.innerHTML = '⬇ Tải tất cả';
@@ -436,41 +504,49 @@
   }
 
   async function downloadSingle(maHoSo, btn) {
+    if (state.isSearching || state.isDownloading) return;
+    state.operationScope = state.scope;
+    state.isDownloading = true;
     const oldText = btn.innerHTML;
     btn.disabled = true;
     btn.innerHTML = '⏳ Đang tải...';
 
     try {
-      const res = await fetch('/api/tokhai/download', {
+      const res = await featureFetch('/api/tokhai/download', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
         body: JSON.stringify({ maHoSoList: [maHoSo], portal: state.currentPortal, results: state.results })
       });
       const data = await res.json();
-      if (data.ok && data.value.length > 0 && data.value[0].success) {
+      if (!data.ok) throw new Error(data.error || 'Tải thất bại');
+      const progress = await waitForJob();
+      const file = (progress.files || []).find(f => f.maHoSo === maHoSo);
+      if (file && file.success) {
         btn.innerHTML = '✓ Đã tải';
         log(`Đã tải tờ khai ${maHoSo}`, 'ok');
       } else {
-        throw new Error(data.value[0]?.error || 'Tải thất bại');
+        throw new Error(file?.error || 'Tải thất bại');
       }
     } catch (err) {
       btn.innerHTML = oldText;
       log(`Lỗi tải ${maHoSo}: ${err.message}`, 'error');
       fail(`Lỗi: ${err.message}`);
     } finally {
+      state.operationScope = null;
+      state.isDownloading = false;
       btn.disabled = false;
     }
   }
 
   function renderResults(items) {
     els.resultsSection.hidden = false;
-    els.resultsEmpty.hidden = items.length === 0;
+    els.resultsEmpty.hidden = items.length > 0;
     els.resultsBody.innerHTML = '';
 
     if (items.length === 0) return;
 
-    els.resultsBody.innerHTML = items.map((item, idx) => `
+    els.resultsBody.innerHTML = items.map((raw, idx) => { const item = Object.fromEntries(Object.entries(raw).map(([k, v]) => [k, escapeHtml(v)])); return `
       <tr data-ma-ho-so="${item.maHoSo}" data-to-khai="${item.toKhai}" data-ky-tinh-thue="${item.kyTinhThue}" data-loai-to-khai="${item.loaiToKhai}" data-lan-bo-sung="${item.lanBoSung}" data-lan-nop="${item.lanNop}" data-ngay-nop="${item.ngayNop}" data-trang-thai="${item.trangThai}">
         <td>${idx + 1}</td>
         <td><strong>${item.maHoSo}</strong></td>
@@ -486,7 +562,7 @@
           <button class="ttk-btn-download" data-ma-ho-so="${item.maHoSo}" title="Tải tờ khai này">⬇ Tải</button>
         </td>
       </tr>
-    `).join('');
+    `; }).join('');
   }
 
   function clearResultsUI() {
@@ -506,10 +582,78 @@
     const time = now.toLocaleTimeString('vi-VN');
     const div = document.createElement('div');
     div.className = `log-entry log-${type}`;
-    div.innerHTML = `<span class="log-time">${time}</span><span>${msg}</span>`;
+    div.innerHTML = `<span class="log-time">${time}</span><span>${escapeHtml(msg)}</span>`;
     if (els.logContainer) {
       els.logContainer.prepend(div);
     }
+  }
+
+  function escapeHtml(value) {
+    return String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;'}[c]));
+  }
+
+  function resetConnection() {
+    state.webSyncVersion = (state.webSyncVersion || 0) + 1;
+    state.isSyncingWeb = false;
+    els.btnSyncToken.disabled = false;
+    els.btnSyncToken.textContent = 'Đồng bộ Web';
+    state.loggedIn = false;
+    state.currentUserMST = '';
+    state.currentUserName = '';
+    state.csrfToken = '';
+    state.remembered = false;
+    els.txtPass.value = '';
+    els.txtPass.placeholder = 'Mật khẩu';
+    els.txtCaptcha.value = '';
+    clearResultsUI();
+    updateConnectionUI(false);
+    loadSavedLogin();
+  }
+
+  async function api(url, body) {
+    const res = await featureFetch(url, { method: body ? 'POST' : 'GET', credentials: 'include', ...(body ? { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : {}) });
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.error || 'Cổng thuế không phản hồi.');
+    return data.value;
+  }
+
+  async function waitForJob() {
+    els.btnStop.disabled = false;
+    let previous = '';
+    try { while (true) {
+      const progress = await api('/api/tokhai/progress');
+      if (progress.message && previous !== progress.message) { log(progress.message); previous = progress.message; }
+      if (progress.stage === 'error') throw new Error(progress.error || progress.message);
+      if (['complete', 'stopped'].includes(progress.stage)) {
+        for (const file of progress.files || []) {
+          if (file.error) log(`${file.maHoSo}: ${file.error}`, 'error');
+          for (const warning of file.warnings || []) log(`${file.maHoSo}: ${warning}`, 'warn');
+        }
+        return progress;
+      }
+      await new Promise(resolve => setTimeout(resolve, 750));
+    } } finally { els.btnStop.disabled = true; }
+  }
+
+  async function loadSavedLogin() {
+    if (state.currentPortal !== 'dvc') return;
+    const scope = state.scope;
+    try {
+      const saved = await api('/api/tokhai/credentials');
+      if (state.currentPortal !== 'dvc' || (scope && scope !== state.scope)) return;
+      state.remembered = saved.remembered;
+      els.txtUser.value = saved.username || '';
+      els.txtPass.placeholder = saved.remembered ? 'Đã lưu mật khẩu — để trống để sử dụng' : 'Mật khẩu';
+    } catch (error) { log(error.message, 'warn'); }
+  }
+
+  function showDetails(item) {
+    const dialog = document.createElement('dialog');
+    dialog.innerHTML = `<h3>Hồ sơ ${escapeHtml(item.maHoSo)}</h3><dl>${Object.entries({ 'Tờ khai': item.toKhai, 'Kỳ tính thuế': item.kyTinhThue, 'Loại': item.loaiToKhai, 'Lần bổ sung': item.lanBoSung, 'Lần nộp': item.lanNop, 'Ngày nộp': item.ngayNop, 'Trạng thái': item.trangThai }).map(([label, value]) => `<dt>${label}</dt><dd>${escapeHtml(value)}</dd>`).join('')}</dl><button type="button">Đóng</button>`;
+    dialog.querySelector('button').onclick = () => dialog.close();
+    dialog.addEventListener('close', () => dialog.remove());
+    document.body.appendChild(dialog);
+    dialog.showModal();
   }
 
   // Báo lỗi ra LƯỚI AN TOÀN của app (toast góc phải) thay vì alert() native — toàn app đã bỏ
@@ -519,10 +663,40 @@
     else if (window.notice) window.notice(String(message || ''));
   }
 
+
+  async function featureFetch(url, options = {}) {
+    if (!state.scope) {
+      const response = await fetch('/api/state', { credentials: 'include' });
+      const data = await response.json();
+      if (!data.ok || !data.value.selected) throw new Error('Chọn MST trước khi sử dụng tab này.');
+      state.scope = data.value.selected;
+    }
+    if (state.operationScope && state.operationScope !== state.scope) throw new Error('MST đã thay đổi. Tra cứu lại trên MST đang chọn.');
+    return fetch(url, { ...options, headers: { ...options.headers, 'X-Feature-Mst': state.scope } });
+  }
+  window.addEventListener('hd:state', event => {
+    const selected = event.detail && event.detail.selected || '';
+    const changed = state.scope && selected !== state.scope;
+    state.scope = selected;
+    if (changed && initialized) {
+      resetConnection();
+      state.captchaSolved = '';
+      els.txtCaptcha.value = '';
+      els.captchaImg.classList.add('hidden');
+      els.captchaLoadingText.classList.remove('hidden');
+      els.captchaLoadingText.innerText = 'Bấm để lấy CAPTCHA cho MST đang chọn';
+    }
+  });
+
   // Khởi tạo đúng MỘT lần — data-ui.js gọi ensureInit() mỗi lần bấm tab.
   let initialized = false;
   function ensureInit() {
-    if (initialized) return;
+    if (initialized) {
+      // Quay lại tab cũng phải ẩn cửa sổ đã được mở bởi các thao tác trước đó.
+      // Chỉ giữ Chrome hiện trong lúc người dùng đang Đồng bộ Web.
+      if (!state.isSyncingWeb) api('/api/tokhai/hide', {}).catch(() => {});
+      return;
+    }
     if (!document.getElementById('ttk-btn-search')) return; // pane chưa có trong DOM
     initialized = true;
     init();

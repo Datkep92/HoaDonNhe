@@ -621,6 +621,17 @@ function products(db, options = {}) {
 // §39: khách hàng (bán ra) và nhà cung cấp (mua vào) lấy trực tiếp từ invoices.
 // kind = 'buyer' | 'supplier' | 'all' (all = cả hai, có cột `loai` để phân biệt).
 // from/to (tuỳ chọn) = khoảng ngày đang xem, để tab Đối tác và file Excel khớp đúng bộ lọc.
+function lookupPartners(db, { kind, exclude = [] } = {}) {
+  if (!['buyer', 'supplier'].includes(kind)) throw new Error('Loại đối tác không hợp lệ.');
+  const mstCol = kind === 'supplier' ? 'mst_ban' : 'mst_mua';
+  const nameCol = kind === 'supplier' ? 'ten_ban' : 'ten_mua';
+  const rows = db.prepare(`SELECT TRIM(${mstCol}) AS mst, MAX(TRIM(COALESCE(${nameCol}, ''))) AS ten,
+    COUNT(*) AS so_hoa_don FROM invoices WHERE direction = ? AND TRIM(COALESCE(${mstCol}, '')) <> ''
+    GROUP BY TRIM(${mstCol}) ORDER BY mst`).all(kind === 'supplier' ? 'BUY' : 'SELL');
+  const own = new Set(exclude.map(value => String(value).trim()));
+  return rows.filter(row => !own.has(row.mst));
+}
+
 function partners(db, { kind = 'buyer', limit = 100, from = '', to = '' } = {}) {
   const size = Math.max(1, Math.min(500, Number(limit) || 100));
   const range = [];
@@ -666,4 +677,4 @@ function partnerInvoices(db, { direction = '', mst = '', ten = '', from = '', to
   return { total: Number(totals.c || 0), amount: Number(totals.amount || 0), tax: Number(totals.tax || 0), limit: size, offset: skip, rows };
 }
 
-module.exports = { summary, overview, debts, debtsDetail, goodsDetail, productInvoices, taxOverview, listInvoices, getInvoice, products, partners, partnerInvoices, filtersOf, ftsMatchOf, invoiceWhere, activeSql, inactiveSql, EXCLUDED_SQL };
+module.exports = { summary, overview, debts, debtsDetail, goodsDetail, productInvoices, taxOverview, listInvoices, getInvoice, products, partners, lookupPartners, partnerInvoices, filtersOf, ftsMatchOf, invoiceWhere, activeSql, inactiveSql, EXCLUDED_SQL };

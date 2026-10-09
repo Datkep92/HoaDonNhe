@@ -7,7 +7,7 @@ const crypto = require('node:crypto');
 const { execFile, spawn } = require('node:child_process');
 const { URL } = require('node:url');
 const { Engine, atomicWrite, validateParams, canReuseSearch, sameDownloadParams, companyNameFromItems, isResumableJob, classifyDownloadError } = require('./core');
-const { TaxBrowser, browserPath, jwtAccount } = require('./browser');
+const { TaxBrowser, browserPath, jwtAccount, disablePasswordManager } = require('./browser');
 const tct = require('./tct-api');
 const loginAuto = require('./login-auto');
 const mstFormat = require('./mst-format');
@@ -83,9 +83,10 @@ if (process.argv.includes('--data-import')) {
 }
 const sessionSecret = crypto.randomBytes(32).toString('hex');
 const browser = new TaxBrowser(dataDir);
+const mstBrowserPool = new (require('./mst-browser').MstBrowserPool)(dataDir);
 const secrets = require('./secrets').init(dataDir);
 const accountsFile = path.join(dataDir, 'accounts.json');
-const support = new SupportStore(dataDir);
+const support = new SupportStore(dataDir, { useDefaultGateway: !testServer });
 const appLock = new AppLockStore(dataDir, support);
 // EXE chạy không có cửa sổ console, nên thông báo khởi động và lỗi được ghi vào
 // du_lieu/nhat-ky.log; lỗi nghiêm trọng thì hiện thêm hộp thoại để người dùng biết.
@@ -1297,6 +1298,7 @@ function runDetached(target, jobId, label, fn) {
 // (đăng nhập bằng trang thuế, chưa lưu token) thì giữ nguyên, đóng đi là mất đăng nhập.
 async function closeBrowserWhenIdle(reason) {
   if (!browser.client) return;
+  if (mstLookupJobs.get(browser.mst)?.running || tokhaiJobs.get(browser.mst)?.running) return;
   if (authBusy.has(selected) || loginChallenge || engine?.busy) return;   // đang đăng nhập/CAPTCHA hoặc còn tác vụ
   if (!selected || !directTokens.has(selected)) return;
   const mst = selected;
@@ -2375,6 +2377,24 @@ async function endpoint(req, res, url) {
     catch (error) { return reply(res, 400, { ok: false, error: error.message }); }
   }
   try {
+    if (url.pathname.startsWith('/api/review/')) {
+      return await require('./accounting-review/service').handle(req, res, url, {
+        readBody, reply, readBankBody: req => readJsonBody(req, BANK_JSON_BODY_LIMIT, 'sao kê gốc bổ sung'),
+        context: request => {
+          checkFeatureScope(request);
+          if (!selected || !accountFor(selected)) throw new Error('Chọn MST trước khi kiểm tra hồ sơ.');
+          if (!output) throw new Error('Chọn thư mục lưu trước khi kiểm tra hồ sơ.');
+          return { mst: selected, dir: dataLayer().mst.mstDirectory(output, selected), identifiers: accountIdentifiers(selected), output };
+        },
+        downloadJob: mst => featureJob(tokhaiJobs, mst),
+        collection: context => ({
+          browser, log,
+                ensureBrowser: () => requireSession('Tải hồ sơ kế toán', true),
+          isCurrent: current => selected === current.mst && output === current.output && browser.mst === current.mst,
+          session: (mst, portal) => portal === 'tdt' ? findTdtSession(mst) : findDvcSession(mst),
+        }),
+      });
+    }
     if (req.method === 'GET' && url.pathname === '/api/state') { lastUiSeen = Date.now(); return reply(res, 200, { ok: true, value: appState() }); }
     // Bảng 1.000 dòng tách KHỎI /api/state: trạng thái tổng hợp (vài KB) poll mỗi nhịp, bảng chỉ
     // fetch lại khi engine.jobRevision đổi – payload mỗi nhịp rảnh giảm từ hàng trăm KB còn vài KB.
@@ -2410,6 +2430,13 @@ async function endpoint(req, res, url) {
       const db = readDatabase(path.join(dir, 'data.db'));
       return fn(db, dir, mst);
     };
+    if (req.method === 'GET' && url.pathname === '/api/db/mst-partners') {
+      checkFeatureScope(req);
+      const kind = url.searchParams.get('kind');
+      return withDatabase((db, dir, mst) => reply(res, 200, { ok: true, value: {
+        mst, kind, rows: data.queries.lookupPartners(db, { kind, exclude: accountIdentifiers(mst) }),
+      } }));
+    }
     if (req.method === 'GET' && url.pathname === '/api/db/summary') {
       const p = url.searchParams;
       const range = { from: p.get('from') || '', to: p.get('to') || '' };
@@ -3188,6 +3215,7 @@ async function endpoint(req, res, url) {
     // Xuất Excel "Kho dữ liệu": MỘT workbook nhiều sheet (HĐ mua vào/bán ra, hàng hóa, đối tác),
     // tôn trọng ĐÚNG bộ lọc đang xem (q + khoảng ngày). Trả về file .xlsx để tải xuống.
     if (req.method === 'GET' && url.pathname === '/api/db/export') {
+      checkFeatureScope(req);
       const p = url.searchParams;
       return withDatabase((db, dir, mst) => {
         // parts: danh sách bảng muốn xuất (vd "sell" = chỉ hoá đơn bán ra). Trống ⇒ xuất TẤT CẢ.
@@ -3196,6 +3224,8 @@ async function endpoint(req, res, url) {
         const { buffer, counts } = data.excelExport.buildWorkbook(db, {
           q: p.get('q') || '', from: p.get('from') || '', to: p.get('to') || '',
           state: p.get('state') || '', direction: p.get('direction') || '',
+          min: p.get('min') || '', max: p.get('max') || '', category: p.get('category') || '',
+          status: p.get('status') || '', account: p.get('account') || '', flow: p.get('flow') || '',
         }, parts);
         res.writeHead(200, {
           'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
@@ -3946,25 +3976,42 @@ async function openPortal(url, invoice) {
     }
 
     // ========== TRA CỨU MST HÀNG LOẠT (tab "Tra cứu MST") ==========
-    // KHÓNG tự mở cửa sổ Chrome ở đây. open() đóng phiên hiện có trước (nó gọi close()),
-    // nên bấm tab một cái là lượt tải hóa đơn đang dở bị giật, rỒi cửa sổ Chrome mọc lên
-    // và còn lại sau khi app đóng. Chỉ dùng phiên đã có – không có thì báo rõ.
+    // Dùng Chrome headless riêng từng MST: không có cửa sổ/taskbar và không đụng
+    // trình duyệt đang đăng nhập hóa đơn hoặc tải tờ khai.
     if (url.pathname.startsWith('/api/mst/lookup/')) {
-      return mstLookupRoute(req, res, url, requireSession('Tra cứu MST'));
+      checkFeatureScope(req);
+      if (!selected || !accountFor(selected)) throw new Error('Chọn MST trước khi tra cứu.');
+      return await mstLookupRoute(req, res, url, selected);
     }
 
     // ========== TỜ KHAI / DVC (tab "Tải tờ khai") ==========
     if (url.pathname.startsWith('/api/tokhai/')) {
-      return tokhaiRoute(req, res, url, requireSession('Tờ khai'));
+      checkFeatureScope(req);
+      if (req.method === 'GET' && url.pathname === '/api/tokhai/credentials') {
+        if (!selected || !accountFor(selected)) throw new Error('Chọn MST trước khi dùng Tờ khai.');
+        return await tokhaiRoute(req, res, url, selected);
+      }
+      const mst = await requireSession('Tờ khai', req.method === 'POST' && /\/(captcha|open)$/.test(url.pathname));
+      return await tokhaiRoute(req, res, url, mst);
     }
 
     // ĐỒng bộ phiên DVC/TDT từ cửa sổ Chrome đang mở (nút "📔 ĐỒng bộ Web").
     if (req.method === 'POST' && url.pathname === '/api/sync-token') {
+      checkFeatureScope(req);
       const input = await readBody(req);
-      const targetMst = requireSession('ĐỒng bộ Web');
+      const targetMst = await requireSession('ĐỒng bộ Web');
       const portal = String(input.portal || 'dvc');
+      const job = featureJob(tokhaiJobs, targetMst);
       const found = portal === 'dvc' ? await findDvcSession(targetMst) : await findTdtSession(targetMst);
-      if (!found.ok) return reply(res, 200, { ok: false, error: found.error });
+      if (!found.ok) {
+        if (job.webLogin && job.webLogin.portal === portal && Date.now() - job.webLogin.startedAt < 300000) return reply(res, 200, { ok: true, value: { pending: true, message: 'Đang chờ đăng nhập trên Chrome.' } });
+        if (job.webLogin) { job.webLogin = null; await browser.hide(); }
+        return reply(res, 200, { ok: false, error: found.error });
+      }
+      if (!accountIdentifiers(targetMst).includes(String(found.mst))) return reply(res, 200, { ok: false, error: 'Tài khoản trên Chrome không thuộc MST đang chọn. Đăng nhập đúng tài khoản rồi bấm Đồng bộ Web lại.' });
+      if (portal === 'tdt') featureJob(tokhaiJobs, targetMst).sessionId = found.sessionId;
+      job.webLogin = null;
+      await browser.hide();
       return reply(res, 200, { ok: true, value: found });
     }
 
@@ -3994,14 +4041,23 @@ async function openPortal(url, invoice) {
 // ---------------------------------------------------------------------------
 
 // Trạng thái tiến trình đang chạy cho UI poll /api/*/progress và để bấm "Ngưng".
-const mstLookupJob = { running: false, progress: {}, controller: null, results: [] };
-const tokhaiJob = { running: false, progress: {}, controller: null, results: [], portal: 'dvc' };
+const mstLookupJobs = new Map();
+const tokhaiJobs = new Map();
+function featureJob(store, mst) {
+  if (!store.has(mst)) store.set(mst, { running: false, progress: {}, controller: null, results: [], portal: 'dvc' });
+  return store.get(mst);
+}
+function checkFeatureScope(req) {
+  const requested = String(req.headers['x-feature-mst'] || '');
+  if (requested && requested !== selected) throw new Error('MST đã thay đổi. Quay lại MST ban đầu hoặc tra cứu lại.');
+}
 
 // Chỉ dùng phiên Chrome ĐANG CÒ của đúng MST đang chọn. Không tự mở: xem ghi chú
 // ở trên endpoint. Người dùng tự mở qua luỒng đăng nhập sẵn có của app.
-function requireSession(feature) {
+async function requireSession(feature, open = false, visible = false) {
   const mst = String(selected || '').trim();
   if (!mst || !accountFor(mst)) throw new Error(`Chọn một MST trong danh sách bên trái trước khi dùng ${feature}.`);
+  if (open) { await browser.ensureOpen(mst, visible); if (visible) await browser.show(); else await browser.hide(); }
   if (!browser.client) {
     throw new Error(`Chưa có cửa sổ Chrome cho MST này. Bấm "Đăng nhập" ở tab Tra cứu & tải để mở phiên cổng thuế, rỒi quay lại dùng ${feature}.`);
   }
@@ -4012,11 +4068,14 @@ function requireSession(feature) {
 }
 
 async function mstLookupRoute(req, res, url, mst) {
+  const mstLookupJob = featureJob(mstLookupJobs, mst);
   const { MstLookupController } = require('./mst-lookup');
   const action = url.pathname.slice('/api/mst/lookup/'.length);
 
   if (req.method === 'POST' && action === 'captcha') {
-    const ctl = new MstLookupController({ browser, dataDir, mst, log });
+    if (mstLookupJob.running) throw new Error('Đợi tra cứu xong trước khi đổi CAPTCHA.');
+    const lookupBrowser = await mstBrowserPool.get(mst, true);
+    const ctl = new MstLookupController({ browser: lookupBrowser, dataDir, mst, log });
     const captcha = await ctl.loadCaptcha();
     return reply(res, 200, { ok: true, value: captcha });
   }
@@ -4033,17 +4092,16 @@ async function mstLookupRoute(req, res, url, mst) {
   if (req.method === 'POST' && action === 'search') {
     if (mstLookupJob.running) throw new Error('Đang tra cứu MST. Bấm Ngưng nếu muốn dừng.');
     const input = await readBody(req);
-    const list = mstFormat ? null : null; // placeholder, xem dưới
     const mstList = Array.isArray(input.mstList)
       ? input.mstList
       : String(input.text || '').split(/[\r\n,\t\s;]+/).map(s => s.replace(/[^0-9A-Za-z-]/g, '').trim()).filter(s => s.length >= 8);
-    const captchaCode = String(input.captchaCode || '').trim().toUpperCase();
+    const captchaCode = String(input.captchaCode || '').trim();
     const unique = [...new Set(mstList)];
     if (!unique.length) throw new Error('Danh sách MST trống. Nhập ít nhất một MST hợp lệ.');
     if (!captchaCode) throw new Error('Chưa nhập mã CAPTCHA. Bấm nút 📔 để lấy mã, hoặc gõ tay.');
 
     const ctl = new MstLookupController({
-      browser, dataDir, mst, log,
+      browser: await mstBrowserPool.get(mst), dataDir, mst, log,
       onProgress: p => Object.assign(mstLookupJob.progress, p),
     });
     mstLookupJob.controller = ctl;
@@ -4056,10 +4114,10 @@ async function mstLookupRoute(req, res, url, mst) {
       .then(rows => {
         mstLookupJob.results = rows || [];
         Object.assign(mstLookupJob.progress, {
-          stage: 'complete',
+          stage: ctl.shouldStop ? 'stopped' : 'complete',
           done: (mstLookupJob.results || []).length,
           rows: mstLookupJob.results,
-          message: `Hoàn thành! Đã tra cứu ${(mstLookupJob.results || []).length}/${unique.length} MST.`,
+          message: `${ctl.shouldStop ? 'Đã dừng' : 'Hoàn thành'}: ${(mstLookupJob.results || []).length}/${unique.length} MST.`,
         });
       })
       .catch(error => { Object.assign(mstLookupJob.progress, { stage: 'error', error: error.message, message: `Lỗi: ${error.message}` }); })
@@ -4068,7 +4126,7 @@ async function mstLookupRoute(req, res, url, mst) {
   }
 
   if (req.method === 'POST' && action === 'export') {
-    const rows = mstLookupJob.results || [];
+    const rows = mstLookupJob.results.length ? mstLookupJob.results : (mstLookupJob.progress.rows || []);
     if (!rows.length) throw new Error('Chưa có kết quả để xuất.');
     const input = await readBody(req);
     const now = new Date();
@@ -4083,8 +4141,28 @@ async function mstLookupRoute(req, res, url, mst) {
 }
 
 async function tokhaiRoute(req, res, url, mst) {
+  const tokhaiJob = featureJob(tokhaiJobs, mst);
   const { TokhaiController } = require('./tokhai');
   const action = url.pathname.slice('/api/tokhai/'.length);
+  if (req.method === 'POST' && action === 'open') {
+    const input = await readBody(req);
+    const origin = input.portal === 'tdt' ? 'https://thuedientu.gdt.gov.vn' : 'https://dichvucong.gdt.gov.vn';
+    const tab = await browser.tabForOrigin(origin);
+    const target = origin + (input.portal === 'tdt' ? '/etaxnnt/' : '/tthc/home');
+    await browser.evalInTab(tab, `(() => { if (location.pathname === '/') setTimeout(() => location.assign(${JSON.stringify(target)}), 0); return true; })()`);
+    tokhaiJob.webLogin = { portal: input.portal === 'tdt' ? 'tdt' : 'dvc', startedAt: Date.now() };
+    await browser.show(tab);
+    return reply(res, 200, { ok: true, value: { opened: true } });
+  }
+  if (req.method === 'POST' && action === 'hide') {
+    tokhaiJob.webLogin = null; await browser.hide();
+    return reply(res, 200, { ok: true, value: { hidden: true } });
+  }
+  if (req.method === 'GET' && action === 'credentials') {
+    let saved = {};
+    try { saved = JSON.parse(secrets.read(mst, ['dvc_login']).dvc_login || '{}'); } catch {}
+    return reply(res, 200, { ok: true, value: { username: saved.username || '', remembered: !!saved.password } });
+  }
 
   if (req.method === 'GET' && action === 'progress') {
     return reply(res, 200, { ok: true, value: tokhaiJob.progress });
@@ -4096,32 +4174,44 @@ async function tokhaiRoute(req, res, url, mst) {
   }
 
   if (req.method === 'POST' && action === 'captcha') {
+    if (tokhaiJob.running) throw new Error('Đợi tiến trình xong trước khi đổi CAPTCHA.');
     const input = await readBody(req);
     const portal = String(input.portal || 'dvc');
     const ctl = new TokhaiController({ browser, dataDir, mst, log });
     ctl.currentPortal = portal;
-    const captcha = await ctl.loadCaptcha();
+    const captcha = await ctl.loadCaptcha(input.purpose === 'search' ? 'search' : 'login');
+    if (portal === 'tdt') tokhaiJob.loginFields = ctl.tdtLoginFields;
     return reply(res, 200, { ok: true, value: captcha });
   }
 
   if (req.method === 'POST' && action === 'login') {
+    if (tokhaiJob.running) throw new Error('Đợi tiến trình xong trước khi đăng nhập.');
     const input = await readBody(req);
-    const username = String(input.username || '').trim();
-    const password = String(input.password || '');
-    const captcha = String(input.captcha || '').trim().toUpperCase();
+    let username = String(input.username || '').trim();
+    let password = String(input.password || '');
+    const captcha = String(input.captcha || '').trim();
     const portal = String(input.portal || 'dvc');
+    if (portal === 'dvc' && !password) {
+      let saved = {};
+      try { saved = JSON.parse(secrets.read(mst, ['dvc_login']).dvc_login || '{}'); } catch {}
+      if (!username || username === saved.username) { username = username || saved.username || ''; password = saved.password || ''; }
+    }
     if (!username || !password) throw new Error('Thiếu tài khoản hoặc mật khẩu.');
     if (!captcha) throw new Error('Thiếu mã CAPTCHA.');
     const ctl = new TokhaiController({ browser, dataDir, mst, log });
     ctl.currentPortal = portal;
     const result = portal === 'tdt'
-      ? await ctl.loginTdt(username, password, captcha)
-      : await ctl.loginDvc(username, password, captcha);
+      ? await (() => { ctl.tdtLoginFields = tokhaiJob.loginFields; return ctl.loginTdt(username, password, captcha); })()
+      : await ctl.loginDvc(username, password, captcha, String(input.csrfToken || ''));
     if (input.remember && portal === 'dvc') {
-      try { secrets.writeAsync(mst, { dvc_login: { username, password: secrets.protect(password), savedAt: Date.now() } }); }
+      try { secrets.writeAsync(mst, { dvc_login: JSON.stringify({ username, password, savedAt: Date.now() }) }); }
       catch (error) { log('Không lưu được thông tin đăng nhập DVC: ' + error.message); }
     }
+    if (input.remember === false && portal === 'dvc') secrets.clear(mst, ['dvc_login']);
     tokhaiJob.portal = portal;
+    tokhaiJob.userMst = result.mst;
+    tokhaiJob.userName = result.name;
+    if (portal === 'tdt') tokhaiJob.sessionId = ctl.sessionId;
     return reply(res, 200, { ok: true, value: result });
   }
 
@@ -4130,9 +4220,10 @@ async function tokhaiRoute(req, res, url, mst) {
     const input = await readBody(req);
     const tuNgay = String(input.tuNgay || '').trim();
     const denNgay = String(input.denNgay || '').trim();
-    const captcha = String(input.captcha || '').trim().toUpperCase();
+    const captcha = String(input.captcha || '').trim();
     const portal = String(input.portal || 'dvc');
     if (!tuNgay || !denNgay) throw new Error('Chọn đủ Từ ngày và Đến ngày.');
+    TokhaiController.splitRange(tuNgay, denNgay);
 
     const ctl = new TokhaiController({
       browser, dataDir, mst, log,
@@ -4144,11 +4235,12 @@ async function tokhaiRoute(req, res, url, mst) {
     tokhaiJob.portal = portal;
     tokhaiJob.results = [];
     tokhaiJob.progress = { stage: 'start', message: `Đang tra cứu ${portal === 'tdt' ? 'Thuế Điện Tử' : 'Dịch Vụ Công'}…` };
+    ctl.sessionId = tokhaiJob.sessionId || '';
 
     const task = portal === 'tdt' ? ctl.searchTdt(tuNgay, denNgay) : ctl.searchDvc(tuNgay, denNgay, captcha);
     task.then(rows => {
       tokhaiJob.results = rows || [];
-      Object.assign(tokhaiJob.progress, { stage: 'complete', count: tokhaiJob.results.length, rows: tokhaiJob.results, message: `Tìm thấy ${tokhaiJob.results.length} hỒ sơ.` });
+      Object.assign(tokhaiJob.progress, { stage: ctl.shouldStop ? 'stopped' : 'complete', count: tokhaiJob.results.length, rows: tokhaiJob.results, message: `Tìm thấy ${tokhaiJob.results.length} hồ sơ.` });
     }).catch(error => {
       Object.assign(tokhaiJob.progress, { stage: 'error', error: error.message, message: `Lỗi: ${error.message}` });
     }).finally(() => { tokhaiJob.running = false; tokhaiJob.controller = null; });
@@ -4161,7 +4253,10 @@ async function tokhaiRoute(req, res, url, mst) {
     if (!list.length) throw new Error('Chưa chọn hỒ sơ nào để tải.');
     if (tokhaiJob.running) throw new Error('Đang tra cứu. Đợi xong rỒi tải.');
 
-    const portal = tokhaiJob.portal || String(input.portal || 'dvc');
+    const portal = String(input.portal || tokhaiJob.portal || 'dvc');
+    if (portal !== tokhaiJob.portal) throw new Error('Cổng tải khác cổng đã tra cứu. Tra cứu lại trước khi tải.');
+    if (list.some(id => !tokhaiJob.results.some(row => row.maHoSo === id))) throw new Error('Hồ sơ không thuộc kết quả tra cứu của MST đang chọn.');
+    if (!output) throw new Error('Chọn thư mục lưu trước khi tải tờ khai.');
     const ctl = new TokhaiController({
       browser, dataDir, mst, log,
       onProgress: p => Object.assign(tokhaiJob.progress, p),
@@ -4170,12 +4265,14 @@ async function tokhaiRoute(req, res, url, mst) {
     tokhaiJob.controller = ctl;
     tokhaiJob.running = true;
     tokhaiJob.progress = { stage: 'download', total: list.length, done: 0, message: `Đang tải ${list.length} hỒ sơ…` };
+    ctl.results = tokhaiJob.results;
+    ctl.sessionId = tokhaiJob.sessionId || '';
 
     // Thư mục đích: <thư mục lưu>/MST-<mst>/To_khai/
     const dir = output ? path.join(output, `MST-${mst}`, 'To_khai') : '';
     const task = ctl.bulkDownload(list, { outputDir: dir, output });
     task.then(result => {
-      Object.assign(tokhaiJob.progress, { stage: 'complete', ...result, message: `Tải xong ${result.succeeded || 0}/${list.length} hỒ sơ.` });
+      Object.assign(tokhaiJob.progress, { stage: result.stopped ? 'stopped' : 'complete', ...result, message: `Tải xong ${result.succeeded || 0}/${list.length} hồ sơ.` });
     }).catch(error => {
       Object.assign(tokhaiJob.progress, { stage: 'error', error: error.message, message: `Lỗi tải: ${error.message}` });
     }).finally(() => { tokhaiJob.running = false; tokhaiJob.controller = null; });
@@ -4189,7 +4286,7 @@ async function tokhaiRoute(req, res, url, mst) {
 async function findDvcSession(mst) {
   const tabs = await browser.listTabs();
   const tab = tabs.find(t => t.url && t.url.includes('dichvucong.gdt.gov.vn'));
-  if (!tab) return { ok: false, error: 'Chưa mở tab Dịch Vụ Công. Bấm "Mở cổng trên Chrome" rỒi đăng nhập.' };
+  if (!tab) return { ok: false, error: 'Chưa mở tab Dịch Vụ Công. Bấm "Đồng bộ Web" rồi đăng nhập.' };
   try {
     const info = await browser.evalInTab(tab.id, `(() => {
       try {
@@ -4209,7 +4306,7 @@ async function findDvcSession(mst) {
 async function findTdtSession(mst) {
   const tabs = await browser.listTabs();
   const tab = tabs.find(t => t.url && t.url.includes('thuedientu.gdt.gov.vn'));
-  if (!tab) return { ok: false, error: 'Chưa mở tab Thuế Điện Tử. Bấm "Mở cổng trên Chrome" rỒi đăng nhập.' };
+  if (!tab) return { ok: false, error: 'Chưa mở tab Thuế Điện Tử. Bấm "Đồng bộ Web" rồi đăng nhập.' };
   try {
     const info = await browser.evalInTab(tab.id, `(() => {
       try {
@@ -4218,11 +4315,11 @@ async function findTdtSession(mst) {
         const text = (document.body && document.body.innerText || '').slice(0, 4000);
         const nameM = text.match(/Tên đơn vị\\s*:\\s*([^\\n]{2,80})/i);
         const mstM = text.match(/(?:Mã số thuế|MST)\\s*:\\s*([0-9A-Za-z\\-]{8,})/i);
-        return { sessionId: url, name: nameM ? nameM[1].trim() : '', mst: mstM ? mstM[1] : '' };
+        return { sessionId: url, name: nameM ? nameM[1].trim() : '', mst: mstM ? mstM[1] : '', authenticated: !!(nameM || mstM || document.querySelector('a[href*="logout"],a[href*="Logout"]')) };
       } catch (e) { return { error: e.message }; }
     })()`);
     if (!info || info.error) return { ok: false, error: (info && info.error) || 'Không đọc được phiên Thuế điện tử.' };
-    if (!info.sessionId) return { ok: false, error: 'Chưa đăng nhập Thuế Điện Tử (không thấy dse_sessionId trên trang).' };
+    if (!info.sessionId || !info.authenticated) return { ok: false, error: 'Chưa xác nhận đăng nhập Thuế Điện Tử. Đăng nhập xong, ứng dụng sẽ tự đồng bộ.' };
     return { ok: true, mst: info.mst || mst, name: info.name || 'Cổng Thuế Điện Tử (eTax)', portal: 'tdt', sessionId: info.sessionId };
   } catch (error) { return { ok: false, error: error.message }; }
 }
@@ -4501,7 +4598,8 @@ function launchUi(port) {
   const url = `http://127.0.0.1:${port}/?launch=${sessionSecret}`;
   // --disable-features=Translate,TranslateUI: tắt bong bóng "Translate this page?" của Chrome trên
   // cửa sổ --app (bong bóng đó hiện như một cửa sổ phụ, làm rối việc đếm/điều khiển cửa sổ app).
-  uiProcess = spawn(executablePath, [`--app=${url}`, `--user-data-dir=${path.join(dataDir, 'ui-browser')}`, '--no-first-run', '--no-default-browser-check', '--disable-features=Translate,TranslateUI'], { detached: true, stdio: 'ignore' }); uiProcess.unref();
+  disablePasswordManager(path.join(dataDir, 'ui-browser'));
+  uiProcess = spawn(executablePath, [`--app=${url}`, `--user-data-dir=${path.join(dataDir, 'ui-browser')}`, '--no-first-run', '--no-default-browser-check', '--disable-save-password-bubble', '--disable-features=Translate,TranslateUI,PasswordManagerOnboarding,PasswordLeakDetection'], { detached: true, stdio: 'ignore' }); uiProcess.unref();
   log(`Đã mở giao diện: ${url}`);
   // Chỉ gắn bộ theo dõi MỘT lần: mở lại cửa sổ (từ khay) không được tạo thêm interval.
   if (!uiWatchStarted) { uiWatchStarted = true; watchUi(); }
@@ -4546,11 +4644,14 @@ const server = http.createServer((req, res) => {
   if (url.pathname === '/bank-pdf.js') return staticFile(req, res, 'bank-pdf.js', 'text/javascript; charset=utf-8');
   if (url.pathname === '/dvt-ui.js') return staticFile(req, res, 'dvt-ui.js', 'text/javascript; charset=utf-8');
   if (url.pathname === '/mst-lookup-ui.js') return staticFile(req, res, 'mst-lookup-ui.js', 'text/javascript; charset=utf-8');
+  if (url.pathname === '/accounting-review-ui.js') return staticFile(req, res, 'accounting-review-ui.js', 'text/javascript; charset=utf-8');
+  if (url.pathname === '/accounting-review-ui.css') return staticFile(req, res, 'accounting-review-ui.css', 'text/css; charset=utf-8');
   if (url.pathname === '/tokhai-ui.js') return staticFile(req, res, 'tokhai-ui.js', 'text/javascript; charset=utf-8');
   // pdfjs (module + worker) cho "Sao kê ngân hàng" đọc PDF có chữ ngay trong máy.
   if (url.pathname === '/vendor/pdfjs/pdf.min.mjs') return staticFile(req, res, 'vendor/pdfjs/pdf.min.mjs', 'text/javascript; charset=utf-8');
   if (url.pathname === '/vendor/pdfjs/pdf.worker.min.mjs') return staticFile(req, res, 'vendor/pdfjs/pdf.worker.min.mjs', 'text/javascript; charset=utf-8');
   if (url.pathname === '/data-view.css') return staticFile(req, res, 'data-view.css', 'text/css; charset=utf-8');
+  if (url.pathname === '/vat-print.css') return staticFile(req, res, 'vat-print.css', 'text/css; charset=utf-8');
   // Ảnh chụp danh sách MST cho khung hình ĐẦU TIÊN – xem bootCacheScript().
   if (url.pathname === '/boot-cache.js') return bootCacheScript(res);
   if (url.pathname.startsWith('/api/')) return void endpoint(req, res, url);
@@ -4712,6 +4813,8 @@ async function stop() {
   removeInstanceFile();
   stopSupportStream();
   aiService?.close();
+  for (const job of mstLookupJobs.values()) if (job.controller) job.controller.shouldStop = true;
+  await mstBrowserPool.close();
   closeUiWindows();
   await browser.close();
   log('Đã thoát chương trình.');

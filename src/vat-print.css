@@ -1,0 +1,15 @@
+@page { size: A4; margin: 15mm; }
+body { font: 12px "Segoe UI", Arial, sans-serif; color: #20324a; margin: 24px; }
+h1 { font-size: 20px; margin: 0 0 16px; }
+h4 { font-size: 14px; margin: 22px 0 10px; }
+p { line-height: 1.6; }
+table { width: 100%; border-collapse: collapse; margin: 12px 0; }
+th, td { border: 1px solid #d6e0eb; padding: 8px; text-align: left; vertical-align: top; }
+th, .vat-total { background: #f1f5f9; font-weight: 600; }
+.num { text-align: right; white-space: nowrap; }
+.hint, .vat-note { color: #52677e; font-size: 11px; }
+.vat-warn, .vat-flag { color: #8b4e15; }
+thead { display: table-header-group; }
+tr { break-inside: avoid; }
+h4 { break-after: avoid; }
+@media print { body { margin: 0; } }

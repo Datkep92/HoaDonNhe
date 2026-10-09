@@ -23,6 +23,7 @@ test('disablePasswordManager: tắt dịch vụ lưu mật khẩu trong Preferen
     const data = JSON.parse(fs.readFileSync(path.join(dir, 'Default', 'Preferences'), 'utf8'));
     assert.equal(data.credentials_enable_service, false, 'tắt dịch vụ lưu mật khẩu');
     assert.equal(data.credentials_enable_autosignin, false, 'tắt tự động đăng nhập');
+    assert.equal(data.translate.enabled, false, 'tắt lời nhắc dịch trang');
     assert.equal(data.profile.password_manager_enabled, false, 'tắt quản lý mật khẩu');
     assert.equal(data.profile.password_manager_leak_detection, false, 'tắt cảnh báo rò rỉ mật khẩu');
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
@@ -34,7 +35,7 @@ test('disablePasswordManager: ghi kiểu GỘP, không phá thiết lập sẵn 
     const file = path.join(dir, 'Default', 'Preferences');
     fs.mkdirSync(path.dirname(file), { recursive: true });
     // Profile đã có sẵn dữ liệu Chrome thật (ví dụ danh sách extension, chế độ hiển thị…).
-    fs.writeFileSync(file, JSON.stringify({ profile: { exit_type: 'Normal', avatar_index: 12 }, savefile: { default_directory: 'D:\\HoaDon' } }));
+    fs.writeFileSync(file, JSON.stringify({ profile: { exit_type: 'Normal', avatar_index: 12 }, translate: { enabled: true, blocked_languages: ['vi'] }, savefile: { default_directory: 'D:\\HoaDon' } }));
 
     assert.equal(disablePasswordManager(dir), true);
     const data = JSON.parse(fs.readFileSync(file, 'utf8'));
@@ -43,6 +44,8 @@ test('disablePasswordManager: ghi kiểu GỘP, không phá thiết lập sẵn 
     assert.equal(data.savefile.default_directory, 'D:\\HoaDon', 'giữ nguyên nhóm khoá khác');
     assert.equal(data.profile.password_manager_enabled, false, 'vẫn phải tắt quản lý mật khẩu');
     assert.equal(data.credentials_enable_service, false);
+    assert.equal(data.translate.enabled, false);
+    assert.deepEqual(data.translate.blocked_languages, ['vi'], 'giữ thiết lập dịch khác');
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 

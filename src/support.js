@@ -155,6 +155,7 @@ class SupportStore {
     this.file = path.join(dataDir, 'support.json');
     this.gatewayFile = path.join(dataDir, 'support-gateway.json');
     this.machineIdOverride = String(options.machineId || '');
+    this.useDefaultGateway = options.useDefaultGateway === true;
     this.data = read(this.file, null) || this.create();
     this.normalize();
     this.save();
@@ -239,9 +240,9 @@ class SupportStore {
 
   gatewayUrl() {
     const configured = read(this.gatewayFile, {});
-    // Chưa có file cấu hình: EXE dùng máy chủ mặc định, còn chạy bằng node (dev/test) giữ local mock
-    // để bộ test không gọi ra Internet. File có url rỗng hoặc "local" cũng ép local mock.
-    const url = configured.url === undefined ? (packed ? DEFAULT_GATEWAY_URL : '') : String(configured.url || '').trim();
+    // EXE và ứng dụng nguồn bật useDefaultGateway dùng máy chủ mặc định. Unit test/dev
+    // không bật tùy chọn vẫn local, tránh gọi Internet. url rỗng/"local" luôn được ưu tiên.
+    const url = configured.url === undefined ? (packed || this.useDefaultGateway ? DEFAULT_GATEWAY_URL : '') : String(configured.url || '').trim();
     if (!url || url.toLowerCase() === 'local') return '';
     const parsed = new URL(url);
     if (parsed.protocol !== 'https:' && !(parsed.protocol === 'http:' && ['127.0.0.1', 'localhost'].includes(parsed.hostname))) throw new Error('Gateway URL phải dùng HTTPS.');
@@ -268,7 +269,7 @@ class SupportStore {
       if (authorize && this.data.license.sessionToken) headers.Authorization = `Bearer ${this.data.license.sessionToken}`;
       const request = transport.request(target, { method: 'POST', headers, timeout: 25000 }, response => {
         let output = ''; response.setEncoding('utf8'); response.on('data', chunk => { output += chunk; }); response.on('end', () => {
-          try { const value = JSON.parse(output); if (!value.ok) throw new Error(value.error || 'Gateway từ chối yêu cầu.'); resolve(value.value); } catch (error) { reject(error); }
+          try { const value = JSON.parse(output); if (!value.ok || response.statusCode >= 400) throw new Error(value.error || 'Gateway từ chối yêu cầu.'); resolve(value.value); } catch (error) { error.status = response.statusCode; reject(error); }
         });
       });
       request.on('timeout', () => request.destroy(new Error('Gateway không phản hồi.'))); request.on('error', reject); request.end(body);
@@ -673,9 +674,18 @@ class SupportStore {
   async beginUnified(text,companyId,attachments=[],wantsAdmin=false) {
     // wantsAdmin: do NGƯỜI DÙNG tự chọn "Đợi admin/support" trong app. Gateway chỉ ghi nhận,
     // không tự đoán theo từ khoá — nhờ vậy khách hỏi về bản quyền vẫn được hỏi ý trước.
-    const remote=this.gateway('/v1/chats/messages',{...this.publicDevice(),text,companyId,attachments,unified:true,wantsAdmin:wantsAdmin===true},true);
-    if(!remote)throw Error('Chưa kết nối máy chủ hỗ trợ. Đăng ký thiết bị trước khi gửi.');
-    const value=await remote;this.aiControl=value.control;this.aiControlAt=Date.now();return value;
+    if (!this.gatewayUrl()) throw Error('Chưa cấu hình máy chủ hỗ trợ. Không thể gửi yêu cầu tới Admin.');
+    const registerSession = async () => {
+      if (!this.supportRegistration) this.supportRegistration = Promise.resolve().then(() => this.register()).finally(() => { this.supportRegistration = null; });
+      await this.supportRegistration;
+      if (!this.data.license.sessionToken) throw Error('Máy chủ chưa cấp phiên hỗ trợ. Không thể gửi yêu cầu tới Admin.');
+    };
+    if (!this.data.device.registeredAt || !this.data.license.sessionToken) await registerSession();
+    const send = () => this.gateway('/v1/chats/messages',{...this.publicDevice(),text,companyId,attachments,unified:true,wantsAdmin:wantsAdmin===true},true);
+    let value;
+    try { value = await send(); }
+    catch (error) { if (error.status !== 401) throw error; await registerSession(); value = await send(); }
+    this.aiControl=value.control;this.aiControlAt=Date.now();return value;
   }
   async aiAllowed() {
     // CHỈ chặn khi admin THẬT SỰ đang giữ phiên. Lệch số phiên bản một mình không phải lý do

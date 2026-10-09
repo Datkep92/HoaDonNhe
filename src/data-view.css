@@ -1025,3 +1025,53 @@ table.loading tbody { transition: opacity .12s ease; }
   #pane-accounting { grid-template-columns: minmax(0, 1fr); }
   .mia-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
+.mst-partner-scroll { max-height: 280px; }
+
+/* Tra cứu MST: đối tác và CAPTCHA có đủ chiều rộng, không nằm trong cột lọc hẹp. */
+#pane-mstlookup { grid-template-columns: minmax(0, 1fr); }
+#pane-mstlookup > .filters { display: grid; gap: 12px; min-width: 0; }
+#pane-mstlookup > .filters > * { margin-top: 0; margin-bottom: 0; }
+#mst-input { display: block; width: 100%; min-height: 110px; resize: vertical; }
+#mst-partners { min-width: 0; padding: 14px; background: #f8fafc; border: 1px solid #e0e7ef; border-radius: 9px; }
+#mst-partners > label { display: flex; align-items: center; gap: 8px; margin: 10px 0; }
+#mst-partners input[type=checkbox] { width: auto; margin: 0; accent-color: #087f70; }
+#mst-partners table { min-width: 540px; table-layout: auto; }
+#mst-partners th:first-child { width: 60px; }
+#mst-partners th:nth-child(2) { width: 145px; }
+#mst-partners td:nth-child(2) { white-space: nowrap; }
+#mst-partners td:nth-child(3) { max-width: none; overflow-wrap: break-word; }
+#mst-partners th:last-child { width: 100px; }
+#pane-mstlookup .captcha-display { flex: 0 0 180px; }
+#pane-mstlookup .captcha-row { justify-content: flex-start; }
+.feature-planned { grid-column: 1 / -1; padding: 24px; }
+.feature-planned h3 { margin-top: 14px; font-size: 18px; }
+.feature-planned p { line-height: 1.7; }
+.feature-planned a { display: inline-block; padding: 10px 14px; border: 1px solid #d6e0eb; border-radius: 7px; color: #087f70; text-decoration: none; }
+
+.mst-form-heading, .mst-picker-heading, .mst-partner-selection { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.mst-form-heading h3 { margin: 0 0 5px; }
+.mst-form-heading p { margin: 0; }
+.mst-entry-grid { display: grid; grid-template-columns: minmax(240px, 0.8fr) minmax(0, 1.6fr); gap: 16px; }
+.mst-manual-entry, .mst-partner-picker { min-width: 0; }
+.mst-manual-entry > label { font-size: 12px; font-weight: 600; }
+#pane-mstlookup #mst-input { min-height: 145px; height: 145px; margin: 8px 0 10px; font: 12px Consolas, monospace; }
+.mst-partner-picker { padding: 12px; border: 1px solid #e0e7ef; border-radius: 9px; background: #f8fafc; }
+.mst-picker-heading { flex-wrap: wrap; }
+.mst-picker-heading strong { font-size: 12px; }
+#pane-mstlookup #mst-partners { padding: 0; border: 0; background: transparent; }
+.mst-partner-selection label { display: flex; align-items: center; gap: 6px; font-size: 11px; white-space: nowrap; }
+.mst-partner-selection p { margin: 6px 0; text-align: right; }
+#pane-mstlookup .mst-partner-scroll { max-height: 200px; }
+.mst-search-toolbar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding-top: 12px; border-top: 1px solid #edf1f5; }
+#pane-mstlookup .captcha-display { flex: 0 0 150px; min-width: 150px; height: 58px; }
+#pane-mstlookup .captcha-row { margin: 0; gap: 8px; flex: 0 1 auto; }
+#pane-mstlookup .captcha-input { width: 118px; flex: 0 0 118px; }
+#pane-mstlookup .search-actions { display: flex; flex: 0 0 auto; margin: 0; gap: 8px; }
+#pane-mstlookup .search-actions button { flex: 0 0 auto; min-width: 88px; }
+.mst-result-actions { margin-left: auto; }
+.chat-modes .chat-admin-contact { border-color: #cf9d47; color: #80540e; background: #fff9ed; }
+@media(max-width:1000px) {
+  .mst-entry-grid { grid-template-columns: minmax(0, 1fr); }
+  .mst-form-heading, .mst-partner-selection { flex-wrap: wrap; }
+  .mst-result-actions { margin-left: 0; }
+}

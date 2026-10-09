@@ -85,3 +85,8 @@ src/*.min.css
 # Trang xem trước tĩnh do tools/preview-new-tabs.cjs SINH RA để soi bố cục 2 tab mới —
 # không phải mã nguồn, không cần lưu vào git.
 /tools/preview-new-tabs.html
+
+# Local validation screenshots and duplicate OCR downloads at the project root.
+/artifacts/
+/common.onnx
+/common.json

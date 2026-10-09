@@ -55,6 +55,27 @@ const open = buffer => {
   return { names: book.SheetNames, rows: name => XLSX.utils.sheet_to_json(book.Sheets[name], { header: 1 }) };
 };
 
+test('bank export includes all pages and applies account, amount, category, status, flow, dates and search', () => {
+  withDb(db => {
+    db.prepare("INSERT INTO bank_files(id,file_name,account) VALUES (1,'bank.csv','123'),(2,'other.csv','456')").run();
+    const insert = db.prepare(`INSERT INTO bank_transactions(file_id,tran_date,description,credit,debit,amount,row_hash,category,reconciliation_status)
+      VALUES (?,?,?,?,?,?,?,?,?)`);
+    for (let i = 0; i < 205; i++) insert.run(1, '2026-09-21', 'chuyển tiền', null, 300, -300, `ok-${i}`, 'chi', null);
+    insert.run(2, '2026-09-21', 'chuyển tiền', null, 300, -300, 'wrong-account', 'chi', null);
+    insert.run(1, '2026-06-21', 'chuyển tiền', null, 300, -300, 'wrong-date', 'chi', null);
+    insert.run(1, '2026-09-21', 'chuyển tiền', null, 600, -600, 'wrong-amount', 'chi', null);
+    insert.run(1, '2026-09-21', 'chuyển tiền', 300, null, 300, 'wrong-flow', 'chi', null);
+    insert.run(1, '2026-09-21', 'chuyển tiền', null, 300, -300, 'wrong-category', 'thu', null);
+    insert.run(1, '2026-09-21', 'chuyển tiền', null, 300, -300, 'wrong-status', 'chi', 'MATCH');
+    insert.run(1, '2026-09-21', 'khác', null, 300, -300, 'wrong-search', 'chi', null);
+    const filters = { q: 'chuyển tiền', from: '2026-07-01', to: '2026-09-30', account: '123', min: '100', max: '500', category: 'chi', status: 'pending', flow: 'out' };
+    const { buffer, counts } = excelExport.buildWorkbook(db, filters, ['bank']);
+    assert.equal(counts.bank, 205);
+    assert.deepEqual(open(buffer).names, [SHEET.bank]);
+    assert.equal(open(buffer).rows(SHEET.bank).length, 206);
+  });
+});
+
 test('buildWorkbook: đủ 7 sheet riêng theo chiều/loại, đúng header và số dòng', () => {
   withDb(db => {
     seed(db);

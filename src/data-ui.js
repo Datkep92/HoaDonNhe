@@ -24,7 +24,6 @@ const OVERVIEW_PERIOD_KEY = 'hoadon.overview.period';
 // con số ngưỡng nằm trong src/data/tax-rules.js theo từng NĂM, không nằm ở đây.
 const TAX_KEY = 'hoadon.overview.tax';
   // Nhãn menu xuất Excel (dùng cho thông báo sau khi xuất).
-  const PART_LABEL = { all: 'toàn bộ kho dữ liệu', buy: 'hóa đơn mua vào', sell: 'hóa đơn bán ra', productsBuy: 'hàng hóa mua vào', productsSell: 'hàng hóa bán ra', suppliers: 'nhà cung cấp', buyers: 'khách hàng' };
 
   let app = {};
   let view = 'overview';
@@ -248,6 +247,7 @@ const OVERVIEW_CACHE_IDS = [
     if ($('mia-to')) $('mia-to').value = to;
     if ($('data-range-label')) $('data-range-label').textContent = appRangeLabel();
     if ($('mia-range-label')) $('mia-range-label').textContent = appRangeLabel();
+    window.dispatchEvent(new CustomEvent('hd:range', { detail: { from: appRange.from, to: appRange.to } }));
   }
 
   // Đọc bộ điều khiển ở header rồi ghi vào `appRange` — nơi DUY NHẤT nhận input từ control này.
@@ -380,7 +380,7 @@ const OVERVIEW_CACHE_IDS = [
     if (next === 'data') next = 'data-products';
     view = next;
     const viewInfo = {
-      overview: ['TỔNG QUAN', 'Tình hình kinh doanh', 'Doanh thu, mua vào, đối soát và công nợ theo kỳ.'],
+      overview: ['TỔNG QUAN', 'Hồ sơ kế toán', 'Chứng từ cần xử lý, đối chiếu tờ khai và tiến độ hoàn thành hồ sơ theo kỳ.'],
       download: ['TRA CỨU & TẢI', 'Tải hóa đơn điện tử', 'Tra cứu cổng thuế và tải chứng từ theo điều kiện đã chọn.'],
       data: ['KHO DỮ LIỆU', 'Quản lý dữ liệu hóa đơn', 'Tìm kiếm, tổng hợp và xuất dữ liệu đã lưu trên máy.'],
       'data-products': ['HÀNG HÓA', 'Hàng hóa', 'Mặt hàng mua vào và bán ra tổng hợp từ kho dữ liệu.'],
@@ -388,8 +388,8 @@ const OVERVIEW_CACHE_IDS = [
       'data-partners': ['ĐỐI TÁC', 'Đối tác', 'Nhà cung cấp và khách hàng tổng hợp từ hóa đơn.'],
       'data-vat': ['PHẦN THUẾ', 'Phần thuế', 'Tổng hợp quý kê khai thuế GTGT từ kho dữ liệu.'],
       bank: ['SAO KÊ NGÂN HÀNG', 'Đối chiếu dòng tiền', 'Nhập sao kê, kiểm tra giao dịch và đối chiếu với hóa đơn.'],
-      accounting: ['HỖ TRỢ KẾ TOÁN', 'Xuất file nhập MISA AMIS', 'Dọc hoá đơn bán ra theo kỳ và xuất file “Mẫu bán hàng” đúng cấu trúc để nhập vào phần mềm kế toán.'],
-      dvt: ['CHUYỂN ĐỔI DVT', 'Quản lý quy tắc đơn vị tính', 'Map đơn vị tính từ hoá đơn mua vào (Thùng) sang đơn vị bán ra (Hộp, Chai).'],
+      accounting: ['THAY THẾ HĐ SỐ LƯỢNG LỚN', 'Thay thế hóa đơn số lượng lớn · Đang xây dựng', 'Liên hệ Admin khi cần thay thế hàng trăm hoặc hàng nghìn hóa đơn.'],
+      dvt: ['CHUYỂN ĐỔI DVT', 'Chuyển đổi đơn vị tính · Đang xây dựng', 'Map đơn vị tính từ hoá đơn mua vào (Thùng) sang đơn vị bán ra (Hộp, Chai).'],
       mstlookup: ['TRA CỨU MST', 'Tra cứu Mã số Thuế', 'Kiểm tra trạng thái hoạt động của MST hàng loạt và xuất Excel.'],
       tokhai: ['TẢI TỜ KHAI', 'Tờ khai thuế & Dịch vụ công', 'Tra cứu và tải tờ khai trên Dịch Vụ Công hoặc Thuế Điện Tử.'],
     };
@@ -460,6 +460,7 @@ const OVERVIEW_CACHE_IDS = [
     else if (next === 'data-vat') { showDataTab('vat'); refreshAll(); }
     else if (next === 'data') refreshAll();
     if (next === 'bank') refreshBank();
+    window.dispatchEvent(new CustomEvent('hd:view', { detail: next }));
   }
 
   // Dòng thống kê thẻ Tổng quan: [nhãn, giá trị, màu?, ghi chú?]. Ghi chú (nếu có) in DƯỚI nhãn
@@ -1526,26 +1527,37 @@ const OVERVIEW_CACHE_IDS = [
   // Xuất Excel "Kho dữ liệu" — máy chủ dựng workbook từ SQLite, tôn trọng ĐÚNG bộ lọc đang xem
   // (q + khoảng ngày). part = 'all' (6 bảng) hoặc một mã bảng để xuất RIÊNG bảng đó.
   let exportBusy = false; // chống bấm đúp: một lượt xuất Excel đang chạy thì cú bấm thêm bị bỏ qua
-  async function exportExcel(part) {
-    const summary = $('data-export');
-    const chosen = part || 'all';
+  async function exportExcel(tab, summary) {
+    const filters = tab === 'bank' ? bankFilters() : activeFilters();
+    let parts;
+    if (tab === 'list') {
+      filters.direction = tabState.list.dir;
+      filters.state = tabState.list.state === 'all' ? '' : tabState.list.state;
+      parts = filters.direction === 'BUY' ? ['buy'] : filters.direction === 'SELL' ? ['sell'] : ['buy', 'sell'];
+    } else if (tab === 'products') {
+      filters.direction = tabState.products.dir;
+      parts = filters.direction === 'BUY' ? ['productsBuy'] : filters.direction === 'SELL' ? ['productsSell'] : ['productsBuy', 'productsSell'];
+    } else if (tab === 'partners') {
+      delete filters.q; // Bảng đối tác chỉ lọc theo kỳ và loại đối tác.
+      parts = tabState.partners.kind === 'supplier' ? ['suppliers'] : tabState.partners.kind === 'buyer' ? ['buyers'] : ['suppliers', 'buyers'];
+    } else parts = ['bank'];
+    const chosen = parts.join(',');
+    const mst = app.selected;
     if (exportBusy) return;
     exportBusy = true;
-    const filters = activeFilters();
-    // Gửi ĐỦ bộ lọc đang xem: tìm kiếm + khoảng ngày + TRẠNG THÁI + CHIỀU (mua vào/bán ra).
-    // Trước đây thiếu `direction` nên chọn "Bán ra" mà file xuất vẫn có cả sheet mua vào.
-    const params = new URLSearchParams({ q: filters.q || '', from: filters.from || '', to: filters.to || '', state: tabState.list.state === 'all' ? '' : (tabState.list.state || ''), direction: tabState.list.dir || '' });
-    if (chosen !== 'all') params.set('parts', chosen);
+    const params = new URLSearchParams({ ...filters, parts: chosen });
     const label = summary.textContent;
     summary.setAttribute('aria-busy', 'true');
+    summary.disabled = true;
     summary.textContent = 'Đang xuất…';
     try {
-      const response = await fetch(`/api/db/export?${params.toString()}`);
+      const response = await fetch(`/api/db/export?${params.toString()}`, { headers: { 'X-Feature-Mst': mst || '' } });
       if (!response.ok) {
         const detail = await response.json().catch(() => ({}));
         throw new Error(detail.error || `Không xuất được Excel (HTTP ${response.status}).`);
       }
       const blob = await response.blob();
+      if (app.selected !== mst) throw new Error('MST đã thay đổi. Hãy xuất lại cho MST đang chọn.');
       const counts = JSON.parse(response.headers.get('X-Export-Counts') || '{}');
       const now = new Date();
       const pad = value => String(value).padStart(2, '0');
@@ -1553,7 +1565,7 @@ const OVERVIEW_CACHE_IDS = [
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = url;
-      link.download = `kho-du-lieu-${chosen === 'all' ? '' : `${chosen}-`}${app.selected || 'MST'}-${stamp}.xlsx`;
+      link.download = `kho-du-lieu-${tab}-${mst || 'MST'}-${stamp}.xlsx`;
       document.body.append(link);
       link.click();
       link.remove();
@@ -1566,11 +1578,13 @@ const OVERVIEW_CACHE_IDS = [
       if ('productsSell' in counts) pieces.push(`${num.format(counts.productsSell)} mặt hàng bán ra`);
       if ('suppliers' in counts) pieces.push(`${num.format(counts.suppliers)} nhà cung cấp`);
       if ('buyers' in counts) pieces.push(`${num.format(counts.buyers)} khách hàng`);
-      if (window.notice) window.notice(`Đã xuất ${PART_LABEL[chosen] || chosen}: ${pieces.join(' · ') || 'không có dòng nào theo bộ lọc này'}.`);
+      if ('bank' in counts) pieces.push(`${num.format(counts.bank)} giao dịch ngân hàng`);
+      if (window.notice) window.notice(`Đã xuất Excel: ${pieces.join(' · ') || 'không có dòng nào theo bộ lọc này'}.`);
     } catch (error) {
       if (!isAbort(error)) fail(error);
     } finally {
       summary.removeAttribute('aria-busy');
+      summary.disabled = false;
       summary.textContent = label;
       exportBusy = false;
     }
@@ -2523,34 +2537,10 @@ $('view-dvt').onclick = () => showView('dvt');
     // Vì sao cần nút bấm chứ không tự chạy lúc mở app: lượt quét thường gặp file đã nhập
     // thì đánh dấu "trùng" và KHÔNG cập nhật dòng cũ, nên phải đọc thẳng file. Để người
     // dùng bấm thì thấy rõ việc gì đã chạy, bao nhiêu dòng đã điền, bao nhiêu file đã mất.
-    $('data-backfill-lookup').onclick = async () => {
-      const button = $('data-backfill-lookup');
-      const restore = busyButton(button, 'Đang đọc XML…');
-      try {
-        const result = await post('/api/db/invoices/backfill-lookup', {});
-        restore();
-        if (!result.candidates) {
-          window.notice('Không còn hóa đơn nào thiếu cột tra cứu — kho đã đầy đủ.');
-        } else {
-          const parts = [`đã bổ sung ${num.format(result.updated || 0)} hóa đơn`];
-          if (result.missing) parts.push(`${num.format(result.missing)} hóa đơn không còn file XML nên không tra được`);
-          if (result.failed) parts.push(`${num.format(result.failed)} file không đọc được`);
-          window.notice(`Xong: ${parts.join(' · ')}.`);
-        }
-        await refreshAll();
-      } catch (error) { restore(); fail(error); }
-    };
-    // Menu "Xuất Excel": "Tải toàn bộ" hoặc mở từng nhóm (Hóa đơn / Hàng hóa / Đối tác)
-    // rồi chọn Mua vào · Bán ra (hoặc Nhà cung cấp · Khách hàng).
-    const exportMenu = $('data-export-menu');
-    const closeExportMenu = () => {
-      exportMenu.open = false;
-      for (const group of $('data-export-list').querySelectorAll('details.group')) group.open = false;
-    };
-    for (const button of $('data-export-list').querySelectorAll('button[data-part]')) {
-      button.onclick = () => { closeExportMenu(); exportExcel(button.dataset.part).catch(() => { /* đã báo lỗi bên trong */ }); };
+    for (const tab of ['list', 'products', 'partners', 'bank']) {
+      const button = $(`data-${tab}-export`);
+      button.onclick = () => exportExcel(tab, button).catch(() => { /* đã báo lỗi */ });
     }
-    document.addEventListener('click', event => { if (exportMenu.open && !exportMenu.contains(event.target)) closeExportMenu(); });
 
     // Chọn nhanh Năm / Quý / Tháng đã bỏ cùng với ô ở tab này (xem #app-range-bar).
     $('data-size').onchange = () => { size = Number($('data-size').value) || 50; reloadAll(); };
@@ -3165,6 +3155,7 @@ function renderVat(value) {
   notes.hidden = !list.length;
   notes.innerHTML = list.map(text => `<p class="vat-warn">${safeOverviewText(text)}</p>`).join('');
   $('vat-export').disabled = false;
+  $('vat-export-pdf').disabled = false;
 
   const f = value.figures;
   const taxLabel = value.taxAvailable ? '' : '<span class="vat-flag">chưa đủ dữ liệu thuế</span>';
@@ -3192,6 +3183,7 @@ async function loadVat() {
   const body = $('vat-body');
   if (!select || !body) return;
   const parts = String(select.value || '').split('-');
+  $('vat-export-pdf').disabled = true;
   body.innerHTML = '<p class="hint">Đang tính…</p>';
   const query = `?deduction=${encodeURIComponent(Number($('vat-deduction').value) || 0)}`
     + (parts.length === 2 ? `&year=${encodeURIComponent(parts[0])}&quarter=${encodeURIComponent(parts[1])}` : '');
@@ -3219,6 +3211,17 @@ function syncVatPeriods(periods) {
 $('vat-reload').onclick = () => { loadVat().catch(ignoreAbort); };
 $('vat-period').onchange = () => { loadVat().catch(ignoreAbort); };
 $('vat-deduction').onchange = () => { loadVat().catch(ignoreAbort); };
+$('vat-export-pdf').onclick = () => {
+  const frame = $('vat-pdf-frame');
+  const title = 'Tổng hợp quý · ' + $('vat-period').selectedOptions[0].textContent;
+  frame.srcdoc = '<!doctype html><html lang="vi"><head><meta charset="utf-8"><title>' + safeOverviewText(title)
+    + '</title><link rel="stylesheet" href="/vat-print.css"></head><body><h1>Tổng hợp quý (kê khai thuế GTGT)</h1><p>MST: '
+    + safeOverviewText(app.selected || '') + '</p>' + $('vat-body').innerHTML + $('vat-warnings').innerHTML
+    + '<p class="hint">Số liệu tổng hợp từ kho hóa đơn. Khoản khấu trừ của kỳ do người dùng nhập. Báo cáo dùng để đối chiếu, chưa phải tờ khai nộp cơ quan thuế.</p></body></html>';
+  $('vat-pdf-dialog').showModal();
+};
+$('vat-pdf-close').onclick = () => $('vat-pdf-dialog').close();
+$('vat-pdf-print').onclick = () => $('vat-pdf-frame').contentWindow.print();
 $('vat-export').onclick = async () => {
   const button = $('vat-export');
   const parts = String($('vat-period').value || '').split('-');
@@ -3339,5 +3342,5 @@ $('invoice-close').onclick = closeInvoice;
     finally { changePollBusy = false; }
   }, 1200);
 
-  window.HD_DATA_VIEW = { show: showView, refresh: refreshAll, openAutoSync };
+  window.HD_DATA_VIEW = { show: showView, refresh: refreshAll, openAutoSync, openInvoice, range: () => ({ from: appRange.from, to: appRange.to }) };
 })();

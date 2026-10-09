@@ -1,8 +1,8 @@
 // Packaged EXE + real browser, with an offline Gateway/Telegram/Firebase substitute.
 const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),os=require('node:os'),http=require('node:http');
 const {spawn}=require('node:child_process'),CDP=require('chrome-remote-interface');
-const root=path.resolve(__dirname,'..'),temp=fs.mkdtempSync(path.join(root,'release','support-ai-browser-'));
-let gateway,server,chrome,client;const listeners=new Set(),values=new Map(),revs=new Map(),sent=[];let serial=0,calls=0,failed=false;
+const root=path.resolve(__dirname,'..'),temp=(fs.mkdirSync(path.join(root,'release'),{recursive:true}),fs.mkdtempSync(path.join(root,'release','support-ai-browser-')));
+let gateway,server,chrome,client;const listeners=new Set(),values=new Map(),revs=new Map(),sent=[];let serial=0,calls=0,failed=false,contactFailed=false;
 const wait=ms=>new Promise(r=>setTimeout(r,ms));
 async function until(fn,label){const end=Date.now()+25000;while(Date.now()<end){const x=await fn().catch(()=>null);if(x)return x;await wait(100);}throw Error('Timeout: '+label);}
 async function evaluate(expression){const r=await client.Runtime.evaluate({expression,awaitPromise:true,returnByValue:true});if(r.exceptionDetails)throw Error(r.exceptionDetails.exception?.description||r.exceptionDetails.text);return r.result.value;}
@@ -20,7 +20,10 @@ function broadcast(){const data=Object.fromEntries(messages().map(m=>[m.id,m]));
       if(b.chatRoomId)room=b.chatRoomId;
       if(req.url==='/v1/chats/status')return send({messages:messages(),control:await flow.state({},room)});
       if(req.url==='/v1/chats/control')return send(await flow.state({},room));
-      if(req.url==='/v1/chats/messages')return send(await flow.begin({},room,b.text,{companyId:b.companyId,wantsAdmin:b.wantsAdmin===true}));
+      if(req.url==='/v1/chats/messages') {
+        if(b.text==='Tôi muốn liên hệ Admin để được hỗ trợ trực tiếp.'&&!contactFailed){contactFailed=true;res.writeHead(503,{'Content-Type':'application/json'});return res.end(JSON.stringify({ok:false,error:'Fixture: support unavailable'}));}
+        return send(await flow.begin({},room,b.text,{companyId:b.companyId,wantsAdmin:b.wantsAdmin===true}));
+      }
       if(req.url==='/v1/chats/ai-reply')return send(await flow.complete({},room,b.turnId,b.revision,b.text));
       if(req.url==='/v1/ai/config')return send({revision:2,active:{model:'working-fixture'}});
       if(req.url.startsWith('/v1/ai/jobs/'))return send({jobId:'fixturejob',status:'ready'});
@@ -58,6 +61,16 @@ function broadcast(){const data=Object.fromEntries(messages().map(m=>[m.id,m]));
   await sendText('Tôi đang chờ');await until(()=>evaluate('document.getElementById("ai-stop").hidden'),'human turn');assert.equal(calls,2);assert.ok(sent.includes('Tôi đang chờ'));
   await flow.owner({},room,'auto','fixture-admin');await until(()=>evaluate('document.getElementById("ai-mode-label").textContent.includes("AI đang hoạt động")'),'stop resumes AI');
   await sendText('Phân tích tiếp');await until(()=>evaluate('document.getElementById("ai-stop").hidden'),'resumed answer');assert.equal(calls,3);
+  await evaluate('document.getElementById("ai-input").value="Nội dung đang soạn, chưa gửi"');
+  await click('chat-contact-admin');
+  await until(()=>evaluate('document.getElementById("chat-contact-admin").textContent.includes("Thử lại")'),'failed handoff is retryable');
+  assert.equal(await evaluate('document.getElementById("ai-input").value'),'Nội dung đang soạn, chưa gửi');
+  assert.equal(await evaluate('document.getElementById("ai-mode-label").textContent.includes("Chưa chuyển được")'),true);
+  await sendText('?');
+  await until(()=>evaluate('document.getElementById("chat-contact-admin").textContent.includes("Đang chờ") && document.getElementById("ai-stop").hidden'),'manual admin handoff');
+  assert.ok(sent.includes('?'),'following message retries the requested Admin flow');
+  assert.equal(calls,3,'manual handoff uses support flow without another AI request');
+  assert.equal(await evaluate('document.getElementById("chat-contact-admin").disabled'),true);
   await click('support-close');await click('support-toggle');await wait(500);
   assert.equal(await evaluate('(()=>{const e=document.getElementById("ai-thread");return e.scrollHeight-e.scrollTop-e.clientHeight<3})()'),true,'opens at newest message');
   assert.deepEqual(errors,[]);

@@ -11,7 +11,7 @@ const crypto = require('node:crypto');
 const { execFileSync } = require('node:child_process');
 const DPAPI = 'dpap1:';
 const AES = 'aes1:';
-const KEYS = ['password', 'token', 'cookies'];
+const KEYS = ['password', 'token', 'cookies', 'dvc_login'];
 const POWERSHELL = [
   "$ErrorActionPreference='Stop'",
   'Add-Type -AssemblyName System.Security',

@@ -180,7 +180,14 @@ function partnerRows(db, kind, filters = {}) {
 
 // Sao kê ngân hàng MỘT sheet: giao dịch đã chuẩn hoá trong data.db, theo cùng bộ lọc đang xem.
 function bankRows(db, filters) {
-  const { rows } = bankStatement.listTransactions(db, { q: filters.q || '', from: filters.from || '', to: filters.to || '', limit: 200, offset: 0 });
+  const rows = [];
+  let offset = 0;
+  for (;;) {
+    const batch = bankStatement.listTransactions(db, { ...filters, limit: 200, offset });
+    rows.push(...batch.rows);
+    offset += batch.rows.length;
+    if (offset >= batch.total || !batch.rows.length) break;
+  }
   return rows.map((row, index) => [
     index + 1,
     dmy(row.tran_date),

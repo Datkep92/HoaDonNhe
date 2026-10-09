@@ -20,6 +20,27 @@ const HOUR = 60 * 60 * 1000;
 const tempDir = prefix => fs.mkdtempSync(path.join(os.tmpdir(), prefix));
 const MACHINE = 'DEV_MAYTHUTEST0001';
 
+test('source app can opt into the release gateway while tests and explicit local stay offline', () => {
+  const dir = tempDir('hd-gateway-default-');
+  try {
+    assert.equal(new SupportStore(dir, { machineId: MACHINE }).gatewayUrl(), '');
+    const store = new SupportStore(dir, { machineId: MACHINE, useDefaultGateway: true });
+    assert.equal(store.gatewayUrl(), 'https://hoadon-support-gateway.linhnhaxac10.workers.dev');
+    fs.writeFileSync(path.join(dir, 'support-gateway.json'), JSON.stringify({ url: 'local' }));
+    assert.equal(store.gatewayUrl(), '');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('human handoff registers a missing token before sending and shares concurrent registration', async () => {
+  await withStore(url => url === '/v1/devices/register' ? { sessionToken: 'fixture-support-session' } : { aiAllowed: false, control: { mode: 'waiting', revision: 1 } }, async (store, seen) => {
+    store.data.device.registeredAt = Date.now(); // Local registration alone is not a remote session.
+    await Promise.all([store.beginUnified('Admin', 'GLOBAL', [], true), store.beginUnified('Hỗ trợ', 'GLOBAL', [], true)]);
+    assert.equal(seen.filter(row => row.url === '/v1/devices/register').length, 1);
+    assert.equal(seen.filter(row => row.url === '/v1/chats/messages').length, 2);
+    assert.ok(seen.filter(row => row.url === '/v1/chats/messages').every(row => row.input.wantsAdmin));
+  });
+});
+
 // Gateway giả: ghi lại mọi request và trả về tuỳ từng đường dẫn.
 function fakeGateway(handler) {
   const seen = [];

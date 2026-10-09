@@ -61,6 +61,24 @@ function seed(db) {
   }));
 }
 
+test('MST lookup partners includes all periods and states, deduplicates names and has no 500 limit', () => {
+  const db = new DatabaseSync(':memory:');
+  try {
+    db.exec('CREATE TABLE invoices(direction TEXT, mst_ban TEXT, ten_ban TEXT, mst_mua TEXT, ten_mua TEXT)');
+    const add = db.prepare('INSERT INTO invoices VALUES(?,?,?,?,?)');
+    for (let i = 0; i < 601; i++) add.run('BUY', String(1000000000 + i), 'Supplier ' + i, MST, 'Own');
+    add.run('BUY', ' 1000000000 ', 'Alternate', MST, 'Own');
+    add.run('BUY', MST, 'Own', MST, 'Own');
+    add.run('BUY', '', 'No tax ID', MST, 'Own');
+    add.run('SELL', MST, 'Own', OTHER, 'Buyer');
+    const rows = queries.lookupPartners(db, { kind: 'supplier', exclude: [MST] });
+    assert.equal(rows.length, 601);
+    assert.equal(rows[0].so_hoa_don, 2);
+    assert.deepEqual(queries.lookupPartners(db, { kind: 'buyer', exclude: [MST] }).map(r => r.mst), [OTHER]);
+    assert.throws(() => queries.lookupPartners(db, { kind: 'all' }), /không hợp lệ/);
+  } finally { db.close(); }
+});
+
 test('MỤC 27 + MỤC 6 — chi tiết hàng hóa và hoá đơn theo mặt hàng: dùng chung công thức với thẻ', () => {
   withDb(db => {
     seed(db);

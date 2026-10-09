@@ -6,6 +6,7 @@ const { spawn } = require('node:child_process');
 const CDP = require('chrome-remote-interface');
 const pace = require('./pace');
 const mstFormat = require('./mst-format');
+const { setChromeWindowVisible } = require('./chrome-window');
 const loginSource = fs.readFileSync(path.join(__dirname, 'tax-login.js'), 'utf8');
 const TAX_HOME = 'https://hoadondientu.gdt.gov.vn/';
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -67,6 +68,7 @@ function disablePasswordManager(profileDir) {
   try { const raw = JSON.parse(fs.readFileSync(file, 'utf8')); if (raw && typeof raw === 'object') data = raw; } catch { /* chưa có hoặc hỏng */ }
   data.credentials_enable_service = false;
   data.credentials_enable_autosignin = false;
+  data.translate = { ...(data.translate && typeof data.translate === 'object' ? data.translate : {}), enabled: false };
   data.profile = { ...(data.profile && typeof data.profile === 'object' ? data.profile : {}), password_manager_enabled: false, password_manager_leak_detection: false };
   try { fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, JSON.stringify(data)); return true; } catch { return false; }
 }
@@ -79,7 +81,7 @@ function jwtAccount(token) {
   } catch { return null; }
 }
 class TaxBrowser {
-  constructor(root) { this.root = path.resolve(root); this.client = null; this.mst = ''; this.process = null; this.port = 0; this.visible = false; this.auxTabs = new Set(); this.portalProcess = null; this.portalPort = 0; }
+  constructor(root, options = {}) { this.root = path.resolve(root); this.headless = !!options.headless; this.startUrl = options.startUrl || TAX_HOME; this.client = null; this.mst = ''; this.process = null; this.port = 0; this.visible = false; this.auxTabs = new Set(); this.portalProcess = null; this.portalPort = 0; }
   // Đóng trình duyệt CÓ GIỚI THỜI GIAN: nếu Chrome/CDP treo thì Browser.close() chờ VĨNH VIỄN,
   // request /api/stream (giữ mở suốt lượt tải) không bao giờ trả lời ⇒ UI kẹt nút "Đang tải" dù
   // dữ liệu đã về hết — phải bấm Ngưng thủ công mới thoát (triệu chứng người dùng báo). Sau 5s
@@ -101,6 +103,7 @@ class TaxBrowser {
     } finally { kill(); }
   }
   async open(mst, visible) {
+    if (this.headless) visible = false;
     if (!mstFormat.isValidMst(mst)) throw new Error(mstFormat.MST_HINT);
 
     if (this.client && this.mst === mst) {
@@ -108,12 +111,16 @@ class TaxBrowser {
       catch { await this.close(); }
     }
     await this.close(); const executablePath = browserPath(); if (!executablePath) throw new Error('Không tìm thấy Google Chrome hoặc Microsoft Edge. Cài một trong hai trình duyệt rồi thử lại.');
+    this.nativeHidden = false;
     const port = await availablePort(); const profile = path.join(this.root, 'profiles', mst); fs.mkdirSync(profile, { recursive: true });
     disablePasswordManager(profile);
     // Không hỏi lưu mật khẩu trên cửa sổ cổng thuế: tắt bong bóng + các tính năng autofill/khe rò mật khẩu.
     // Cần cho cả form đăng nhập trong app (UI) lẫn form đăng nhập của cổng thuế.
-    const args = [`--remote-debugging-port=${port}`, '--remote-debugging-address=127.0.0.1', '--remote-allow-origins=http://127.0.0.1', `--user-data-dir=${profile}`, '--no-first-run', '--no-default-browser-check', '--disable-background-networking', '--disable-component-update', '--disable-sync', '--disable-save-password-bubble', '--disable-features=PasswordManagerOnboarding,PasswordLeakDetection,AutofillServerCommunication,AutofillEnableAccountWalletStorage', '--new-window', TAX_HOME];
-    if (!visible) args.push('--start-minimized'); this.process = spawn(executablePath, args, { windowsHide: !visible, stdio: 'ignore' }); this.port = port;
+    const args = [`--remote-debugging-port=${port}`, '--remote-debugging-address=127.0.0.1', '--remote-allow-origins=http://127.0.0.1', `--user-data-dir=${profile}`, '--no-first-run', '--no-default-browser-check', '--disable-background-networking', '--disable-component-update', '--disable-sync', '--disable-save-password-bubble', '--disable-features=PasswordManagerOnboarding,PasswordLeakDetection,AutofillServerCommunication,AutofillEnableAccountWalletStorage,Translate,TranslateUI', '--new-window', TAX_HOME];
+    args[args.length - 1] = this.startUrl;
+    if (this.headless) args.push('--headless=new', '--disable-gpu');
+    else if (!visible) args.push('--start-minimized');
+    this.process = spawn(executablePath, args, { windowsHide: !visible, stdio: 'ignore' }); this.port = port;
     let error; for (let n = 0; n < 80; n += 1) {
       try { const tabs = await CDP.List({ host: '127.0.0.1', port }); const tab = tabs.find(x => x.type === 'page' && x.url.includes('hoadondientu.gdt.gov.vn')) || tabs.find(x => x.type === 'page'); if (tab) { this.client = await CDP({ host: '127.0.0.1', port, target: tab }); break; } } catch (caught) { error = caught; }
       await sleep(250);
@@ -121,20 +128,29 @@ class TaxBrowser {
     if (!this.client) { await this.close(); throw new Error(`Không kết nối được với trình duyệt hệ thống: ${error?.message || 'unknown error'}`); }
     const connected = this.client;
     connected.on('disconnect', () => { if (this.client === connected) this.client = null; });
-    if (visible) await this.show();
+    if (visible) await this.show(); else await this.hide();
     this.mst = mst;
   }
-  async show() {
+  async show(tabId) {
+    if (this.headless) { this.visible = false; return; }
     if (!this.client) return;
-    const { windowId } = await this.client.Browser.getWindowForTarget();
-    await this.client.Browser.setWindowBounds({ windowId, bounds: { windowState: 'normal' } });
-    await this.client.Page.bringToFront();
+    await setChromeWindowVisible(this.process?.pid, true);
+    this.nativeHidden = false;
+    const client = tabId ? await CDP({ host: '127.0.0.1', port: this.port, target: tabId }) : this.client;
+    try {
+      const { windowId } = await client.Browser.getWindowForTarget();
+      await client.Browser.setWindowBounds({ windowId, bounds: { windowState: 'normal' } });
+      await client.Page.bringToFront();
+    } finally { if (tabId) await client.close(); }
     this.visible = true;
   }
   async hide() {
+    if (this.headless) { this.visible = false; return; }
     if (!this.client) return;
     const { windowId } = await this.client.Browser.getWindowForTarget();
     await this.client.Browser.setWindowBounds({ windowId, bounds: { windowState: 'minimized' } });
+    const hiddenWindows = await setChromeWindowVisible(this.process?.pid, false);
+    this.nativeHidden = process.platform === 'win32' && hiddenWindows > 0;
     this.visible = false;
   }
 
@@ -170,7 +186,7 @@ class TaxBrowser {
       const args = [`--remote-debugging-port=${this.portalPort}`, '--remote-debugging-address=127.0.0.1',
         '--remote-allow-origins=http://127.0.0.1', `--user-data-dir=${profile}`, '--no-first-run',
         '--no-default-browser-check', '--disable-background-networking', '--disable-component-update',
-        '--disable-sync', '--new-window', target];
+        '--disable-sync', '--disable-save-password-bubble', '--disable-features=PasswordManagerOnboarding,PasswordLeakDetection,Translate,TranslateUI', '--new-window', target];
       // KHÔNG dùng --start-minimized và windowsHide:false → cửa sổ hiện ra luôn. Thiếu đúng
       // hai thứ này là lý do nút "Mở cổng tra cứu" trước đây không mở được gì cả.
       this.portalProcess = spawn(executablePath, args, { windowsHide: false, stdio: 'ignore' });
@@ -420,17 +436,30 @@ class TaxBrowser {
     catch { return []; }
   }
 
+
   /** Tìm (hoặc tạo) một tab đang đứng tại `origin`. Trả target id. */
-  async tabForOrigin(origin) {
+  async tabForOrigin(origin, background = false) {
+    background = background || !this.visible;
     const wanted = String(origin).replace(/\/+$/, '');
     const tabs = await this.listTabs();
     const found = tabs.find(t => t.type === 'page' && typeof t.url === 'string' && t.url.startsWith(wanted));
+    if (background) await this.hide();
     if (found) return found.id;
-    const target = await CDP.New({ host: '127.0.0.1', port: this.port, url: wanted + '/' });
+    const target = background
+      ? { id: (await this.client.Target.createTarget({ url: wanted + '/', background: true })).targetId }
+      : await CDP.New({ host: '127.0.0.1', port: this.port, url: wanted + '/' });
+    if (background) await this.hide();
     this.auxTabs = this.auxTabs || new Set();
     this.auxTabs.add(target.id);
     // Đợi trang nạp xong để fetch trong tab đó không bị "about:blank" chặn origin.
-    await sleep(400);
+    for (let n = 0; n < 80; n += 1) {
+      try {
+        const ready = await this.evalInTab(target.id, `location.origin === ${JSON.stringify(wanted)} && document.readyState !== 'loading'`, 5000);
+        if (ready) { if (background) await this.hide(); return target.id; }
+      } catch { /* trang đang chuyển */ }
+      await sleep(250);
+    }
+    throw new Error(`Cổng ${wanted} chưa tải xong. Thử lại sau.`);
     return target.id;
   }
 
@@ -440,7 +469,7 @@ class TaxBrowser {
    */
   async fetchSameOrigin(url, options = {}) {
     const origin = new URL(url).origin;
-    const tabId = await this.tabForOrigin(origin);
+    const tabId = await this.tabForOrigin(origin, new URL(url).hostname === 'tracuuhoadon.gdt.gov.vn');
     const expression = `(async (u, o) => {
       const c = new AbortController();
       const t = setTimeout(() => c.abort(), 40000);
@@ -455,7 +484,7 @@ class TaxBrowser {
         const buf = new Uint8Array(await res.arrayBuffer());
         let bin = '';
         for (let i = 0; i < buf.length; i += 8192) bin += String.fromCharCode.apply(null, buf.subarray(i, i + 8192));
-        return { status: res.status, base64: btoa(bin), retryAfter: res.headers.get('retry-after') };
+        return { status: res.status, base64: btoa(bin), retryAfter: res.headers.get('retry-after'), contentType: res.headers.get('content-type') };
       } catch (e) {
         return { status: 0, error: e.message || 'Network error' };
       } finally { clearTimeout(t); }
@@ -468,6 +497,7 @@ class TaxBrowser {
     }
     return {
       status: out.status,
+      contentType: out.contentType || '',
       text: out.base64 ? Buffer.from(out.base64, 'base64').toString('utf8') : '',
       body: out.base64 ? Buffer.from(out.base64, 'base64') : null,
       ok: out.status >= 200 && out.status < 300,
@@ -490,11 +520,15 @@ class TaxBrowser {
       // Dùng withTimeout() CỦA CHUNG thay vì tự dựng hẹn giờ riêng: cùng một khuôn (await bên
       // trong + clearTimeout ở finally), nên không thể quên await — quên là timer chết và
       // lệnh treo vô hạn, đúng lỗi mà withTimeout sinh ra để chặn.
-      return await withTimeout(
+      const response = await withTimeout(
         () => targetClient.Runtime.evaluate({ expression, awaitPromise: true, returnByValue: true }),
         timeoutMs,
         'Tab cổng thuế không phản hồi.',
       );
+      if (response.exceptionDetails) {
+        throw new Error(response.exceptionDetails.exception?.description || response.exceptionDetails.text || 'Lỗi script trong tab cổng thuế.');
+      }
+      return response.result?.value;
     } finally {
       if (targetClient) { try { await targetClient.close(); } catch {} }
     }

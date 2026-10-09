@@ -97,7 +97,7 @@
   $('ai-input').addEventListener('keydown', event => { if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); $('ai-form').requestSubmit(); } });
   $('ai-workspace').addEventListener('dragover', event => { if (event.dataTransfer.types.includes('Files')) event.preventDefault(); });
   $('ai-workspace').addEventListener('drop', event => { if (event.dataTransfer.files.length) { event.preventDefault(); addFiles(event.dataTransfer.files); } });
-  function cancelQueue() { for (const turn of queue.splice(0)) turn.output.textContent = 'Đã hủy tin nhắn chờ.'; }
+  function cancelQueue() { for (const turn of queue.splice(0)) { turn.output.textContent = 'Đã hủy tin nhắn chờ.'; turn.onFinish?.(); } }
   const supportParts = ['.support-context', '#support-messages', '.support-quick', '#support-form', '.support-license', '#support-error', '#support-mode'];
   const initialHidden = new Map(supportParts.map(selector => { const el = panel.querySelector(selector); return [el, el.hidden]; }));
   async function call(url, body) {
@@ -267,9 +267,18 @@
     requestAnimationFrame(()=>{$('ai-thread').scrollTop=$('ai-thread').scrollHeight;});
   }
   const seenSupport=new Set();let supportMode='auto';
+  let adminContactPending = false;
+  let adminRetryRequired = false;
+  function paintAdminContact() {
+    const button = $('chat-contact-admin');
+    button.disabled = adminContactPending || supportMode !== 'auto';
+    button.textContent = adminContactPending ? 'Đang liên hệ…' : supportMode === 'waiting' ? 'Đang chờ Admin' : supportMode === 'admin' ? 'Admin đang hỗ trợ' : adminRetryRequired ? 'Thử lại liên hệ Admin' : 'Liên hệ Admin';
+  }
   function integrateSupport(messages) {
     const controls=(messages||[]).filter(m=>m.controlMode).sort((a,b)=>(a.controlRevision||0)-(b.controlRevision||0));
     supportMode=controls.at(-1)?.controlMode||'auto';
+    if (supportMode !== 'auto') adminRetryRequired = false;
+    paintAdminContact();
     if(active?.id!=='agent')return;
     if(supportMode!=='auto'){if(supportMode==='admin')stream?.abort();$('ai-mode-label').textContent=supportMode==='admin'?'Admin đang hỗ trợ · AI tạm dừng':'Đang chờ admin liên hệ';}
     else $('ai-mode-label').textContent='Hỗ trợ chung · AI đang hoạt động';
@@ -288,7 +297,7 @@
     persistActive = persistActive.catch(() => {}).then(() => call('/api/ai/providers', { action: 'active', id }));
     return persistActive;
   }
-  async function selectMode(id) {
+  async function selectMode(id, preserveDraft = false) {
     if(id==='support')id='agent';
     // Mỗi lần bấm sinh một token. Kết quả tải về của lần bị bấm đè sau sẽ bị bỏ
     // qua (token cũ) nên không ghi đè giao diện của chế độ mới hơn.
@@ -299,7 +308,7 @@
     const next = id === 'support' ? null : config.providers.find(p => p.id === id);
     if (id !== 'support' && !next) { error('Chế độ AI không còn tồn tại.'); return; }
     const previous = active;
-    stream?.abort(); cancelQueue(); clearPending(); $('ai-status').textContent = ''; error('');
+    stream?.abort(); cancelQueue(); if (!preserveDraft) clearPending(); $('ai-status').textContent = ''; error('');
     applyMode(next);
     try {
       if (id !== 'support') config = await queueActive(id);
@@ -323,6 +332,21 @@
   });
   $('chat-modes').addEventListener('click', event => {
     const button = event.target.closest('[data-mode]'); if (button) void selectMode(button.dataset.mode);
+  });
+  $('chat-contact-admin').addEventListener('click', async () => {
+    if (adminContactPending || supportMode !== 'auto') return;
+    adminContactPending = true; paintAdminContact();
+    const finish = () => { adminContactPending = false; paintAdminContact(); };
+    try {
+      if (active?.id !== 'agent') await selectMode('support', true);
+      if (active?.id !== 'agent') throw new Error('Chưa mở được phiên hỗ trợ. Hãy thử lại.');
+      if (supportMode !== 'auto') { finish(); return; }
+      const text = 'Tôi muốn liên hệ Admin để được hỗ trợ trực tiếp.';
+      message('user', text);
+      const output = message('assistant', 'Đang chuyển yêu cầu tới Admin…');
+      queue.push({ p: active, companyId: config.companyId, text, selected: [], output, screen: screenContext(), options: {}, supportChoice: 'admin', onFinish: finish });
+      void drainQueue();
+    } catch (e) { finish(); error(e.message); }
   });
   $('support-toggle').addEventListener('click', () => queueMicrotask(() => {
     syncDock();
@@ -415,6 +439,9 @@
     const user = message('user', text); attachmentNames(user.parentElement, selected);
     const output = message('assistant', stream ? 'Đã nhận. Đang chờ lượt xử lý…' : 'Đã nhận. Đang xử lý…');
     const item = { p: active, companyId: config.companyId, text, selected, output, screen: screenContext(), options: { web: !$('ai-web').disabled && $('ai-web').checked, python: !$('ai-python').disabled && $('ai-python').checked } };
+    if (active.id === 'agent' && adminRetryRequired) {
+      item.supportChoice = 'admin'; queue.push(item); void drainQueue(); return;
+    }
     $('ai-input').focus();
     // Câu hỏi về bản quyền/key, hoặc muốn gặp người thật: hỏi ý TRƯỚC khi gửi. Chọn AI thì
     // AI trả lời; chọn đợi admin thì mới chuyển phiên (AI tạm dừng tới khi admin /stop).
@@ -431,8 +458,8 @@
   });
   async function drainQueue() {
     if (stream || !queue.length) return;
-    const { p, companyId, text, selected, output, screen, options, supportChoice } = queue.shift();
-    if (active !== p) { output.textContent = 'Đã hủy tin nhắn chờ.'; void drainQueue(); return; }
+    const { p, companyId, text, selected, output, screen, options, supportChoice, onFinish } = queue.shift();
+    if (active !== p) { output.textContent = 'Đã hủy tin nhắn chờ.'; onFinish?.(); void drainQueue(); return; }
     const controller = new AbortController(); stream = controller;
     $('ai-send').textContent = 'Gửi tiếp'; $('ai-stop').hidden = false;
     let completed = false,workingFrame=0,workingText='AI đang xử lý',answer='';
@@ -459,6 +486,7 @@
           const line = buffer.slice(0, boundary); buffer = buffer.slice(boundary + 2);
           if (!line.startsWith('data: ')) continue;
           const data = JSON.parse(line.slice(6));
+          if(data.handoff && data.control) { supportMode = data.control.mode; adminRetryRequired = false; paintAdminContact(); }
           if(data.routing){workingText='Đang tự tìm cấu hình AI';$('ai-status').textContent=workingText+' · '+(data.routing.processed||0)+'/'+(data.routing.total||'?');}
           if (data.reset) { answer = '';output.setAttribute('aria-busy','true');output.textContent = 'Đang xử lý…'; }
           if (typeof data.replace === 'string') { output.setAttribute('aria-busy','false');answer = data.replace; renderText(output, answer); }
@@ -473,11 +501,17 @@
       if (!completed) throw new Error('Kết nối bị ngắt trước khi AI trả lời xong.');
     } catch (e) { if (active === p) { const notice=e.name==='AbortError'?'Đã dừng trả lời.':(answer?'Phản hồi dang dở: ':'')+e.message;if(answer){renderText(output,answer);const note=document.createElement('p');note.textContent=notice;output.append(note);}else output.textContent=notice;error(e.name==='AbortError'?'Đã dừng trả lời.':e.message); } }
     finally {
+      if (supportChoice === 'admin' && !completed) {
+        adminRetryRequired = true;
+        if (active?.id === 'agent') $('ai-mode-label').textContent = 'Chưa chuyển được tới Admin · hãy thử lại';
+        paintAdminContact();
+      }
       clearInterval(working);output.setAttribute('aria-busy','false');
       output.parentElement.querySelectorAll('.ai-approval button,.ai-approval select').forEach(el => { el.disabled = true; });
       if (!completed) controller.abort();
       if (stream === controller) { stream = null; $('ai-send').textContent = 'Gửi'; $('ai-stop').hidden = true; }
       if (active === p) $('ai-status').textContent = '';
+      onFinish?.();
       void drainQueue();
     }
   }

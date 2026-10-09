@@ -220,18 +220,18 @@ test('bấm tải là UI phản hồi NGAY: vẽ optimistic + vòng poll tự h�
   assert.ok(refresh.includes('pollFailures'), 'refresh() phải đếm nhịp hụt và tự hồi phục');
 });
 
-test('nút "Bổ sung cột tra cứu": có trong thanh công cụ và nối đúng API (Mục 2)', () => {
+test('đã bỏ nút Bổ sung cột tra cứu, giữ nguyên API và không tự chạy migration', () => {
   // Nút phải nằm trong thanh công cụ tab Kho dữ liệu, KHÔNG phải trong hộp thoại: người
   // dùng cần thấy và bấm được bất cứ lúc nào, không phải mở một hộp thoại trước.
   const toolbarAt = html.indexOf('class="card data-toolbar"');
   assert.ok(toolbarAt > -1, 'không tìm thấy thanh công cụ kho dữ liệu');
   const btnAt = html.indexOf('id="data-backfill-lookup"');
-  assert.ok(btnAt > toolbarAt, 'nút phải nằm trong thanh công cụ kho dữ liệu');
+  assert.equal(btnAt, -1, 'nút đã được bỏ theo yêu cầu');
 
   const ui = fs.readFileSync(path.join(root, 'src', 'data-ui.js'), 'utf8');
-  assert.ok(/\$\('data-backfill-lookup'\)\.onclick/.test(ui), 'nút chưa được gắn sự kiện click');
+  assert.ok(!/\$\('data-backfill-lookup'\)\.onclick/.test(ui), 'không gắn sự kiện cho nút đã bỏ');
   // Gọi đúng endpoint đã có ở server.js.
-  assert.ok(/\/api\/db\/invoices\/backfill-lookup/.test(ui), 'phải gọi endpoint backfill-lookup');
+  assert.ok(!/\/api\/db\/invoices\/backfill-lookup/.test(ui), 'không tự gọi endpoint backfill-lookup');
   const server = fs.readFileSync(path.join(root, 'src', 'server.js'), 'utf8');
   assert.ok(/url\.pathname === '\/api\/db\/invoices\/backfill-lookup'/.test(server),
     'server phải có endpoint backfill-lookup');
@@ -244,32 +244,14 @@ test('nút "Bổ sung cột tra cứu": có trong thanh công cụ và nối đ�
   assert.ok(scanner.includes('backfillProviderLookup'), 'hàm backfill phải nằm trong xml-scanner');
 });
 
-test('menu "Xuất Excel": Tải toàn bộ + 4 nhóm, mỗi nhóm đúng mục con', () => {
-  // Nhóm "Tra cứu NCC" đã BỎ (người dùng: tải Excel ra rồi tự tra là vô ích).
-  // Việc tra cứu nay ở cột "PDF gốc" của tab Danh sách.
-  const listAt = html.indexOf('id="data-export-list"');
-  assert.ok(listAt > -1, 'không tìm thấy menu xuất Excel');
-  assert.ok(html.indexOf('data-part="all"') > listAt, 'phải có nút "Tải toàn bộ" trong menu');
-
-  const groups = [...html.matchAll(/<details class="group"><summary>([^<]+)<\/summary>([\s\S]*?)<\/details>/g)];
-  assert.equal(groups.length, 4, 'phải có đúng 4 nhóm');
-  assert.ok(html.indexOf(groups[0][0]) > listAt, 'nhóm phải nằm TRONG menu xuất Excel');
-  assert.deepEqual(groups.map(g => g[1]), ['Hóa đơn', 'Hàng hóa', 'Đối tác', 'Ngân hàng']);
-  const expected = { 'Hóa đơn': ['buy', 'sell'], 'Hàng hóa': ['productsBuy', 'productsSell'], 'Đối tác': ['suppliers', 'buyers'], 'Ngân hàng': ['bank'] };
-  for (const [, name, body] of groups) {
-    const parts = [...body.matchAll(/data-part="(\w+)"/g)].map(m => m[1]);
-    assert.deepEqual(parts, expected[name], `nhóm "${name}" sai mục con`);
+test('mỗi tab có nút Xuất Excel riêng trong đúng vùng dữ liệu', () => {
+  assert.ok(!html.includes('id="data-export-menu"'));
+  for (const tab of ['list', 'products', 'partners']) {
+    const start = html.indexOf('id="data-tab-' + tab + '"');
+    const end = html.indexOf('<div class="table-scroll', start);
+    assert.ok(html.slice(start, end).includes('id="data-' + tab + '-export"'));
   }
-
-  // Mọi mã bảng trong HTML phải là mã module xuất Excel hiểu được ('all' = xuất tất cả).
-  const known = [...html.matchAll(/data-part="(\w+)"/g)].map(m => m[1]);
-  for (const part of known) assert.ok(part === 'all' || excelExport.PARTS.includes(part), `mã bảng lạ: ${part}`);
-  assert.equal(known.length, 8, 'tổng 8 lựa chọn (tất cả + 7 mục con)');
-  assert.match(html, /Tải toàn bộ \(7 bảng\)/, 'nhãn "Tải toàn bộ" phải khớp số bảng thật');
-
-  // JS phải đóng menu VÀ các nhóm con sau khi chọn, nếu không lần sau mở ra còn mở sẵn nhóm cũ.
-  const ui = fs.readFileSync(path.join(root, 'src', 'data-ui.js'), 'utf8');
-  assert.ok(/details\.group'\)\) group\.open = false/.test(ui), 'phải đóng các nhóm con khi chọn');
+  assert.ok(html.slice(html.indexOf('id="pane-bank"')).includes('id="data-bank-export"'));
 });
 
 test('KHÔNG đụng tên biến cấp cao nhất giữa các script của giao diện', () => {
@@ -607,8 +589,8 @@ test('tab Sao kê ngân hàng: khối Kho dữ liệu nằm TRONG #pane-data, #p
   assert.ok(!findNode(paneData.children, node => node.id === 'pane-bank'), '#pane-bank KHÔNG được nằm trong #pane-data (sẽ bị ẩn theo)');
   assert.deepEqual(
     paneBank.children.map(node => node.cls),
-    ['bank-kpis', 'bank-visual-grid', 'card bank-filter-panel', 'card bank-table-card'],
-    'thứ tự con của #pane-bank phải là: KPI → biểu đồ → bộ lọc → bảng giao dịch',
+    ['bank-kpis', 'card bank-filter-panel', 'card bank-table-card', 'bank-visual-grid'],
+    'thứ tự con của #pane-bank phải là: KPI → bộ lọc → bảng giao dịch → biểu đồ',
   );
 });
 
@@ -925,7 +907,7 @@ test('Thanh phiên gọn + bộ lọc kỳ nằm riêng trong tab Tổng quan', 
   }
   assert.ok(!periodCalls.includes('/api/db/tax'), 'thuế vẫn theo NĂM + loại hình (mục 26), không lọc theo kỳ');
   // Bản xuất Excel phải theo CÙNG kỳ đang xem — nếu không thì file ra sai so với màn hình.
-  assert.ok(/const filters = activeFilters\(\)/.test(ui) && /params\.set\('parts', chosen\)/.test(ui)
+  assert.ok(ui.includes("tab === 'bank' ? bankFilters() : activeFilters()") && ui.includes('...filters, parts: chosen')
     && !/RANGE_KEY, JSON\.stringify\(\{ range/.test(ui),
     'Xuất Excel phải lấy bộ lọc chung (activeFilters), không lưu kỳ riêng');
   // Server nhận from/to và truyền xuống từng query (không có thì chạy như cũ).
@@ -1078,4 +1060,3 @@ test('MỌI tab trong index.html đều được NỐI đủ: có onclick, có p
     assert.ok(ui.includes(`${name}: ['`), `showView thiếu tiêu đề cho tab ${name}`);
   }
 });
-

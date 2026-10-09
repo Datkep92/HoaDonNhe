@@ -16,6 +16,7 @@ const path = require('node:path');
 const pace = require('./pace');
 const captchaSolver = require('./captcha-solver');
 const JSZip = require('jszip');
+const portalScripts = require('./tokhai-portal');
 
 const DVC = 'https://dichvucong.gdt.gov.vn';
 const TDT = 'https://thuedientu.gdt.gov.vn';
@@ -34,40 +35,15 @@ class TokhaiController {
     this.userName = '';
   }
 
-  /** Script chạy trong tab TĐT để đọc mã hồ sơ + nội dung bảng kết quả. */
-  static get TDT_SEARCH_SCRIPT() {
-    return `(async (tuNgay, denNgay, base) => {
-      const sid = new URLSearchParams(location.search).get('dse_sessionId')
-        || (document.querySelector("input[name='dse_sessionId']") || {}).value || '';
-      if (!sid) return { ok: false, error: 'Chưa đăng nhập Thuế điện tử (thiếu dse_sessionId).' };
-      const form = document.createElement('form');
-      form.method = 'GET'; form.style.display = 'none';
-      for (const kv of [['dse_sessionId', sid], ['dse_applicationId', '-1'], ['dse_pageId', '5'],
-        ['dse_operationName', 'searchDeclProc'], ['dse_nextEventName', 'search'],
-        ['dse_processorState', 'initial'], ['dse_errorPage', 'error_page.jsp'],
-        ['tuNgay', tuNgay], ['denNgay', denNgay]]) {
-        const i = document.createElement('input'); i.type = 'hidden'; i.name = kv[0]; i.value = kv[1];
-        form.appendChild(i);
-      }
-      document.body.appendChild(form);
-      form.submit();
-      await new Promise(r => setTimeout(r, 4000));
-      const doc = document;
-      const rows = [...doc.querySelectorAll('table tbody tr')].map(tr => {
-        const t = [...tr.querySelectorAll('td')].map(td => (td.innerText || '').trim());
-        return t;
-      }).filter(t => t.length >= 6);
-      return { ok: true, rows, url: location.href, text: (doc.body && doc.body.innerText || '').slice(0, 1500) };
-    })`;
-  }
-
   // ---------------- CAPTCHA ----------------
 
-  async loadCaptcha() {
+  async loadCaptcha(purpose = 'login') {
     const isDvc = this.currentPortal === 'dvc';
+    const csrfToken = isDvc && purpose !== 'search' ? await this.readDvcCsrf() : '';
+    const loginCaptcha = isDvc ? '' : await this.prepareTdtLogin();
     const url = isDvc
-      ? `${DVC}/tthc/login/getCaptcha?_t=${Date.now()}`
-      : `${TDT}/etaxnnt/servlet/ImageServlet?d=${Date.now()}`;
+      ? `${DVC}/tthc/${purpose === 'search' ? '' : 'login/'}getCaptcha?_t=${Date.now()}`
+      : loginCaptcha || `${TDT}/etaxnnt/servlet/ImageServlet?d=${Date.now()}`;
     const res = await this.browser.fetchSameOrigin(url, { method: 'GET' });
     if (!res || res.status !== 200 || !res.body || res.body.length < 100) {
       throw new Error(`Không tải được CAPTCHA (HTTP ${res ? res.status : 'không phản hồi'}).`);
@@ -76,6 +52,9 @@ class TokhaiController {
     const isPng = head[0] === 0x89 && head[1] === 0x50;
     const isJpg = head[0] === 0xff && head[1] === 0xd8;
     const isGif = head[0] === 0x47 && head[1] === 0x49;
+    if (!isPng && !isJpg && !isGif && !/<svg[\s>]/i.test(res.body.toString('utf8'))) {
+      throw new Error('Cổng trả trang HTML thay cho ảnh CAPTCHA. Mở cổng và kiểm tra phiên đăng nhập.');
+    }
     const mime = isPng ? 'image/png' : isJpg ? 'image/jpeg' : isGif ? 'image/gif' : 'image/svg+xml';
     const dataUrl = `data:${mime};base64,${res.body.toString('base64')}`;
     let solvedText = '';
@@ -84,20 +63,25 @@ class TokhaiController {
     } catch (error) {
       this.log(`Bộ giải CAPTCHA không chạy được: ${error.message}`, 'warn');
     }
-    return { dataUrl, solvedText };
+    return { dataUrl, solvedText, csrfToken, solverError: solvedText ? '' : captchaSolver.lastErrorMessage() };
   }
 
   // ---------------- Đăng nhập DVC ----------------
 
   /** Đọc CSRF token từ trang login DVC (Cần cho mọi lời gọi loginLDAP). */
   async readDvcCsrf() {
+    const tabId = await this.browser.tabForOrigin(DVC);
+    const token = await this.browser.evalInTab(tabId, `(() => document.querySelector('meta[name="csrf-token"], meta[name="_csrf"]')?.content || document.querySelector('input[name="_csrf"]')?.value || '')()`);
+    if (token) return token;
     const res = await this.browser.fetchSameOrigin(`${DVC}/tthc/login`, { method: 'GET' });
     const html = res && res.ok ? res.text : '';
     return (html.match(/name="csrf-token"\s+content="([^"]+)"/i) || html.match(/name="_csrf"\s+value="([^"]+)"/i) || [])[1] || '';
   }
 
-  async loginDvc(username, password, captcha) {
-    const csrf = await this.readDvcCsrf();
+  async loginDvc(username, password, captcha, csrfToken = '') {
+    // Không tải lại trang login sau CAPTCHA: trang mới có thể đổi challenge.
+    const tabId = await this.browser.tabForOrigin(DVC);
+    const csrf = csrfToken || await this.browser.evalInTab(tabId, `(() => document.querySelector('meta[name="csrf-token"], meta[name="_csrf"]')?.content || document.querySelector('input[name="_csrf"]')?.value || '')()`);
     // Cách gõ MST mà cổng chấp nhận: doanh nghiệp 10 số (-MST chi nhánh), cá nhân 12 số (CCCD).
     const candidates = [username];
     if (username.includes('-')) {
@@ -143,70 +127,38 @@ class TokhaiController {
 
   // ---------------- Đăng nhập Thuế điện tử ----------------
 
-  /** Điền form login trong tab TĐT rồi submit; đọc lại dse_sessionId sau khi trang chuyển. */
+  async prepareTdtLogin() {
+    const tab = await this.browser.tabForOrigin(TDT);
+    this.tdtLoginFields = await this.browser.evalInTab(tab, '(' + portalScripts.prepareTdtLoginInTab.toString() + ')(' + JSON.stringify(TDT) + ')', 90000);
+    if (!this.tdtLoginFields?.dse_sessionId) throw new Error('Không lấy được phiên đăng nhập Thuế điện tử.');
+    return '';
+  }
+
   async loginTdt(username, password, captcha) {
-    const tabs = await browserTabs(this.browser, 'thuedientu.gdt.gov.vn');
-    if (!tabs.length) throw new Error('Chưa mở tab Thuế Điện Tử. Bấm "Mở cổng trên Chrome" trước.');
-
-    const submitted = await this.browser.evalInTab(tabs[0].id, `(() => {
-      const u = document.querySelector('input[name="_userName"], #_userName');
-      const p = document.querySelector('input[name="_password"], #password');
-      const c = document.querySelector('input[name="_verifyCode"], #vcode');
-      if (!u || !p) {
-        const sid = new URLSearchParams(location.search).get('dse_sessionId')
-          || (document.querySelector("input[name='dse_sessionId']") || {}).value || '';
-        location.href = sid
-          ? '${TDT}/etaxnnt/Request?&dse_sessionId=' + encodeURIComponent(sid) + '&dse_applicationId=-1&dse_pageId=4&dse_operationName=corpIndexProc&dse_errorPage=error_page.jsp&dse_processorState=initial&dse_nextEventName=login'
-          : '${TDT}/etaxnnt/Request?&dse_operationName=corpIndexProc';
-        return { moved: true };
-      }
-      u.value = ${JSON.stringify(username)};
-      p.value = ${JSON.stringify(password)};
-      if (c) c.value = ${JSON.stringify(captcha)};
-      const btn = document.querySelector('input[type="submit"], input[type="button"][value*="nh" i], button.btn-login');
-      if (btn) btn.click(); else u.form.submit();
-      return { submitted: true };
-    })()`, 30000);
-
-    if (submitted && submitted.moved) {
-      await sleep(4000); // trang đang chuyển tới form login
-      await this.browser.evalInTab(tabs[0].id, `(() => {
-        const u = document.querySelector('input[name="_userName"], #_userName');
-        const p = document.querySelector('input[name="_password"], #password');
-        const c = document.querySelector('input[name="_verifyCode"], #vcode');
-        if (!u || !p) return { again: false };
-        u.value = ${JSON.stringify(username)};
-        p.value = ${JSON.stringify(password)};
-        if (c) c.value = ${JSON.stringify(captcha)};
-        const btn = document.querySelector('input[type="submit"], input[type="button"][value*="nh" i], button.btn-login');
-        if (btn) btn.click(); else u.form.submit();
-        return { submitted: true };
-      })()`, 30000);
-      await sleep(5000);
-    } else {
-      await sleep(5000);
-    }
-
-    const info = await this.browser.evalInTab(tabs[0].id, `(() => {
-      const text = (document.body && document.body.innerText || '');
-      const bad = /Mã xác thuận không chính xác|Mã xác nhận không đúng|Sai tên đăng nhập|Mật khẩu không đúng/i.test(text);
-      const sid = new URLSearchParams(location.search).get('dse_sessionId')
-        || (document.querySelector("input[name='dse_sessionId']") || {}).value || '';
-      const nameM = text.match(/Tên đơn vị\\s*:\\s*([^\\n]{2,80})/i);
-      return { bad, sessionId: sid, name: nameM ? nameM[1].trim() : '', url: location.href };
-    })()`, 30000);
-
-    if (!info || info.bad) throw new Error('Cổng Thuế điện tử từ chối thông tin đăng nhập (sai tài khoản/mật khẩu/CAPTCHA).');
-    if (!info.sessionId) throw new Error('Sau khi đăng nhập không lấy được dse_sessionId — cổng có thể đã đổi luồng. Kiểm tra lại trên tab Chrome.');
-    this.sessionId = info.sessionId;
+    const fields = this.tdtLoginFields;
+    if (!fields?.dse_sessionId) throw new Error('Lấy CAPTCHA Thuế điện tử mới trước khi đăng nhập.');
+    const body = new URLSearchParams({
+      dse_sessionId: fields.dse_sessionId, dse_applicationId: '-1', dse_pageId: fields.dse_pageId || '5',
+      dse_operationName: 'corpUserLoginProc', dse_errorPage: 'error_page.jsp', dse_processorState: 'initial',
+      dse_nextEventName: 'start', showVerifyCode: 'show', isEtaxtmdt: '',
+      _userName: username, _password: password, login_type: '01', _verifyCode: captcha,
+    });
+    const res = await this.browser.fetchSameOrigin(TDT + '/etaxnnt/Request', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: body.toString() });
+    if (!res?.ok) throw new Error('Thuế điện tử trả HTTP ' + (res?.status || 0));
+    if (/Mã xác thực không chính xác|Mã xác nhận không đúng|Sai tên đăng nhập|mật khẩu không đúng/i.test(res.text)) throw new Error('Sai tài khoản, mật khẩu hoặc CAPTCHA Thuế điện tử.');
+    if (!/value=["']complete["']|corporateHomeProc|Đăng xuất/i.test(res.text)) throw new Error('Cổng chưa xác nhận đăng nhập Thuế điện tử thành công.');
+    const sid = res.text.match(/name=["']dse_sessionId["'][^>]*value=["']([^"']+)["']/i)?.[1];
+    this.sessionId = sid || fields.dse_sessionId;
     this.userMst = username;
-    this.userName = info.name || 'Cổng Thuế Điện Tử';
-    return { ok: true, portal: 'tdt', mst: username, name: this.userName };
+    this.userName = 'Cổng Thuế Điện Tử';
+    return { ok: true, portal: 'tdt', mst: username, name: this.userName, sessionId: this.sessionId };
   }
 
   // ---------------- Tra cứu DVC ----------------
 
   async searchDvc(tuNgay, denNgay, captcha) {
+    const checked = await this.browser.fetchSameOrigin(`${DVC}/tthc/checkCaptcha?captcha=${encodeURIComponent(captcha)}&_=${Date.now()}`, { method: 'GET' });
+    if (!checked?.ok || checked.text.trim() !== 'success') throw new Error('CAPTCHA tra cứu không đúng hoặc đã hết hạn. Lấy mã tra cứu mới.');
     const query = new URLSearchParams({
       maNghiepVu: '', maTTHC: '', maToKhai: '', maHoSo: '',
       tuNgay, denNgay, scope_tdt1: 'SELF', mstUyQuyen_tdt1: '', captcha, size: '1000',
@@ -223,9 +175,10 @@ class TokhaiController {
     });
     if (res && res.status === 403) throw new Error('Chưa đăng nhập Dịch Vụ Công hoặc phiên đã hết hạn. Bấm "Đăng nhập" lại.');
     if (!res || res.status !== 200) throw new Error(`Cổng DVC trả HTTP ${res ? res.status : 'không phản hồi'}.`);
-    if (/Mã xác nhận không đúng|Mã captcha không đúng/i.test(res.text || '')) {
+    if (/Mã xác nhận (?:không đúng|không chính xác|sai)|captcha không đúng/i.test(res.text || '')) {
       throw new Error('CAPTCHA không đúng. Bấm 🔄 lấy mã mới rồi thử lại.');
     }
+    if (/<input[^>]+(?:name|id)=["'](?:matKhau|_password)["']/i.test(res.text || '')) throw new Error('Phiên DVC đã hết hạn. Đăng nhập lại.');
     return parseDvcRows(res.text || '');
   }
 
@@ -233,7 +186,13 @@ class TokhaiController {
 
   /** Cổng TĐT giới hạn 365 ngày/lượt nên tự chia nhỏ khoảng ngày. */
   static splitRange(tuNgay, denNgay) {
-    const parse = s => { const [d, m, y] = s.split('/').map(Number); return new Date(y, m - 1, d); };
+    const parse = s => {
+      if (!/^\d{2}\/\d{2}\/\d{4}$/.test(s)) throw new Error('Ngày không hợp lệ (dd/mm/yyyy).');
+      const [d, m, y] = s.split('/').map(Number);
+      const date = new Date(y, m - 1, d);
+      if (date.getFullYear() !== y || date.getMonth() !== m - 1 || date.getDate() !== d) throw new Error('Ngày không tồn tại.');
+      return date;
+    };
     const fmt = d => `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}/${d.getFullYear()}`;
     const start = parse(tuNgay);
     const end = parse(denNgay);
@@ -262,42 +221,29 @@ class TokhaiController {
       if (this.shouldStop) break;
       const range = ranges[i];
       this.onProgress({ stage: 'query', current: i + 1, total: ranges.length, message: `Đang tra cứu ${range.from} → ${range.to}…` });
-      const out = await this.browser.evalInTab(tabs[0].id, `${TokhaiController.TDT_SEARCH_SCRIPT}(${JSON.stringify(range.from)}, ${JSON.stringify(range.to)}, ${JSON.stringify(TDT)})`, 60000);
-      if (!out || !out.ok) throw new Error((out && out.error) || 'Tra cứu Thuế điện tử không trả dữ liệu.');
-      rows.push(...parseTdtRows(out.rows));
+      const out = await this.browser.evalInTab(tabs[0].id, '(' + portalScripts.searchTdtInTab.toString() + ')(' + JSON.stringify({ tuNgay: range.from, denNgay: range.to }) + ',' + JSON.stringify(TDT) + ',' + JSON.stringify(this.sessionId || '') + ')', 180000);
+      if (!out || !out.success) throw new Error((out && out.error) || 'Tra cứu Thuế điện tử không trả dữ liệu.');
+      rows.push(...(out.rows || []));
       if (i < ranges.length - 1) await pace.wait();
     }
-    return rows;
+    return [...new Map(rows.map(row => [row.maHoSo, row])).values()];
   }
 
   // ---------------- Tải hồ sơ ----------------
 
   /** Tải một mã hồ sơ. Trả Buffer thô (ZIP/XML) hoặc ném lỗi. */
   async downloadOne(maHoSo) {
-    if (this.currentPortal === 'tdt') {
-      if (!this.sessionId) throw new Error('Chưa có phiên Thuế điện tử. Đăng nhập lại.');
-      const tabs = await browserTabs(this.browser, 'thuedientu.gdt.gov.vn');
-      if (!tabs.length) throw new Error('Không tìm thấy tab Thuế Điện Tử.');
-      const out = await this.browser.evalInTab(tabs[0].id, `(async (id, sid) => {
-        const url = '${TDT}/etaxnnt/Request?&dse_sessionId=' + encodeURIComponent(sid)
-          + '&dse_applicationId=-1&dse_pageId=6&dse_operationName=downloadDeclProc&dse_nextEventName=download&maHoSo=' + encodeURIComponent(id);
-        const res = await fetch(url, { credentials: 'include' });
-        if (!res.ok) return { ok: false, status: res.status };
-        const buf = new Uint8Array(await res.arrayBuffer());
-        let bin = ''; for (let i = 0; i < buf.length; i += 8192) bin += String.fromCharCode.apply(null, buf.subarray(i, i + 8192));
-        return { ok: true, base64: btoa(bin) };
-      })(${JSON.stringify(maHoSo)}, ${JSON.stringify(this.sessionId)})`, 60000);
-      if (!out || !out.ok) throw new Error(`Cổng trả HTTP ${(out && out.status) || 'không phản hồi'}`);
-      return Buffer.from(out.base64, 'base64');
-    }
-
-    const res = await this.browser.fetchSameOrigin(`${DVC}/tthc/ho-so/${encodeURIComponent(maHoSo)}/download`, {
-      method: 'GET', headers: { accept: 'application/zip, application/octet-stream, */*' },
-    });
-    if (!res || res.status !== 200 || !res.body || !res.body.length) {
-      throw new Error(`Cổng DVC trả HTTP ${res ? res.status : 'không phản hồi'} hoặc rỗng.`);
-    }
-    return res.body;
+    const base = this.currentPortal === 'tdt' ? TDT : DVC;
+    const tab = await this.browser.tabForOrigin(base);
+    const row = (this.results || []).find(row => row.maHoSo === maHoSo);
+    const script = this.currentPortal === 'tdt' ? portalScripts.fetchFilesTdtInTab : portalScripts.fetchFilesDvcInTab;
+    const args = this.currentPortal === 'tdt' ? [maHoSo, base, row?.ngayNop || '', this.sessionId || ''] : [maHoSo, base];
+    const result = await this.browser.evalInTab(tab, '(' + script.toString() + ')(' + args.map(a => JSON.stringify(a)).join(',') + ')', 180000);
+    if (!result?.success) throw new Error(result?.error || 'Không tải được hồ sơ.');
+    this.downloadWarnings = result.warnings || [];
+    const documents = this.currentPortal === 'tdt' ? result.files || [] : [result.hoSo, ...(result.thongBaos || []), ...(result.taiLieus || [])].filter(Boolean);
+    if (!documents.length) throw new Error('Hồ sơ không có tệp tải được hoặc phiên đã hết hạn.');
+    return documents.map(doc => ({ filename: doc.filename, bytes: Buffer.from(doc.data, 'base64') }));
   }
 
   /** Tải cả danh sách, ghi vào thư mục. Kết quả { total, succeeded, failed, files }. */
@@ -306,35 +252,42 @@ class TokhaiController {
     let succeeded = 0;
     let failed = 0;
     const dir = outputDir || '';
-    if (!dir) this.log('Chưa chọn thư mục lưu — tệp tải về sẽ không được ghi.', 'warn');
+    if (!dir) throw new Error('Chọn thư mục lưu trước khi tải tờ khai.');
 
     for (let i = 0; i < maHoSoList.length; i += 1) {
       if (this.shouldStop) { this.log(`Đã dừng sau ${succeeded}/${maHoSoList.length} hồ sơ.`, 'warn'); break; }
       const id = maHoSoList[i];
       this.onProgress({ stage: 'download', current: i + 1, total: maHoSoList.length, maHoSo: id, message: `Đang tải ${id} (${i + 1}/${maHoSoList.length})…` });
       try {
-        const bytes = await this.downloadOne(id);
+        const downloaded = await this.downloadOne(id);
+        const documents = Buffer.isBuffer(downloaded) ? [{ filename: `${id}.zip`, bytes: downloaded }] : downloaded;
         if (dir) {
-          const name = safeFileName(`${id}.zip`, bytes);
-          fs.mkdirSync(dir, { recursive: true });
-          const target = path.join(dir, name);
-          fs.writeFileSync(target, bytes);
-          files.push(target);
+          if (!documents.length) throw new Error('Không có tệp hồ sơ.');
+          const targets = [];
+          const folder = path.join(dir, String(id).replace(/[<>:"/\\|?*\x00-\x1f]/g, '_'));
+          for (const { filename, bytes } of documents) {
+            const name = safeFileName(filename, bytes);
+            if (/\.zip$/i.test(name)) await JSZip.loadAsync(bytes);
+            fs.mkdirSync(folder, { recursive: true });
+            const target = path.join(folder, name);
+            fs.writeFileSync(target, bytes);
+            targets.push(target);
+          }
+          files.push({ maHoSo: id, path: targets[0], paths: targets, success: true, warnings: this.downloadWarnings || [] });
         }
         succeeded += 1;
       } catch (error) {
         failed += 1;
+        files.push({ maHoSo: id, success: false, error: error.message });
         this.log(`Tải ${id} lỗi: ${error.message}`, 'error');
       }
       if (i < maHoSoList.length - 1) await pace.wait();
     }
-    return { total: maHoSoList.length, succeeded, failed, files };
+    return { total: maHoSoList.length, succeeded, failed, files, stopped: this.shouldStop };
   }
 }
 
 // ---------------- helpers ----------------
-
-const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 async function browserTabs(browser, hostFragment) {
   const tabs = await browser.listTabs();
@@ -343,40 +296,52 @@ async function browserTabs(browser, hostFragment) {
 
 /** Đuôi file đúng theo nội dung: ZIP hay XML/HTML. */
 function safeFileName(base, bytes) {
+  base = String(base).replace(/[<>:"/\\|?*\x00-\x1f]/g, '_');
   const head = bytes.subarray(0, 4);
-  if (head[0] === 0x50 && head[1] === 0x4b) return base.replace(/\.(zip|xml|html)$/i, '') + '.zip';
+  if (head[0] === 0x50 && head[1] === 0x4b) return /\.(docx|xlsx)$/i.test(base) ? base : base.replace(/\.(zip|xml|html)$/i, '') + '.zip';
   const text = bytes.subarray(0, 200).toString('utf8');
-  if (/<HDon[\s>]/i.test(text)) return base.replace(/\.(zip|xml|html)$/i, '') + '.xml';
-  return base.replace(/\.(zip|xml|html)$/i, '') + '.html';
+  if (/^\s*%PDF-/.test(text)) return base.replace(/\.(zip|xml|html)$/i, '') + '.pdf';
+  if (/<(?:!doctype\s+html|html|head|body|form)[\s>]/i.test(bytes.toString('utf8'))) throw new Error('Cổng trả trang HTML thay cho tệp tờ khai. Kiểm tra phiên đăng nhập.');
+  if (/^\s*(?:\uFEFF)?\s*<\?xml\b|^\s*<(?:[\w.-]+:)?(?:HSoThueDTu|HSoKhaiThue|TKhaiThue|HDon)[\s>]/i.test(text)) return base.replace(/\.(zip|xml|html)$/i, '') + '.xml';
+  if (bytes.length && /\.(?:docx?|xlsx?|csv|txt|rar|7z|png|jpe?g|bin)$/i.test(base)) return base;
+  throw new Error('Nội dung tải về không phải tệp hồ sơ hợp lệ.');
 }
 
 /** Bảng DVC: cột cố định, nhưng bắt theo header để không vỡ khi cổng đổi bố cục. */
 function parseDvcRows(html) {
+  const alert = html.match(/<(?:div|span)[^>]*class=["'][^"']*(?:alert-danger|invalid-feedback)[^"']*["'][^>]*>([\s\S]*?)<\/(?:div|span)>/i);
+  if (alert && stripTags(alert[1])) throw new Error(decode(stripTags(alert[1])));
   const out = [];
+  const fields = {
+    maHoSo: ['mã hồ sơ', 'ma ho so'], toKhai: ['tờ khai', 'to khai', 'tên hồ sơ'],
+    kyTinhThue: ['kỳ tính thuế', 'ky tinh thue', 'kỳ kê khai'], loaiToKhai: ['loại tờ khai', 'loai to khai', 'loại'],
+    lanBoSung: ['lần bổ sung', 'lan bo sung', 'lần bs'], lanNop: ['lần nộp', 'lan nop'],
+    ngayNop: ['ngày nộp', 'ngay nop'], trangThai: ['trạng thái', 'trang thai'],
+  };
+  const defaults = { maHoSo: 2, toKhai: 4, kyTinhThue: 5, loaiToKhai: 6, lanBoSung: 7, lanNop: 8, ngayNop: 10, trangThai: 11 };
+  let headers = [];
   const rowRe = /<tr[^>]*>([\s\S]*?)<\/tr>/gi;
   let match;
   while ((match = rowRe.exec(html))) {
     const cells = [...match[1].matchAll(/<t[dh][^>]*>([\s\S]*?)<\/t[dh]>/gi)].map(c => decode(stripTags(c[1])));
+    if (cells.some(c => fields.maHoSo.includes(c.toLowerCase()))) {
+      headers = cells.map(c => c.toLowerCase());
+      continue;
+    }
     if (cells.length < 6) continue;
-    const pick = (...names) => {
-      for (const name of names) {
-        const at = cells.findIndex(c => c.toLowerCase().includes(name));
-        if (at >= 0 && cells[at]) return cells[at];
-      }
-      return '';
-    };
-    const maHoSo = pick('mã hồ sơ', 'ma ho so');
-    if (!maHoSo) continue;
-    out.push({
-      maHoSo,
-      toKhai: pick('tờ khai'),
-      kyTinhThue: pick('kỳ tính thuế', 'ky tinh thue'),
-      loaiToKhai: pick('loại tờ khai', 'loai to khai'),
-      lanBoSung: pick('lần bổ sung', 'lan bo sung'),
-      lanNop: pick('lần nộp', 'lan nop'),
-      ngayNop: pick('ngày nộp', 'ngay nop'),
-      trangThai: pick('trạng thái', 'trang thai'),
-    });
+    const row = {};
+    for (const [key, names] of Object.entries(fields)) {
+      let at = headers.findIndex(h => names.some(name => h === name || (name !== 'loại' && h.includes(name))));
+      if (key === 'toKhai') at = headers.findIndex(h => /tờ khai|to khai|tên hồ sơ/.test(h) && !/loại/.test(h));
+      if (at < 0 && !headers.length && cells.length >= 12) at = defaults[key];
+      row[key] = at >= 0 ? cells[at] || '' : '';
+    }
+    const attribute = match[1].match(/data-ma-ho-so=["']([^"']+)["']/i)?.[1];
+    if (attribute) row.maHoSo = decode(attribute);
+    if (row.maHoSo && /\d/.test(row.maHoSo)) out.push(row);
+  }
+  if (!out.length && /<td\b/i.test(html) && !headers.length && !/không (?:có|tìm thấy)|no (?:data|records)/i.test(stripTags(html))) {
+    throw new Error('Không nhận diện được cột mã hồ sơ trong bảng cổng thuế; cần kiểm tra bố cục bảng thực tế.');
   }
   return out;
 }
@@ -414,4 +379,4 @@ function decode(text) {
     .replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'");
 }
 
-module.exports = { TokhaiController, DVC, TDT };
+module.exports = { TokhaiController, DVC, TDT, parseDvcRows, safeFileName };

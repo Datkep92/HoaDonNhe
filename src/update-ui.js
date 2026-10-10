@@ -17,7 +17,10 @@
     $('update-title').textContent = `Cập nhật CN Tax Tools v${update.latest || update.version || ''}`;
     $('update-current').textContent = `v${update.current || ''}`;
     $('update-latest').textContent = `v${update.latest || update.version || ''}`;
-    $('update-release-notes').textContent = update.notes || 'Bản cập nhật cải thiện ứng dụng. Vui lòng cập nhật để tiếp tục sử dụng.';
+    // Show release text without Markdown markers; keep textContent to avoid executing release HTML.
+    $('update-release-notes').textContent = (update.notes || 'Bản cập nhật cải thiện ứng dụng. Vui lòng cập nhật để tiếp tục sử dụng.')
+      .replace(/^#{1,6}\s+/gm, '').replace(/\*\*([^\n]*?)\*\*/g, '$1')
+      .replace(/`([^`]+)`/g, '$1').replace(/\[([^\]]+)\]\(https?:\/\/[^)]+\)/g, '$1');
     $('update-whats-new').hidden = waiting;
     $('update-progress').hidden = !running.has(stage);
     const labels = { downloading: 'Đang tải bản cập nhật…', verifying: 'Đang xác minh bản cập nhật…', waiting: 'Đã tải xong. Hoàn tất hoặc lưu công việc đang làm để tiếp tục cập nhật.', applying: 'Đang cài đặt. Ứng dụng sẽ tự mở lại…' };

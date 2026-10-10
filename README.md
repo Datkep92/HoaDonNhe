@@ -42,6 +42,8 @@ File mới được tạo trong thư mục riêng. Thao tác ghi cần xác nh�
 
 Từ v1.1.7, khi phát hiện bản mới, ứng dụng hiển thị **Có gì mới**. Bấm **Cập nhật** hoặc click bên ngoài thông báo để bắt đầu. Công việc đang chạy cần hoàn tất hoặc lưu trước khi thay chương trình; lỗi tải sẽ giữ phiên bản cũ và cho thử lại.
 
+Từ v1.1.8, ứng dụng kiểm tra bản mới mỗi 15 phút ngay cả khi đã đóng giao diện và vẫn chạy trong khay hệ thống. Có bản mới sẽ hiện thông báo Windows; bấm thông báo để mở nội dung cập nhật. Nếu mất mạng, ứng dụng thử lại sau 5 phút. Windows có thể ẩn thông báo khi bật chế độ Không làm phiền; nội dung cập nhật vẫn hiện khi mở giao diện.
+
 Cơ chế này có hiệu lực trong phiên bản đã nâng cấp. Các bản cũ có cách cập nhật riêng; nếu không nâng cấp được trong ứng dụng, tải bộ cài mới từ GitHub. Giữ bản sao thư mục dữ liệu trước khi chuyển máy hoặc thực hiện thao tác quan trọng. Không chia sẻ thư mục dữ liệu chứa thông tin doanh nghiệp và phiên đăng nhập.
 
 ## Hỗ trợ

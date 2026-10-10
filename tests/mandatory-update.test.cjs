@@ -31,12 +31,13 @@ test('update gate blocks new jobs but permits reads, saving replacement work and
 function ui() {
   const els = new Map(), events = new Map(), calls = [];
   function el(id) {if(!els.has(id)){const listeners={}, classes=new Set();els.set(id,{hidden:false,open:false,textContent:'',listeners, classList:{contains:x=>classes.has(x),toggle:(x,on)=>on?classes.add(x):classes.delete(x)},addEventListener:(n,f)=>listeners[n]=f,showModal(){this.open=true;this.modal=true;},show(){this.open=true;this.modal=false;},close(){this.open=false;},removeAttribute(){},getBoundingClientRect:()=>({left:10,right:100,top:10,bottom:100})});}return els.get(id);}
-  const state={update:{updateAvailable:true,current:'1.1.7',latest:'9.0.0',notes:'test',canSelfUpdate:true,stage:'available'}};
+  const state={update:{updateAvailable:true,current:'1.1.7',latest:'9.0.0',notes:'## Có gì mới\n- **AI hỗ trợ kế toán**\n<script>unsafe()</script>',canSelfUpdate:true,stage:'available'}};
   vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../src/update-ui.js'),'utf8'),{document:{getElementById:el},window:{HD_LAST_STATE:state,addEventListener:(n,f)=>events.set(n,f)},fetch:async(url,opts)=>{if(url==='/api/update/start')calls.push({url,opts});return{ok:true,json:async()=>({ok:true,value:{ok:true,started:true}})};}});
   return {el,calls,state,events};
 }
 test('UI waits for user, button starts once, Escape cannot dismiss', async () => {
   const u=ui();assert.equal(u.calls.length,0);assert.equal(u.el('update-dialog').open,true);
+  assert.equal(u.el('update-release-notes').textContent,'Có gì mới\n- AI hỗ trợ kế toán\n<script>unsafe()</script>');
   let prevented=false;u.el('update-dialog').listeners.cancel({preventDefault:()=>prevented=true});assert.equal(prevented,true);
   await Promise.all([u.el('update-now').onclick(),u.el('update-now').onclick()]);
   await u.el('update-now').onclick();assert.equal(u.calls.length,1);assert.equal(JSON.parse(u.calls[0].opts.body).version,'9.0.0');

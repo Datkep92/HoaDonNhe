@@ -1,8 +1,11 @@
-# CN Tax Tools v1.1.7
+# CN Tax Tools v1.1.8
 
 **Miễn phí trong giai đoạn phát triển.**
 
 ## Có gì mới
+
+- **Nhận cập nhật khi chạy nền:** kiểm tra bản mới mỗi 15 phút, không cần thoát rồi mở lại ứng dụng. Có bản mới sẽ hiện thông báo Windows; bấm để đọc nội dung cập nhật. Mất mạng sẽ thử lại sau 5 phút. Windows có thể ẩn thông báo khi bật Không làm phiền; mở giao diện vẫn thấy yêu cầu cập nhật.
+- **Nội dung rõ ràng:** hiển thị Có gì mới trong modal trước khi bắt đầu tải. Bản v1.1.6 chưa có giao diện này và cần thoát hoàn toàn rồi mở lại để kiểm tra bản mới. v1.1.7 đã kiểm tra nền mỗi giờ; v1.1.8 rút xuống 15 phút và thêm thông báo Windows.
 
 - **AI hỗ trợ kế toán:** hiểu yêu cầu, tìm nguồn, phân tích và so sánh dữ liệu CNTaxTools với bảng xuất từ phần mềm kế toán. Hỗ trợ đối chiếu chênh lệch, tạo báo cáo/Excel, thực hiện các bước công việc được hỗ trợ và tiếp tục tác vụ dang dở.
 - **Ví dụ:** báo cáo theo tháng, so sánh hai kỳ, đối chiếu bảng kế toán với hóa đơn và xuất danh sách chênh lệch. AI hỏi thêm khi thiếu thông tin; cần kiểm tra số liệu và kết luận trước khi sử dụng.
@@ -14,10 +17,10 @@
 
 ## Tải và sử dụng
 
-**Cài lần đầu:** tải `CN-Tax-Tools-Setup-v1.1.7.exe` trong Assets. Chọn cài vào Windows hoặc Portable. Yêu cầu Windows 64 bit, Chrome hoặc Edge; không cần Node.js/npm/Python.
+**Cài lần đầu:** tải `CN-Tax-Tools-Setup-v1.1.8.exe` trong Assets. Chọn cài vào Windows hoặc Portable. Yêu cầu Windows 64 bit, Chrome hoặc Edge; không cần Node.js/npm/Python.
 
 **Đã cài:** cập nhật trong ứng dụng. Nếu bản cũ không cập nhật được, dùng bộ cài mới và giữ nguyên thư mục dữ liệu. Cách hiển thị thông báo bắt buộc mới chỉ có hiệu lực sau khi nâng cấp; không thể thay đổi giao diện của EXE cũ bằng ghi chú phát hành.
 
-`CN-Tax-Tools-v1.1.7.exe` là chương trình dùng cho cập nhật. Hai file `.sha256` dùng kiểm tra tính toàn vẹn, không phải bộ cài bổ sung.
+`CN-Tax-Tools-v1.1.8.exe` là chương trình dùng cho cập nhật. Hai file `.sha256` dùng kiểm tra tính toàn vẹn, không phải bộ cài bổ sung.
 
 Xem [danh sách chức năng và hướng dẫn](https://github.com/Datkep92/HoaDonNhe#readme). Khi cần, bấm **Liên hệ Admin** trong ứng dụng.

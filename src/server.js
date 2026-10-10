@@ -204,7 +204,7 @@ const updater = new Updater({
   mandatory: packed || process.env.HOADON_FORCE_UPDATE_CHECK === '1',
   noticeFile: path.join(dataDir, 'update-notice.json'),
 });
-// Kiểm tra bản mới MỘT LẦN khi mở app (không polling). Tắt bằng HOADON_NO_UPDATE_CHECK=1.
+// Kiểm tra nền độc lập với cửa sổ giao diện. Tắt bằng HOADON_NO_UPDATE_CHECK=1.
 // HOADON_FORCE_UPDATE_CHECK=1 để bật cả khi chạy --test-server (dùng cho test tự động).
 const updateCheckEnabled = process.env.HOADON_NO_UPDATE_CHECK !== '1'
   && !localSelfCheck && (!testServer || process.env.HOADON_FORCE_UPDATE_CHECK === '1');
@@ -220,15 +220,20 @@ if (!localSelfCheck && !testServer) {
   setTimeout(reportUsage, 60 * 1000).unref();
   setInterval(reportUsage, 15 * 60 * 1000).unref();
 }
-let autoCheckAt=0,autoRunning=false,updateTask=null;
+let updateTask=null;
 const updateDrafts = new Map();
+const updateMonitor=require('./update-monitor').createUpdateMonitor({
+  check:async()=>{const state=await updater.check(true);updatePending=state.mandatory&&state.updateAvailable;return state;},
+  publish:state=>{
+    // The tray helper reads this local notice; no customer data or release HTML is included.
+    atomicWrite(path.join(dataDir,'update-tray.json'),JSON.stringify({version:state.latest}));
+    log('Có bản cập nhật mới v'+state.latest+'. Mở giao diện để đọc Có gì mới và cập nhật.');
+  },
+});
 async function automaticUpdate() {
-  if(autoRunning||updateTask||(!packed&&process.env.HOADON_FORCE_UPDATE_CHECK!=='1')||Date.now()-autoCheckAt<3600000)return;
-  autoCheckAt=Date.now();autoRunning=true;
-  try {
-    const state=await updater.check(true);updatePending=state.mandatory&&state.updateAvailable;
-    try {const value=await billing.remote('config');billing.configure(value.config);}catch(error){log('Không đọc được cấu hình: '+error.message);}
-  } finally {autoRunning=false;}
+  if(updateTask||(!packed&&process.env.HOADON_FORCE_UPDATE_CHECK!=='1'))return;
+  const state=await updateMonitor();
+  if(state)try {const value=await billing.remote('config');billing.configure(value.config);}catch(error){log('Không đọc được cấu hình: '+error.message);}
 }
 function updateBlockers() {
   const reasons=[];
@@ -4575,6 +4580,8 @@ function trayScript(port) {
     'Add-Type -AssemblyName System.Windows.Forms',
     'Add-Type -AssemblyName System.Drawing',
     `$logPath = '${trayLog}'`,
+    `$updateNoticePath = '${quote(path.join(dataDir,'update-tray.json'))}'`,
+    `$installedVersion = '${quote(require('./version').version)}'`,
     `$base = 'http://127.0.0.1:${port}'`,
     `$cookie = 'hd_session=${sessionSecret}'`,
     "function Write-TrayLog([string]$m) { try { Add-Content -LiteralPath $logPath -Value ('[' + (Get-Date -Format 'dd/MM/yyyy HH:mm:ss') + '] ' + $m) -Encoding UTF8 } catch { } }",
@@ -4606,13 +4613,28 @@ function trayScript(port) {
     "$quitItem.add_Click({ $script:quit = $true; Invoke-App '/api/app/quit' 'POST' | Out-Null })",
     '$notify.ContextMenuStrip = $menu',
     "$notify.add_MouseClick({ param($sender, $eventArgs) if ($eventArgs.Button -eq [System.Windows.Forms.MouseButtons]::Left) { Invoke-App '/api/window/show' 'POST' | Out-Null } })",
+    "$notify.add_BalloonTipClicked({ Invoke-App '/api/window/show' 'POST' | Out-Null })",
     icon ? `Write-TrayLog 'icon khay da hien (icon rieng: ${icon})'` : "Write-TrayLog 'icon khay da hien (icon mac dinh cua Windows)'",
     // Windows ẩn icon khay mới trong khay: nháy bong bóng một lần để người dùng biết app vẫn chạy nền.
     "try { $notify.ShowBalloonTip(4000, 'Công cụ Thuế - Kế Toán CN', 'Ứng dụng vẫn chạy nền. Bấm icon khay để mở lại, bấm chuột phải để Thoát hoàn toàn.', [System.Windows.Forms.ToolTipIcon]::Info) } catch { }",
     '$script:quit = $false',
     '$fails = 0',
+    "$announcedUpdate = ''; $nextNoticeCheck = [DateTime]::MinValue",
     'while (-not $script:quit) {',
     '  [System.Windows.Forms.Application]::DoEvents()',
+    '  if ([DateTime]::UtcNow -ge $nextNoticeCheck) {',
+    '    $nextNoticeCheck = [DateTime]::UtcNow.AddSeconds(5)',
+    '    try {',
+    '      if (Test-Path -LiteralPath $updateNoticePath) {',
+    '        $notice = Get-Content -LiteralPath $updateNoticePath -Raw -Encoding UTF8 | ConvertFrom-Json',
+    '        $v = [string]$notice.version',
+    "        if ($v -match '^\\d+\\.\\d+\\.\\d+$' -and [version]$v -gt [version]$installedVersion -and $announcedUpdate -ne $v) {",
+    "          $notify.ShowBalloonTip(10000, 'CN Tax Tools — Có bản cập nhật mới', ('Phiên bản v' + $v + '. Bấm để đọc Có gì mới và cập nhật.'), [System.Windows.Forms.ToolTipIcon]::Info)",
+    '          $announcedUpdate = $v',
+    '        }',
+    '      }',
+    '    } catch { }',
+    '  }',
     // Chỉ tự đóng khi ứng dụng mất hẳn (20 lần liên tiếp ≈ 15 giây), không đóng vì một lần lỗi mạng.
     '  if (Test-App) { $fails = 0 } else { $fails = $fails + 1; if ($fails -ge 20) { Write-TrayLog "ung dung khong phan hoi 20 lan lien tiep - dong icon khay"; break } }',
     '  Start-Sleep -Milliseconds 700',

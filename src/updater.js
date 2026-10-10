@@ -387,13 +387,14 @@ class Updater {
 
   status() { return { ...this.state }; }
 
-  // Kiểm tra bản mới: chỉ khi mở app hoặc khi người dùng bấm "Kiểm tra cập nhật".
+  // Kiểm tra metadata theo lịch nền hoặc khi người dùng yêu cầu.
   async check(force) {
     if (this.controller || this.state.stage === 'applying') return this.status();
     let result;
     try { result = await this.checkUpdate(force === true); }
     catch (error) { result = { ok: false, error: error.message || String(error) }; }
     this.state.lastCheckedAt = this.now();
+    this.state.checkFailed = !result.ok;
     if (!result.ok && this.plan?.ok) return this.status();
     this.state.stage = 'idle';
     this.state.error = '';

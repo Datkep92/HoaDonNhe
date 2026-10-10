@@ -51,7 +51,7 @@
   window.addEventListener('resize', syncDock);
   window.addEventListener('blur', () => finishResize());
   syncDock();
-  let config = null, active = null, loading = null, editing = null, stream = null;
+  let config = null, active = null, loading = null, editing = null, stream = null, legacyMode = false;
   let pendingFiles = []; const queue = [];
   for (const id of ['ai-web', 'ai-python']) {
     try { const value = localStorage.getItem(id); if (value !== null) $(id).checked = value === 'true'; } catch {}
@@ -109,10 +109,15 @@
   function error(message) { $('ai-error').textContent = message || ''; $('ai-error').hidden = !message; }
   function drawModes() {
     const nav = $('chat-modes');
+    nav.querySelector('[data-mode="support"]').hidden = true;
+    $('ai-add').hidden = true;
     nav.querySelectorAll('[data-provider]').forEach(el => el.remove());
-    for (const p of config.providers) {
+    for (const p of config.providers.filter(p => p.id === defaultMode())) {
       const button = document.createElement('button'); button.type = 'button'; button.dataset.mode = p.id; button.dataset.provider = p.id;
-      button.textContent = p.label; button.title = p.label;if(p.id==='agent')button.hidden=true; nav.insertBefore(button, $('ai-add'));
+      button.textContent = 'Chatbot';
+      button.title = button.textContent;
+      button.hidden = false;
+      nav.insertBefore(button, $('ai-add'));
     }
     markMode();
   }
@@ -122,7 +127,7 @@
   // hàm này với chế độ cũ để quay về đúng trạng thái trước đó.
   function applyMode(next) {
     active = next;
-    const cloudAvailable = !!active && /^https:\/\/openrouter\.ai\/api\/v1\/?$/.test(active.baseURL);
+    const cloudAvailable = !!active && !(config?.features && active.routingMode === 'auto') && /^https:\/\/openrouter\.ai\/api\/v1\/?$/.test(active.baseURL);
     $('ai-web').disabled = !cloudAvailable;
     $('ai-python').disabled = !config?.flags?.generated_python_enabled;
     if ($('ai-python').disabled) $('ai-python').checked = false;
@@ -131,18 +136,64 @@
     panel.querySelector('.support-license').hidden=false;
     $('support-error').hidden=false;
     $('ai-mode-label').hidden = !active;
-    $('ai-mode-label').textContent = active ? active.label + ' · ' + (config.companyId === 'GLOBAL' ? 'Tài liệu chung' : 'MST ' + config.companyId) : '';
+    $('ai-mode-label').textContent = active ? 'Chatbot · Dữ liệu trên máy' : '';
     $('ai-workspace').hidden = !active;
     $('ai-thread').hidden = !active; $('ai-form').hidden = !active;
+    $('ai-legacy').hidden = !config?.features?.legacy || !config.legacyHistoryAvailable;
+    $('ai-edit').hidden = active?.id === 'basic';
+    $('ai-permissions').hidden = active?.id === 'basic';
+    $('ai-capabilities').hidden = true;
+    $('ai-add').hidden = true;
+    renderRuntime();
     markMode();
   }
   async function loadConfig() {
     if (!loading) loading = call('/api/ai/providers').then(value => { config = value; $('ai-legacy').hidden = !value.legacyHistoryAvailable; drawModes(); }).finally(() => { loading = null; });
     return loading;
   }
+  function defaultMode() { return config?.features?.agent ? 'agent' : config?.features?.basic ? 'basic' : 'support'; }
+  async function loadRecovery() {
+    const p = active, companyId = config.companyId;
+    $('ai-recovery').replaceChildren(); $('ai-recovery').hidden = true;
+    if (!p || legacyMode || !config.features) return;
+    const rows = await call('/api/ai/requests?id=' + encodeURIComponent(p.id));
+    if (active !== p || config.companyId !== companyId) return;
+    for (const row of rows) {
+      if (!row.input) continue;
+      const button = document.createElement('button'); button.type = 'button';
+      button.textContent = 'Tiếp tục: ' + row.input.text.slice(0, 40); button.title = 'Tiếp tục tác vụ ' + row.state + '. Các thao tác có kết quả chưa rõ sẽ bị chặn.';
+      button.addEventListener('click', () => {
+        if (stream || active !== p) return;
+        button.disabled = true;
+        const output = message('assistant', 'Đang khôi phục tác vụ…');
+        queue.push({ p, companyId, text: row.input.text, selected: [], output, screen: row.input.screen || {}, options: row.input.options || {}, requestId: row.id, uploadedIds: row.input.ids }); void drainQueue();
+      }); $('ai-recovery').append(button);
+    }
+    $('ai-recovery').hidden = !$('ai-recovery').childElementCount;
+  }
+  function renderRuntime() {
+    const advanced = !!active && active.id !== 'basic' && !!config?.features && !legacyMode;
+    $('ai-runtime').hidden = true;
+    const state = config?.runtime || {};
+    $('ai-runtime-status').textContent = 'Agent tích hợp sẵn · API miễn phí trực tiếp. Không cần tải thêm.';
+    $('ai-runtime-install').hidden = true;
+    $('ai-runtime-cancel').hidden = true;
+  }
+  let runtimePoll;
+  $('ai-runtime-install').addEventListener('click', async () => {
+    try {
+      config.runtime = await call('/api/ai/runtime', { action: 'install' }); renderRuntime();
+      clearInterval(runtimePoll);
+      runtimePoll = setInterval(async () => {
+        try { config.runtime = await call('/api/ai/runtime'); renderRuntime(); if (!['downloading', 'verifying'].includes(config.runtime.state)) clearInterval(runtimePoll); }
+        catch (e) { clearInterval(runtimePoll); error(e.message); }
+      }, 1500);
+    } catch (e) { error(e.message); }
+  });
+  $('ai-runtime-cancel').addEventListener('click', async () => { try { config.runtime = await call('/api/ai/runtime', { action: 'cancel' }); renderRuntime(); } catch (e) { error(e.message); } });
   setInterval(async()=>{
-    if(panel.hidden||active?.id!=='agent'||supportMode!=='auto')return;
-    try{const value=await call('/api/ai/providers'),p=value.providers.find(p=>p.id===active.id);if(p?.cloudModel){active.cloudModel=p.cloudModel;active.configRevision=p.configRevision;$('ai-mode-label').textContent=active.label+' · AUTO · '+p.cloudModel+' · rev '+p.configRevision;}}catch{/* Reconnect on the next tick; chat routing remains server-side. */}
+    if(panel.hidden||active?.id!=='agent'||supportMode!=='auto'||config?.features&&!config.features.legacy)return;
+    try{const value=await call('/api/ai/providers'),p=value.providers.find(p=>p.id===active.id);if(p?.cloudModel){active.cloudModel=p.cloudModel;active.configRevision=p.configRevision;$('ai-mode-label').textContent='Chatbot';}}catch{/* Reconnect on the next tick; chat routing remains server-side. */}
   },15000);
   function message(role, content) {
     const el = document.createElement('article'); el.className = 'ai-message ' + role;
@@ -298,6 +349,7 @@
     return persistActive;
   }
   async function selectMode(id, preserveDraft = false) {
+    legacyMode = id === 'support';
     if(id==='support')id='agent';
     // Mỗi lần bấm sinh một token. Kết quả tải về của lần bị bấm đè sau sẽ bị bỏ
     // qua (token cũ) nên không ghi đè giao diện của chế độ mới hơn.
@@ -313,7 +365,7 @@
     try {
       if (id !== 'support') config = await queueActive(id);
       if (token !== switchToken) return;
-      if (active) { $('ai-status').textContent = 'Đang tải lịch sử chat…'; await drawHistory(); }
+      if (active) { $('ai-status').textContent = 'Đang tải lịch sử chat…'; await drawHistory(); await loadRecovery(); }
     } catch (e) {
       // Lỗi của lần bấm đã bị bấm đè thì bỏ qua: chế độ mới hơn đang chạy nên không
       // báo lỗi của việc cũ, cũng không kéo giao diện về lùi.
@@ -327,7 +379,7 @@
     const companyId = event.detail.selected || 'GLOBAL';
     if (config.companyId === companyId) return;
     stream?.abort(); cancelQueue(); clearPending(); config.companyId = companyId;
-    $('ai-mode-label').textContent = active.label + ' · ' + (companyId === 'GLOBAL' ? 'Tài liệu chung' : 'MST ' + companyId);
+    $('ai-mode-label').textContent = 'Chatbot · Dữ liệu trên máy';
     void drawHistory().catch(e => error(e.message));
   });
   $('chat-modes').addEventListener('click', event => {
@@ -350,8 +402,8 @@
   });
   $('support-toggle').addEventListener('click', () => queueMicrotask(() => {
     syncDock();
-    if (!panel.hidden && !config) loadConfig().then(()=>selectMode('support')).catch(e => error(e.message));
-    else if(!panel.hidden&&!active)void selectMode('support');
+    if (!panel.hidden && !config) loadConfig().then(()=>selectMode(defaultMode())).catch(e => error(e.message));
+    else if(!panel.hidden&&!active)void selectMode(defaultMode());
     else if(!panel.hidden&&active&&!stream&&!queue.length)void drawHistory().catch(e=>error(e.message));
   }));
   function draft() {
@@ -458,7 +510,7 @@
   });
   async function drainQueue() {
     if (stream || !queue.length) return;
-    const { p, companyId, text, selected, output, screen, options, supportChoice, onFinish } = queue.shift();
+    const { p, companyId, text, selected, output, screen, options, supportChoice, onFinish, requestId, uploadedIds } = queue.shift();
     if (active !== p) { output.textContent = 'Đã hủy tin nhắn chờ.'; onFinish?.(); void drainQueue(); return; }
     const controller = new AbortController(); stream = controller;
     $('ai-send').textContent = 'Gửi tiếp'; $('ai-stop').hidden = false;
@@ -476,7 +528,8 @@
         const result = await uploaded.json(); if (!result.ok) throw new Error(result.error || 'Không gửi được file.'); attachments.push(result.value.id);
       }
       output.textContent = 'Đang xử lý yêu cầu…';
-      const response = await fetch('/api/ai/stream', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: p.id, unified:p.id==='agent', companyId, text, screen, attachments, options, ...(supportChoice?{supportChoice}:{}) }), signal: controller.signal });
+      const mode = p.id === 'basic' ? 'basic' : config.features?.agent && !legacyMode && !supportChoice && supportMode === 'auto' ? 'agent' : undefined;
+      const response = await fetch('/api/ai/stream', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: p.id, mode, requestId: requestId || crypto.randomUUID(), unified:p.id==='agent', companyId, text, screen, attachments: uploadedIds || attachments, options, ...(supportChoice?{supportChoice}:{}) }), signal: controller.signal });
       if (!response.ok) throw new Error((await response.json()).error || 'Không kết nối được AI.');
       const reader = response.body.getReader(), decoder = new TextDecoder(); let buffer = '';
       while (true) {
@@ -495,7 +548,7 @@
           if (data.file) attachFile(output.parentElement, data.file);
           if (data.approval_required) approvalCard(output.parentElement, data.approval_required, p);
           if (data.delta) { output.setAttribute('aria-busy','false');answer += data.delta; renderText(output, answer); $('ai-thread').scrollTop = $('ai-thread').scrollHeight; }
-          if (data.done) {completed = true;if(p.routingMode==='auto'&&data.cloudModel){p.cloudModel=data.cloudModel;p.configRevision=data.configRevision;$('ai-mode-label').textContent=p.label+' · AUTO · '+p.cloudModel+' · rev '+p.configRevision;}}
+          if (data.done) {completed = true;if(p.routingMode==='auto'&&data.cloudModel){p.cloudModel=data.cloudModel;p.configRevision=data.configRevision;$('ai-mode-label').textContent='Chatbot';}}
         }
       }
       if (!completed) throw new Error('Kết nối bị ngắt trước khi AI trả lời xong.');
@@ -511,10 +564,11 @@
       if (!completed) controller.abort();
       if (stream === controller) { stream = null; $('ai-send').textContent = 'Gửi'; $('ai-stop').hidden = true; }
       if (active === p) $('ai-status').textContent = '';
+      if (!completed && active === p && p.id === 'agent') void loadRecovery().catch(e => error(e.message));
       onFinish?.();
       void drainQueue();
     }
   }
   // The widget may be opened before this deferred script has finished loading.
-  if(!panel.hidden)loadConfig().then(()=>selectMode('support')).catch(e=>error(e.message));
+  if(!panel.hidden)loadConfig().then(()=>selectMode(defaultMode())).catch(e=>error(e.message));
 })();

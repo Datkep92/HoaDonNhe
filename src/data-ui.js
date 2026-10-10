@@ -388,7 +388,7 @@ const OVERVIEW_CACHE_IDS = [
       'data-partners': ['ĐỐI TÁC', 'Đối tác', 'Nhà cung cấp và khách hàng tổng hợp từ hóa đơn.'],
       'data-vat': ['PHẦN THUẾ', 'Phần thuế', 'Tổng hợp quý kê khai thuế GTGT từ kho dữ liệu.'],
       bank: ['SAO KÊ NGÂN HÀNG', 'Đối chiếu dòng tiền', 'Nhập sao kê, kiểm tra giao dịch và đối chiếu với hóa đơn.'],
-      accounting: ['THAY THẾ HĐ SỐ LƯỢNG LỚN', 'Thay thế hóa đơn số lượng lớn · Đang xây dựng', 'Liên hệ Admin khi cần thay thế hàng trăm hoặc hàng nghìn hóa đơn.'],
+      accounting: ['THAY THẾ HĐ SỐ LƯỢNG LỚN', 'Thay thế hóa đơn số lượng lớn · Nhập hai file và xuất MISA', 'Nhập hai file, đối chiếu thuế suất và xuất mẫu thay thế MISA.'],
       dvt: ['CHUYỂN ĐỔI DVT', 'Chuyển đổi đơn vị tính · Đang xây dựng', 'Map đơn vị tính từ hoá đơn mua vào (Thùng) sang đơn vị bán ra (Hộp, Chai).'],
       mstlookup: ['TRA CỨU MST', 'Tra cứu Mã số Thuế', 'Kiểm tra trạng thái hoạt động của MST hàng loạt và xuất Excel.'],
       tokhai: ['TẢI TỜ KHAI', 'Tờ khai thuế & Dịch vụ công', 'Tra cứu và tải tờ khai trên Dịch Vụ Công hoặc Thuế Điện Tử.'],
@@ -2405,7 +2405,7 @@ Xoá luôn ${num.format(file.rows_imported || 0)} giao dịch của file này. K
     // index.html mà quên dòng này thì bấm vào KHÔNG có gì xảy ra.
     // Gọi loadMiaCatalog() Ở ĐÂY (không gọi trong showView) vì khối Hỗ trợ kế toán nằm ở scope
     // này — gọi từ showView sẽ ném ReferenceError và chặn luôn phần bật/tắt nút active.
-    $('view-accounting').onclick = () => { showView('accounting'); loadMiaCatalog(); };
+$('view-accounting').onclick = () => { showView('accounting'); window.InvoiceReplacementUI?.ensureInit(); };
 $('view-dvt').onclick = () => showView('dvt');
     // Tab Tra cứu MST và Tải tờ khai — PHẢI nối onclick ở đây, không có trong danh sách
     // nào khác. Module UI của hai tab tự gắn listener khi pane của nó được bật.

@@ -514,24 +514,24 @@ function syncBanner(sync) {
   if (sync.running) {
     const progress = sync.progress;
     if (progress && progress.queued) {
-      return { kind: 'running', text: `Đang tải ${progress.downloaded}/${progress.queued}${progress.failed ? ` · lỗi ${progress.failed}` : ''}` };
+      return { kind: 'running', text: `Đang đồng bộ ${progress.downloaded}/${progress.queued}${progress.failed ? ` · lỗi ${progress.failed}` : ''}` };
     }
-    return { kind: 'running', text: sync.phase ? `Đang chạy · ${sync.phase}` : 'Đang tra cứu…' };
+    return { kind: 'running', text: sync.phase ? `Đang đồng bộ · ${sync.phase}` : 'Đang đồng bộ…' };
   }
   if (sync.lastError) return { kind: 'error', text: `Lỗi (${bannerWhen(sync.lastErrorTime)}): ${String(sync.lastError).slice(0, 90)}` };
   // Chưa tải đủ dữ liệu hôm nay (một ngày một lần — xem dailySyncState trong sync-scheduler.js).
   // Đứng TRƯỚC nhánh "Xong" để không hiện mốc CŨ như thể vừa chạy xong.
   if (sync.syncedToday === false) {
     const missing = (sync.missingToday || []).join(', ');
-    return { kind: 'pending', text: `Chưa đồng bộ${missing ? ` · thiếu ${missing}` : ''}` };
+    return null;
   }
   if (sync.lastSuccess) {
     const when = bannerWhen(sync.lastSuccess);
     const downloaded = (sync.buyDownloaded || 0) + (sync.sellDownloaded || 0);
     const found = (sync.buyFound || 0) + (sync.sellFound || 0);
     // GỌN GÀNG: “Xong · 110 HĐ mới · 10:51 26/09” — đủ ý trong một cụm ngắn, chữ tràn thì CSS cắt “…”.
-    if (downloaded > 0) return { kind: 'done', text: `Xong · ${downloaded} HĐ mới · ${when}` };
-    if (found > 0) return { kind: 'done', text: `Xong · ${found} HĐ, không mới · ${when}` };
+    if (downloaded > 0) return { kind: 'done', text: `Đã đồng bộ · ${downloaded} HĐ mới · ${when}` };
+    if (found > 0) return { kind: 'done', text: `Đã đồng bộ · ${found} HĐ, không mới · ${when}` };
     return { kind: 'empty', text: `Không có HĐ mới · ${when}` };
   }
   return null;
@@ -817,6 +817,10 @@ $('account-hint').textContent = isSelectingNew
   $('export-excel').disabled = busy || !state.total || !state.selected;
   const stats = state.stats;
   $('stats').textContent = stats ? `Tổng ${stats.total} · đã có sẵn ${stats.existed} · đưa vào hàng tải ${stats.queued} · đã tải ${stats.downloaded} · bỏ qua ${stats.skipped} · lỗi ${stats.failed}${stats.retrying ? ` · đang thử lại ${stats.retrying}` : ''}` : '';
+  if (state.directions?.length) {
+    const labels = { pending: 'chờ', idle: 'chờ', completed: 'xong', ready: 'đã tra cứu', partial: 'chưa hoàn tất', paused: 'đã ngưng', auth_required: 'cần đăng nhập', searching: 'đang tra cứu', downloading: 'đang tải', failed: 'lỗi' };
+    $('stats').textContent += ' · ' + state.directions.map(one => `${one.direction === 'purchase' ? 'Mua vào' : 'Bán ra'}: ${one.done}/${one.total} (${labels[one.state] || 'chưa xác định'})`).join(' · ');
+  }
   // Lượt tra cứu chưa vào giai đoạn tải thì máy chủ chưa có state.stats (core.js chỉ tạo j.stats khi
   // bắt đầu tải) — lúc đó lấy tạm tổng/lỗi của state; "đã tải" và "đã có sẵn" chắc chắn = 0.
   paintStatBreakdown(stats || { total: state.total || 0, downloaded: 0, existed: 0, failed: state.failed || 0 });
@@ -1473,7 +1477,7 @@ $('export-excel').onclick = async () => {
     const result = await work('/api/export-excel', {});
     if (!result) return;
     notice(`Đã xuất Excel theo mẫu MISA: ${result.rows} dòng × ${result.columns} cột — ${result.file}`, [
-      { label: 'Mở file Excel', url: '/api/open-file', body: { path: result.file }, keep: true },
+      ...(result.files || [result.file]).map((file, i) => ({ label: result.files ? `Mở Excel ${i + 1}` : 'Mở file Excel', url: '/api/open-file', body: { path: file }, keep: true })),
       { label: 'Mở thư mục', url: '/api/open-folder', body: {}, keep: true }
     ]);
   }

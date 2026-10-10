@@ -46,11 +46,11 @@ test('server: endpoint thủ công chạy ĐÚNG engine của MST được yêu 
   const search = server.slice(server.indexOf("url.pathname === '/api/search'"), server.indexOf("url.pathname === '/api/stream'"));
   assert.ok(search.includes('const input = await readBody(req);'), 'phải đọc body để lấy mst');
   assert.ok(search.includes('const target = ensureEngineFor(input.mst);'), 'phải chọn engine theo mst');
-  assert.ok(search.includes('await target.search(input, output)'), 'phải chạy trên engine của MST đó');
+  assert.ok(search.includes('await target.search(input, folder)'), 'phải chạy trên engine của MST đó với thư mục đã cố định');
   assert.ok(!search.includes('await engine.search('), 'không được dùng engine toàn cục nữa');
   const stream = server.slice(server.indexOf("url.pathname === '/api/stream'"), server.indexOf("url.pathname === '/api/export-excel'"));
   assert.ok(stream.includes('const target = ensureEngineFor(input.mst);'), 'tải cuốn chiếu cũng phải theo mst');
-  assert.ok(stream.includes('await target.stream(requested, output)'), 'phải chạy trên engine của MST đó');
+  assert.ok(stream.includes('await target.stream(requested, folder)'), 'phải chạy trên engine của MST đó với thư mục đã cố định');
   for (const name of ['/api/download', '/api/resume', '/api/export-excel']) {
     assert.ok(server.includes(`url.pathname === '${name}'`), `thiếu ${name}`);
   }
@@ -63,7 +63,7 @@ test('server: endpoint thủ công chạy ĐÚNG engine của MST được yêu 
   // Ba việc của nút: dừng / chạy tiếp lượt dở / chạy lượt mới.
   assert.ok(download.includes('isResumableJob(currentJob)'), 'phải nhận ra lượt còn dở để chạy tiếp');
   assert.ok(download.includes('await target.resume(true)'), 'nhánh chạy tiếp phải resume');
-  assert.ok(download.includes('await target.stream(requested, output)'), 'nhánh chạy mới phải stream');
+  assert.ok(download.includes('await target.stream(requested, folder)'), 'nhánh chạy mới phải stream với thư mục cố định');
   assert.ok(!download.includes('await engine.stream('), 'không được dùng engine toàn cục');
   assert.equal((server.match(/const target = engineOf\(String\(\(await readBody\(req\)\)\.mst/g) || []).length, 2, 'resume/export-excel đều phải nhận mst');
 });

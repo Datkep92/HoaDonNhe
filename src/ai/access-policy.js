@@ -20,7 +20,7 @@ function createAccessPolicy({ checkLicense, requestApproval, permissions }) {
       if (tool.name.startsWith('js.') && !FLAGS.generated_js_enabled || tool.name.startsWith('python.') || tool.name === 'cloud.shell') throw Object.assign(new Error('Capability chưa được bật theo policy local-first.'), { code: 'SECURITY_POLICY_DENIED' });
       const disabled = { DB_WRITE: !FLAGS.db_write_enabled, DB_DISCOVER: !FLAGS.db_discovery_enabled, COMMAND_EXECUTE: !FLAGS.command_execution_enabled, EXTERNAL_SEND: !FLAGS.external_send_enabled, EXTERNAL_UPLOAD: !FLAGS.external_send_enabled, DESKTOP_CONTROL: !FLAGS.desktop_control_enabled, SECRET_READ: true, SYSTEM_CHANGE: true, ADMIN_ELEVATION: true };
       if (!FLAGS.ai_agent_enabled || tool.requiredPermissions.some(permission => disabled[permission])) throw Object.assign(new Error('Capability chưa được phép theo security policy.'), { code: 'SECURITY_POLICY_DENIED' });
-      if (!['READ_ONLY', 'CREATE_NEW'].includes(tool.riskClass)) {
+      if (!['READ_ONLY', 'CREATE_NEW'].includes(tool.riskClass) || context.forceOnce && tool.sideEffect !== 'NONE') {
         if (!requestApproval || !permissions) throw Object.assign(new Error('Hành động cần phê duyệt trước khi thực thi.'), { code: 'PERMISSION_REQUIRED' });
         const evidence = await requestApproval(tool, args, context);
         await license(tool.requiredEntitlement);

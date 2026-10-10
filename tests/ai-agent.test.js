@@ -50,8 +50,8 @@ test('migrates saved web modes without losing configured API providers, history 
     const service = createAiService({ dataDir: f.dir, secrets: f.secrets, checkLicense: async () => ({ status: 'Active' }), licenseSignature: () => 'active' });
     let result;
     await service.handle({ method: 'GET' }, {}, new URL('http://localhost/api/ai/providers'), null, (_, status, value) => { result = value.value; });
-    assert.equal(result.active, 'support'); assert.deepEqual(result.providers.map(p => p.id), ['agent', 'own']);
-    assert.equal(result.providers[1].hasKey, true); assert.equal(JSON.stringify(result).includes('secret-key'), false);
+    assert.equal(result.active, 'support'); assert.deepEqual(result.providers.map(p => p.id), ['basic', 'agent', 'own']);
+    assert.equal(result.providers.find(p => p.id === 'own').hasKey, true); assert.equal(JSON.stringify(result).includes('secret-key'), false);
     assert.equal(fs.readFileSync(path.join(f.dir, 'ai-providers.json'), 'utf8').includes('web-old'), false);
     await assert.rejects(service.handle({ method: 'POST' }, {}, new URL('http://localhost/api/ai/providers'), async () => ({ provider: { id: 'x', label: 'x', type: 'web' } }), () => {}));
   } finally { f.cleanup(); }
@@ -107,7 +107,7 @@ test('structured JSON fallback and task step limit work without native tool supp
     const turn = await callAI({ config: { endpoint: 'https://example.com', apiKey: 'test-key', model: 'fixture' }, messages: [], tools: [], signal: new AbortController().signal,
       fetchImpl: async (_, options) => { calls++; if (calls === 1) return new Response('tool calling not supported', { status: 400 }); assert.equal(JSON.parse(options.body).tools, undefined); return response({ content: '{"type":"tool_call","tool":"mst.get_selected","arguments":{}}' }); } });
     assert.equal(turn.calls[0].function.name, 'mst.get_selected');
-    await assert.rejects(runAgent({ checkLicense: async () => ({ status: 'Active' }), config: { endpoint: 'https://example.com', apiKey: 'test-key', model: 'fixture' }, history: [], text: 'x', screen: {}, app: f.app, dataDir: f.dir, files: {}, emit: () => {}, signal: new AbortController().signal, fetchImpl: async () => tool('mst__get_selected', {}) }), /12 lượt/);
+    await assert.rejects(runAgent({ checkLicense: async () => ({ status: 'Active' }), config: { endpoint: 'https://example.com', apiKey: 'test-key', model: 'fixture' }, history: [], text: 'x', screen: {}, app: f.app, dataDir: f.dir, files: {}, emit: () => {}, signal: new AbortController().signal, fetchImpl: async () => tool('mst__get_selected', {}) }), /lặp lại cùng kết quả/);
   } finally { f.cleanup(); }
 });
 // Chế độ 'agent' ưu tiên đường qua Gateway (app KHÔNG cầm API key). Test này

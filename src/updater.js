@@ -262,6 +262,7 @@ function parseApplyArgs(argv) {
     next: valueOf('next'),
     pid: Number(valueOf('pid')) || 0,
     noLaunch: args.includes('--no-launch'),
+    restartHidden: args.includes('--restart-hidden'),
   };
 }
 
@@ -320,10 +321,10 @@ async function applySelfUpdate(argv, options = {}) {
     log('Đã thay binary (không mở lại theo yêu cầu).');
     return { ok: true, launched: false };
   }
-  const started = await launchFn(args.target, []);
+  const started = await launchFn(args.target, args.restartHidden ? ['--start-hidden'] : []);
   if (!started.ok) {
     const restored = await renameWithRetry(backup, args.target);
-    const retry = restored.ok ? await launchFn(args.target, []) : { ok: false };
+    const retry = restored.ok ? await launchFn(args.target, args.restartHidden ? ['--start-hidden'] : []) : { ok: false };
     log(`Mở bản mới thất bại (${started.error}). Đã khôi phục bản cũ: ${restored.ok ? 'có' : 'không'}.`);
     return { ok: false, error: `Không mở được bản mới: ${started.error}`, restored: restored.ok, relaunchedOld: !!retry.ok };
   }
@@ -349,6 +350,8 @@ class Updater {
     this.launchFn = options.launch || launchDetached;
     this.canWrite = typeof options.canWrite === 'function' ? options.canWrite : canWriteDir;
     this.now = options.now || (() => Date.now());
+    this.mandatory = options.mandatory === true;
+    this.noticeFile = options.noticeFile || '';
 
     this.state = {
       stage: 'idle', // idle | available | downloading | verifying | applying | error
@@ -364,32 +367,47 @@ class Updater {
       assetName: '',
       releaseUrl: '',
       lastCheckedAt: 0,
+      mandatory: this.mandatory,
+      notes: '',
     };
     this.plan = null;
     this.controller = null;
     this.newBinary = '';
+    if (this.noticeFile) {
+      try {
+        const cached = JSON.parse(fs.readFileSync(this.noticeFile, 'utf8'));
+        const plan = planUpdate({ tag_name: 'v' + cached.latest, assets: cached.assets }, this.currentVersion);
+        if (plan.ok) {
+          this.plan = plan;
+          Object.assign(this.state, { latest: plan.version, version: plan.version, updateAvailable: true, stage: 'available', assetName: plan.binary.name, canSelfUpdate: this.canWrite(path.dirname(this.execPath)), notes: String(cached.notes || '').slice(0, 10000), releaseUrl: cached.url || '' });
+        }
+      } catch { /* only validated release metadata can require an update */ }
+    }
   }
 
   status() { return { ...this.state }; }
 
   // Kiểm tra bản mới: chỉ khi mở app hoặc khi người dùng bấm "Kiểm tra cập nhật".
   async check(force) {
-    this.state.stage = 'idle';
-    this.state.error = '';
+    if (this.controller || this.state.stage === 'applying') return this.status();
     let result;
     try { result = await this.checkUpdate(force === true); }
     catch (error) { result = { ok: false, error: error.message || String(error) }; }
     this.state.lastCheckedAt = this.now();
+    if (!result.ok && this.plan?.ok) return this.status();
+    this.state.stage = 'idle';
+    this.state.error = '';
     this.state.current = result.current || this.currentVersion;
     this.state.latest = result.latest || '';
     this.state.updateAvailable = !!result.updateAvailable;
     this.state.releaseUrl = result.url || '';
+    this.state.notes = String(result.notes || '').slice(0, 10000);
     this.state.canSelfUpdate = false;
     this.plan = null;
     if (!result.ok) return this.status(); // mất mạng: im lặng
-    if (!result.updateAvailable) { this.state.version = ''; this.state.assetName = ''; return this.status(); }
+    if (!result.updateAvailable) { this.state.version = ''; this.state.assetName = ''; if (result.ok && this.noticeFile) this.remove(this.noticeFile); return this.status(); }
 
-    this.plan = planUpdate({ tag_name: `v${result.latest}`, assets: result.assets }, this.state.current);
+    this.plan = planUpdate({ tag_name: `v${result.latest}`, assets: result.assets, draft: result.draft, prerelease: result.prerelease }, this.state.current);
     if (!this.plan.ok) {
       this.state.updateAvailable = false;
       this.state.error = this.plan.error;
@@ -398,6 +416,9 @@ class Updater {
     this.state.version = this.plan.version;
     this.state.assetName = this.plan.binary.name;
     this.state.stage = 'available';
+    if (this.noticeFile) {
+      require('./core').atomicWrite(this.noticeFile, JSON.stringify({ latest: this.plan.version, assets: result.assets, notes: this.state.notes, url: this.state.releaseUrl }));
+    }
     const dir = path.dirname(this.execPath);
     this.state.canSelfUpdate = this.canWrite(dir);
     if (!this.state.canSelfUpdate) {
@@ -407,8 +428,10 @@ class Updater {
   }
 
   // Tải + xác minh. Chặn tải trùng.
-  async start() {
+  async start(beforeApply, confirmedVersion) {
+    if (this.state.stage === 'applying') return { ok: false, error: 'Đang cài bản cập nhật.' };
     if (this.controller) return { ok: false, error: 'Đang tải bản cập nhật.' };
+    if (this.mandatory && confirmedVersion !== this.state.latest) return { ok: false, error: 'Thông tin phiên bản đã thay đổi. Đọc thông báo và bấm Cập nhật lại.' };
     if (!this.plan || !this.plan.ok) return { ok: false, error: this.plan ? this.plan.error : 'Chưa có thông tin bản mới.' };
     if (!this.state.canSelfUpdate) return { ok: false, error: this.state.error || 'Không thể tự cập nhật.' };
 
@@ -459,10 +482,11 @@ class Updater {
         return { ok: false, error: this.state.error };
       }
       this.state.percent = 100;
+      if(beforeApply)await beforeApply();
 
       // Chạy helper = chính binary mới, để nó chờ app này thoát rồi thay file và mở lại.
       this.state.stage = 'applying';
-      const started = await this.launchFn(dest, ['--apply-update', '--target', this.execPath, '--next', dest, '--pid', String(process.pid)]);
+      const started = await this.launchFn(dest, ['--apply-update', '--target', this.execPath, '--next', dest, '--pid', String(process.pid), ...(this.restartHidden ? ['--restart-hidden'] : [])]);
       if (!started.ok) {
         this.state.stage = 'error';
         this.state.error = `Không khởi động được bộ cập nhật: ${started.error}`;
@@ -483,6 +507,7 @@ class Updater {
 
   // "Để sau" / huỷ: dừng tải, xoá file dở dang, giữ nguyên bản đang chạy.
   cancel() {
+    if (this.mandatory && this.state.updateAvailable) return { ...this.status(), error: 'Bản cập nhật này là bắt buộc. Bấm Cập nhật để tiếp tục.' };
     if (this.controller) { try { this.controller.abort(); } catch { /* bỏ */ } this.controller = null; }
     if (this.newBinary) { this.remove(this.newBinary); this.newBinary = ''; }
     this.state.stage = this.state.updateAvailable ? 'available' : 'idle';

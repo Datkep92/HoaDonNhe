@@ -20,6 +20,7 @@ const providerRegistry = require('./provider-registry');
 const { cleanPortalUrl } = require('./original-pdf');
 const vnDate = require('../vn-date');
 const bankStatement = require('./bank-statement');
+const invoiceState = require('./invoice-state');
 
 const SHEET = {
   buy: 'Hóa đơn mua vào',
@@ -31,8 +32,8 @@ const SHEET = {
   bank: 'Sao kê ngân hàng',
 };
 
-const INVOICE_HEADERS = ['STT', 'Ngày lập', 'Ký hiệu', 'Số hóa đơn', 'MST người bán', 'Tên người bán', 'MST người mua', 'Tên người mua', 'Tiền trước thuế', 'Tiền thuế', 'Tổng tiền', 'Cổng tra cứu NCC'];
-const INVOICE_WIDTHS = [6, 12, 16, 14, 16, 38, 16, 38, 16, 14, 16, 52];
+const INVOICE_HEADERS = ['STT', 'Ngày lập', 'Ký hiệu', 'Số hóa đơn', 'MST người bán', 'Tên người bán', 'MST người mua', 'Tên người mua', 'Tiền trước thuế', 'Tiền thuế', 'Tổng tiền', 'Cổng tra cứu NCC', 'Trạng thái hóa đơn'];
+const INVOICE_WIDTHS = [6, 12, 16, 14, 16, 38, 16, 38, 16, 14, 16, 52, 28];
 // Sheet tra cứu NCC: ĐÃ BỎ theo yêu cầu người dùng — tải Excel ra rồi lại phải tự mở
 // cổng để xem là vô ích. Việc đó nay nằm ngay ở cột "PDF gốc" của tab Danh sách: bấm là
 // xem trong app. Cột link tra cứu trong sheet hóa đơn vẫn giữ để đưa cho kế toán.
@@ -101,7 +102,7 @@ function stateClause(filters, alias = '') {
 function invoiceRows(db, direction, filters) {
   const { clause, params } = queries.invoiceWhere(db, { ...filters, direction });
   const rows = db.prepare(`SELECT ngay_lap, khms_hd, khh_hd, so_hd, mst_ban, ten_ban, mst_mua, ten_mua,
-      tien_truoc_thue, tien_thue, tong_tien, lookup_url
+      tien_truoc_thue, tien_thue, tong_tien, lookup_url, tthai
     FROM invoices ${clause}
     ORDER BY ngay_lap ASC, id ASC`).all(...params);
   return rows.map((row, index) => [
@@ -120,6 +121,7 @@ function invoiceRows(db, direction, filters) {
     // `…vnpt-invoice.com.vn;817501;`. Người dùng đưa link đó cho kế toán thì bị hỏng.
     // Ô trống nghĩa là "chưa biết cổng" — nói thẳng còn hơn đưa link không mở được.
     cleanPortalUrl(row.lookup_url) || '',
+    invoiceState.displayLabel(row.tthai),
   ]);
 }
 
@@ -312,5 +314,3 @@ function vatQuarterWorkbook(value, dir = '') {
 }
 
 module.exports = { buildWorkbook, fileName, SHEET, PARTS, INVOICE_HEADERS, PRODUCT_HEADERS, PARTNER_HEADERS, BANK_HEADERS, INVOICE_WIDTHS, PRODUCT_WIDTHS, PARTNER_WIDTHS, BANK_WIDTHS, invoiceRows, productRows, partnerRows, vatQuarterWorkbook };
-
-

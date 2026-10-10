@@ -72,7 +72,63 @@ test('real server exposes independent review API, preserves legacy routes and re
       assert.equal(await run(`document.getElementById('view-title').textContent`), 'Hồ sơ kế toán');
       await run(`document.getElementById('view-bank').click()`);
       assert.equal(await run(`document.querySelector('.bank-table-card').compareDocumentPosition(document.querySelector('.bank-visual-grid')) & Node.DOCUMENT_POSITION_FOLLOWING`), 4);
-      for (const tab of ['accounting', 'dvt']) {
+      await run(`document.getElementById('view-accounting').click()`);
+      await until(`!!window.InvoiceReplacementUI && document.getElementById('ir-new-date').value`);
+      assert.equal(await run(`!document.getElementById('pane-accounting').hidden && !!document.getElementById('ir-workbench') && document.querySelector('#pane-accounting .feature-workbench').hidden`), true);
+      const XLSX = require('../resources/xlsx.cjs');
+      function replacementFile(headers, rows) { const book=XLSX.utils.book_new();XLSX.utils.book_append_sheet(book,XLSX.utils.aoa_to_sheet([headers,...rows]),'Dữ liệu');return Buffer.from(XLSX.write(book,{type:'buffer',bookType:'xlsx'})).toString('base64'); }
+      const issued=replacementFile(['Ký hiệu','Số hóa đơn','Ngày hóa đơn','Tên hàng','Số lượng','Đơn giá','Thành tiền','Thuế suất','Tiền thuế GTGT','Tổng tiền TT','Trạng thái HĐ','Tên khách hàng','Hình thức TT'],[['1C26ABC','00000123','01/07/2026','Sữa',2,50000,100000,10,10000,110000,'Hoá đơn mới','Khách kiểm thử','TM/CK'],['1C26ABC','00000123','01/07/2026','Chưa đối chiếu',1,50000,50000,10,5000,55000,'Hoá đơn mới','Khách kiểm thử','TM/CK']]);
+      const comparison=replacementFile(['Số hóa đơn','Ngày hóa đơn','Mặt hàng','Doanh số bán chưa có thuế GTGT','Thuế suất'],[['00000123','01/07/2026','Sữa',100000,8]]);
+      await run(`document.querySelector('[data-ir-help="files"]').click()`);
+      assert.equal(await run(`document.getElementById('ir-help-dialog').open && !document.getElementById('ir-help-image').hidden`),true);
+      await run(`document.getElementById('ir-help-close').click();const transfer=new DataTransfer();for(const [name,b64] of ${JSON.stringify([['random-b.xlsx',comparison],['random-a.xlsx',issued]])})transfer.items.add(new File([Uint8Array.from(atob(b64),c=>c.charCodeAt(0))],name));document.getElementById('ir-files').files=transfer.files;document.getElementById('ir-files').dispatchEvent(new Event('change'));`);
+      await until(`!document.getElementById('ir-results').hidden && !document.getElementById('ir-export').disabled`);
+      assert.equal(await run(`document.getElementById('ir-stats').textContent.includes('1 hóa đơn lệch') && document.getElementById('ir-rows').textContent.includes('xác nhận giữ nguyên')`),true);
+      await run(`document.querySelector('[data-detail]').click()`);
+      await until(`document.getElementById('ir-detail-dialog').open`);
+      assert.equal(await run(`document.getElementById('ir-detail-lines').textContent.includes('Chưa đối chiếu') && !document.getElementById('ir-keep-label').hidden`),true);
+      await run(`document.getElementById('ir-confirm-keep').checked=true;document.getElementById('ir-detail-save').click()`);
+      await until(`!document.getElementById('ir-detail-dialog').open && document.getElementById('ir-rows').textContent.includes('Đủ điều kiện xuất')`);
+      await run(`document.getElementById('ir-select-page').checked=true;document.getElementById('ir-select-page').dispatchEvent(new Event('change'));`);
+      assert.equal(await run(`document.querySelector('[data-select]').checked`),true);
+      fs.mkdirSync(path.resolve(__dirname,'../artifacts'),{recursive:true});
+      fs.writeFileSync(path.resolve(__dirname,'../artifacts/replacement-workbench.png'),Buffer.from((await client.Page.captureScreenshot()).data,'base64'));
+      await run(`document.getElementById('ir-mapping').open=true;const el=document.querySelector('[data-field="number"]');el.dispatchEvent(new Event('change',{bubbles:true}));`);
+      await until(`document.getElementById('ir-results').hidden`);
+      await run(`document.getElementById('ir-process').click()`);
+      await until(`!document.getElementById('ir-results').hidden && !document.getElementById('ir-process').disabled`);
+      assert.equal(await run(`document.getElementById('ir-rows').textContent.includes('xác nhận giữ nguyên')`),true);
+      await run(`document.getElementById('ir-files').dispatchEvent(new Event('change'));`);
+      await until(`!document.getElementById('ir-stop').disabled`);
+      await run(`document.getElementById('ir-stop').click()`);
+      await until(`document.getElementById('ir-message').textContent.includes('Đã dừng') && document.getElementById('ir-results').hidden && document.getElementById('ir-stop').disabled`);
+      await run(`document.getElementById('ir-files').dispatchEvent(new Event('change'));`);
+      await until(`!document.getElementById('ir-results').hidden && !document.getElementById('ir-export').disabled`);
+      assert.equal(await run(`document.getElementById('ir-rows').textContent.includes('xác nhận giữ nguyên')`),true);
+      const width=await run(`({workbench:document.getElementById('ir-workbench').getBoundingClientRect().width,pane:document.getElementById('pane-accounting').getBoundingClientRect().width})`);assert.ok(Math.abs(width.workbench-width.pane)<2,'replacement workbench spans the available pane');
+      await run(`document.getElementById('ir-mapping').open=true;const column=document.querySelector('[data-field="number"]');window.__replacementNumberColumn=column.value;column.value='';column.dispatchEvent(new Event('change',{bubbles:true}));document.getElementById('ir-process').click();`);
+      await until(`document.getElementById('ir-message').textContent.includes('Thiếu cột bắt buộc') && !document.getElementById('ir-process').disabled`);
+      await run(`const column2=document.querySelector('[data-field="number"]');column2.value=window.__replacementNumberColumn;column2.dispatchEvent(new Event('change',{bubbles:true}));document.getElementById('ir-process').click();`);
+      await until(`!document.getElementById('ir-results').hidden && !document.getElementById('ir-process').disabled`);
+      const schema=await call('/api/invoice-replacement/schema');assert.equal(schema.status,200);assert.ok(schema.value.roles.ledger);
+      for(const route of ['/replacement-input-guide.svg','/replacement-mapping-guide.svg','/replacement-output-guide.svg'])assert.equal((await fetch(new URL(route,base),{headers:{Cookie:cookie}})).status,200);
+      const upload=await call('/api/invoice-replacement/upload','POST',{files:[{name:'a.xlsx',dataBase64:issued},{name:'b.xlsx',dataBase64:comparison}]},'0402335623');assert.equal(upload.status,200);
+      let replacement=upload.value;
+      for(let i=0;i<100;i++){replacement=(await call('/api/invoice-replacement/progress?jobId='+upload.value.jobId)).value;if(replacement.state!=='running')break;await new Promise(resolve=>setTimeout(resolve,100));}
+      assert.equal(replacement.state,'mapping');assert.ok(replacement.selections);
+      const mapped=await call('/api/invoice-replacement/process','POST',{jobId:replacement.jobId,revision:replacement.revision,selections:replacement.selections,save:true});assert.equal(mapped.status,200);const revision=mapped.value.revision;assert.equal(revision,replacement.revision+1);
+      assert.equal((await call('/api/invoice-replacement/confirm','POST',{jobId:replacement.jobId,revision:replacement.revision,invoiceId:'invoice-0',keep:true})).status,400);
+      const current={jobId:replacement.jobId,revision};
+      const blocked=await fetch(new URL('/api/invoice-replacement/export',base),{method:'POST',headers:{Cookie:cookie,'Content-Type':'application/json'},body:JSON.stringify({...current,ids:['invoice-0']})});assert.equal(blocked.status,400);assert.match((await blocked.json()).error,/xác nhận giữ nguyên/);
+      assert.equal((await call('/api/invoice-replacement/confirm','POST',{...current,invoiceId:'invoice-0',keep:true})).status,200);
+      const exported=await fetch(new URL('/api/invoice-replacement/export',base),{method:'POST',headers:{Cookie:cookie,'Content-Type':'application/json'},body:JSON.stringify({...current,ids:['invoice-0']})});assert.equal(exported.status,200);const exportedBook=XLSX.read(Buffer.from(await exported.arrayBuffer()),{type:'buffer'});assert.equal(exportedBook.Sheets[exportedBook.SheetNames[0]].M10.v,'00000123');
+      const invalidated=await call('/api/invoice-replacement/invalidate','POST',current);assert.equal(invalidated.value.revision,revision+1);assert.equal((await call('/api/invoice-replacement/detail?'+new URLSearchParams({...current,invoiceId:'invoice-0'}))).status,400);
+      assert.ok(fs.existsSync(path.join(runtime,'invoice-replacement-mappings.json')));
+      const profiles=JSON.parse(fs.readFileSync(path.join(runtime,'invoice-replacement-mappings.json'),'utf8'));assert.ok(Object.values(profiles).every(c=>c.fingerprint&&c.fields.number!=null));
+      const preview=await call('/api/invoice-replacement/preview','POST',{jobId:replacement.jobId,revision:revision+1,index:0,choice:{sheet:'Dữ liệu',start:0,depth:1,role:'issued'}});assert.equal(preview.status,200);assert.equal(preview.value.choice.fields.number,1);assert.equal(preview.value.saved.fields.number,1);
+      assert.equal((await call('/api/invoice-replacement/stop','POST',{jobId:replacement.jobId,revision:revision+1})).value.state,'cancelled');
+      const originalDb=require('../src/data/sqlite').openDatabase(path.join(dir,'data.db'));assert.equal(originalDb.prepare('SELECT COUNT(*) AS n FROM invoices').get().n,1);require('../src/data/sqlite').closeDatabase(originalDb);
+      for (const tab of ['dvt']) {
         await run(`document.getElementById('view-${tab}').click()`);
         assert.equal(await run(`document.querySelector('#pane-${tab} .feature-planned').textContent.includes('Đang xây dựng') && document.querySelector('#pane-${tab} .feature-workbench').hidden`), true);
       }

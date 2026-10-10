@@ -2,7 +2,9 @@
 const { callAI } = require('./openrouter-client');
 const { minimizeMessages } = require('./data-minimizer');
 function createModelProvider({ config, fetchImpl }) {
-  const request = input => callAI({ ...input, messages: minimizeMessages(input.messages, config), config, fetchImpl });
+  const request = input => config.chatTransport
+    ? config.chatTransport({ ...input, messages: minimizeMessages(input.messages, config) })
+    : callAI({ ...input, messages: minimizeMessages(input.messages, config), config, fetchImpl });
   return Object.freeze({
     capabilities: () => ({ protocol: 'openai-compatible', streaming: true, nativeTools: true, structuredOutput: true, model: config.model }),
     chat: request,

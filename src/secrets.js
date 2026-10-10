@@ -231,7 +231,10 @@ function readMany(msts, keys = KEYS) {
 }
 function write(mst, patch) {
   const raw = readRaw(mst) || { version: 1, mst };
-  for (const [key, value] of Object.entries(patch || {})) { if (value) raw[key] = protect(value); else delete raw[key]; }
+  for (const [key, value] of Object.entries(patch || {})) {
+    if (value) raw[key] = String(mst).startsWith('ai-') ? DPAPI + dpapi(PROTECT_SCRIPT, String(value)) : protect(value);
+    else delete raw[key];
+  }
   raw.version = 1; raw.mst = mst; raw.savedAt = Date.now();
   if (!KEYS.some(key => raw[key])) { drop(mst); return; }
   fs.mkdirSync(path.dirname(file(mst)), { recursive: true });
@@ -281,6 +284,12 @@ const api = {
   init,
   machineIdentity,
   read: (mst, keys) => { guard(); return read(mst, keys); },
+  readStrict: (mst, keys) => {
+    guard(); if (!String(mst).startsWith('ai-')) throw Error('Strict storage chỉ dành cho AI.');
+    const raw = readRaw(mst), values = read(mst, keys);
+    if (raw && keys.some(key => raw[key] && !raw[key].startsWith(DPAPI))) write(mst, values);
+    return values;
+  },
   readMany: (msts, keys) => { guard(); return readMany(msts, keys); },
   write: (mst, patch) => { guard(); return write(mst, patch); },
   // Ghi bất đồng bộ — đường đăng nhập nền song song dùng để không chặn event loop ~500ms/blob.

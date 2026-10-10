@@ -235,7 +235,8 @@ class SupportStore {
 
   publicDevice() {
     const { machineId, installationId, chatRoomId, firstInstallAt, registeredAt, phone, name, plan, hardwareHash: hash } = this.data.device;
-    return { machineId: machineId || '', installationId, hardwareId: installationId, chatRoomId, hardwareHash: hash || '', firstInstallAt, registeredAt, phone, name, plan: plan || '', mode: 'local-mock' };
+    const hw=require('./hardware-id').identity();
+    return { machineId: machineId || '', hardwareIdV2:hw.id, identitySource:hw.source, installationId, hardwareId: installationId, chatRoomId, hardwareHash: hash || '', firstInstallAt, registeredAt, phone, name, plan: plan || '', mode: 'local-mock' };
   }
 
   gatewayUrl() {
@@ -278,6 +279,8 @@ class SupportStore {
 
   saveLicense(value) {
     value = value || {};
+    if(value.billing && typeof value.billing.commercial === "boolean") this.data.billing=value.billing;
+    if(value.entitlement !== undefined) this.data.license.entitlement=value.entitlement;
     this.data.license.status = value.status || this.data.license.status;
     this.data.license.packageType = value.packageType || value.package || this.data.license.packageType || '';
     this.data.license.keyName = value.keyName || value.licenseKey || value.key || this.data.license.keyName || this.data.license.key || '';
@@ -467,6 +470,8 @@ class SupportStore {
     }
     return {
       status: effective.status,
+      billing: this.data.billing || {commercial:false,revision:0},
+      entitlement:this.data.license.entitlement || null,
       packageType: this.data.license.packageType || '',
       keyName: this.data.license.keyName || this.data.license.key || '',
       expiryAt: effective.expiryAt || '',
@@ -487,12 +492,14 @@ class SupportStore {
     const stored = this.data.license || {};
     const raw = String(stored.status || '').trim();
     const lower = raw.toLowerCase();
+    if(this.data.billing?.commercial === false && lower !== 'locked') return {status:'Active',expiryAt:'',trial:false};
     // /lock và giới hạn số máy là quyết định của máy chủ, máy khách không suy diễn lại.
     if (lower === 'locked' || lower === 'device_limit_exceeded') {
       return { status: raw, expiryAt: stored.expiryAt || '', trial: false };
     }
     const unlicensed = lower === 'unactivated' || lower === 'invalid' || lower === '';
     // Trial mà máy chủ không kèm hạn (thiếu First Install Time) vẫn phải có mốc hết hạn.
+    if(this.data.billing?.commercial === false && !['locked','device_limit_exceeded'].includes(lower)) return {status:'Active',expiryAt:'',trial:false};
     const expiryAt = stored.expiryAt || (unlicensed || lower === 'trial' ? this.trialExpiryAt() : '');
     if (expired(expiryAt)) return { status: 'Expired', expiryAt, trial: unlicensed };
     if (unlicensed || lower === 'trial') return { status: 'Trial', expiryAt, trial: true };
@@ -507,10 +514,12 @@ class SupportStore {
     if (st === 'locked') {
       throw new Error('Bản quyền thiết bị đã bị khóa bởi quản trị viên. Vui lòng liên hệ hỗ trợ.');
     }
+    if(this.data.billing?.commercial === false)return;
     if (st === 'device_limit_exceeded') {
       throw new Error(DEVICE_LIMIT_MESSAGE);
     }
-    if (st === 'expired') {
+    if(this.data.billing?.commercial === false && st!=='locked') return;
+    if (st === 'expired') { if(this.data.billing?.commercial === true)return; /* basic access is enforced by BillingStore */
       const activated = String(this.data.license.key || this.data.license.keyName || '').trim();
       throw new Error(activated ? 'License Key đã hết hạn. Vui lòng gia hạn hoặc nhập key mới trong Cài đặt → Bản quyền & Đăng ký.' : TRIAL_OVER_MESSAGE);
     }
@@ -530,6 +539,7 @@ class SupportStore {
       }
     }
 
+    if(this.data.billing?.commercial === false) {const current=this.publicLicense();this.blockBadLicense_(current);return current;}
     if (offline) {
       // Trạng thái xấu đã biết (khóa / hết hạn / vượt số máy) vẫn chặn, không grace.
       const known = this.publicLicense();
@@ -552,7 +562,7 @@ class SupportStore {
 
     const license = this.publicLicense();
     this.blockBadLicense_(license);
-    return license;
+    return this.data.billing?.commercial === true && String(license.status).toLowerCase()==='expired' ? {...license,status:'Active',basic:true} : license;
   }
 
   async activate(rawKey) {

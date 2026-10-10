@@ -707,6 +707,8 @@ export function createAiAdmin(deps) {
   }
   async function routerProxy(env, body, conversation='',ctx=null,origin='') {
     let c=await config(env);if(!c)return null;
+    const cntaxBasic = body.metadata?.cntax_mode === 'basic';
+    if (cntaxBasic && (body.stream !== false || body.tools?.length)) return Response.json({ error: { code: 'BASIC_PROTOCOL_INVALID' } }, { status: 400 });
     const required=requiredCapabilities(body), sticky=conversation&&c.sticky?.[conversation];
     // Cấu hình đã xác minh ĐỦ khả năng đi trước, nhưng KHÔNG loại phần còn lại khỏi chuỗi:
     // bản ghi khả năng có thể đã cũ, và vòng lặp dưới tự kiểm tra lại rồi mới dùng. Trước đây
@@ -720,11 +722,18 @@ export function createAiAdmin(deps) {
     chain=chain.map((x,i)=>({...x,priority:i})).sort((a,b)=>a.m.id===b.m.id?(b.k.route?.healthScore||70)-(a.k.route?.healthScore||70)||a.priority-b.priority:a.priority-b.priority);
     const rank=x=>2*Number(configurationId(x)===preferred)+Number(!c.routingPreference&&configurationId(x)===c.lastKnownGood?.id);
     chain.sort((a,b)=>rank(b)-rank(a));
+    if (cntaxBasic) {
+      const allowed = String(env.AI_BASIC_CONFIG_IDS || '').split(',').map(s => s.trim()).filter(Boolean).slice(0, 3);
+      // One-time admin allowlist. Without it only the saved primary is allowed.
+      const primary = c.currentConfig?.id || (chain[0] && configurationId(chain[0]));
+      const ids = allowed.length ? allowed : [primary];
+      chain = ids.map(id => chain.find(x => configurationId(x) === id)).filter(Boolean);
+    }
     let attempts=0,discoveries=0,lastError='UNKNOWN_ERROR';const visited=new Set(),unusableKeys=new Set();const routingStarted=Date.now();
     for(const x of chain) {
-      const configId=configurationId(x);if(visited.has(configId)||unusableKeys.has(x.u.id+':'+x.k.secret)||++attempts>8)continue;visited.add(configId);
+      const configId=configurationId(x);if(visited.has(configId)||unusableKeys.has(x.u.id+':'+x.k.secret)||++attempts>(cntaxBasic?3:8))continue;visited.add(configId);
       let chatLease='';
-      if(needsTest(x,required)) {
+      if(!cntaxBasic && needsTest(x,required)) {
         // Reserve capacity for Firebase/OAuth and a successful response on the free Worker limit.
         if(++discoveries>3)continue;
         const lease=id();
@@ -743,8 +752,8 @@ export function createAiAdmin(deps) {
       let result,failedAttempts=0;const requestStarted=Date.now();
       x.onStreamFailure=async error=>{await recordRoute(env,x,{...error,streamFailure:true});if(ctx)ctx.waitUntil(notifyPanel(env));};
       x.onStreamComplete=async()=>{await update(env,c=>{const y=locate(c,x.k.id);if(!y.k.route?.streamFailures||(y.k.route.lastFailure||0)>requestStarted)return {skip:true};y.k.route.streamFailures=0;y.k.health={...y.k.route};return {operation:'stream-complete'};});};
-      for(let retry=0;retry<2;retry++) {
-        result=await resolveCall(x,body,endpoint);
+      for(let retry=0;retry<(cntaxBasic?1:2);retry++) {
+        result=await resolveCall(x,body,endpoint,cntaxBasic?Math.max(1,Math.min(25000,85000-(Date.now()-routingStarted))):15000);
         if(!result.response)failedAttempts++;
         if(result.response||!['TIMEOUT','NETWORK_ERROR','PROVIDER_ERROR'].includes(result.error.errorClass))break;
       }
@@ -755,6 +764,7 @@ export function createAiAdmin(deps) {
       headers.set('X-AI-Revision',String(published.c.activeRevision||0));headers.set('X-AI-Model',x.m.name);headers.set('Cache-Control','no-store');
       return new Response(result.response.body,{status:200,headers});
     }
+    if (cntaxBasic) return Response.json({ error: { code: 'AI_BASIC_EXHAUSTED', message: 'Nguồn aichat được phép đã hết hạn mức hoặc không khả dụng.' } }, { status: 503 });
     const jobId=await enqueueRouting(env,required,c.adminThread||0);
     if(ctx)ctx.waitUntil(runRouting(env,jobId,origin));
     const job=await publicJob(env,jobId);

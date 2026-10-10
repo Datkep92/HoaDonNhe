@@ -12,8 +12,7 @@
 //   2. So sánh Code.gs mới với bản đang chạy, in ra số dòng thêm/bớt.
 //   3. PUT /content với ĐÚNG danh sách file cũ, chỉ thay thế nội dung Code.gs.
 //      Manifest giữ nguyên byte-for-byte.
-//   4. Tạo REVISION mới cho deployment đang chạy (createRevision) — GIỮ NGUYÊN
-//      URL deployment. Dùng PUT /deployments sẽ sinh URL mới và làm hỏng GAS_URL.
+//   4. Tạo version rồi cập nhật deployment đã xác minh, giữ nguyên Deployment ID/URL.
 //
 // DÙNG
 //   node tools/deploy-apps-script.cjs            # chỉ xem, không ghi
@@ -30,6 +29,8 @@ const argOf = (flag, fallback = '') => {
   return i >= 0 && process.argv[i + 1] ? process.argv[i + 1] : fallback;
 };
 const SCRIPT_ID = argOf('--script-id') || process.env.APPS_SCRIPT_ID || '';
+const DEPLOYMENT_ID = argOf('--deployment-id') || '';
+const EXPECTED_SHEET_ID = argOf('--sheet-id') || '';
 const SOURCE = path.join(__dirname, '..', 'support-gateway', 'apps-script', 'Code.gs');
 const CLASP_RC = path.join(os.homedir(), '.clasprc.json');
 
@@ -106,6 +107,15 @@ const diff = (before, after) => {
   console.log(`Script ID : ${SCRIPT_ID}`);
 
   const meta = await api('GET', `projects/${SCRIPT_ID}`);
+  if (!EXPECTED_SHEET_ID || meta.parentId !== EXPECTED_SHEET_ID) {
+    throw new Error('Cần --sheet-id khớp parentId của Script trước khi triển khai.');
+  }
+  if (!DEPLOYMENT_ID) throw new Error('Cần --deployment-id của Web App đang chạy.');
+  const deployment = await api('GET', `projects/${SCRIPT_ID}/deployments/${DEPLOYMENT_ID}`);
+  if (deployment.deploymentConfig?.scriptId !== SCRIPT_ID
+      || !deployment.entryPoints?.some(e => e.webApp?.url === `https://script.google.com/macros/s/${DEPLOYMENT_ID}/exec`)) {
+    throw new Error('Deployment không khớp Web App/Script đã xác minh.');
+  }
   const content = await api('GET', `projects/${SCRIPT_ID}/content`);
   const files = content.files || [];
 
@@ -126,7 +136,8 @@ const diff = (before, after) => {
   console.log(`  đã sao lưu   : ${path.relative(process.cwd(), backupPath)} (${files.length} file)`);
 
   // ---- So sánh ----
-  const live = files.find(f => f.name === 'Code.gs');
+  const candidates = files.filter(f => f.type === 'SERVER_JS' && ['Code','Code.gs'].includes(f.name));
+  const live = candidates.length === 1 ? candidates[0] : null;
   if (!live) {
     console.log(`\n✗ Script này KHÔNG phải script CRM — không có file "Code.gs".`);
     console.log(`  Đang thấy: ${files.map(f => f.name).join(', ')}`);
@@ -152,24 +163,27 @@ const diff = (before, after) => {
   }
 
   // ---- Ghi: thay ĐÚNG Code.gs, giữ nguyên mọi file còn lại (kể cả manifest) ----
-  const payload = files.map(f => (f.name === 'Code.gs'
+  const payload = files.map(f => (f.name === live.name
     ? { name: f.name, type: f.type, source }
     : { name: f.name, type: f.type, source: f.source }));
   await api('PUT', `projects/${SCRIPT_ID}/content`, { files: payload });
   console.log(`\n✓ Đã cập nhật nội dung script (${payload.length} file, manifest giữ nguyên).`);
 
   // ---- Tạo revision mới cho deployment đang chạy: GIỮ NGUYÊN URL ----
-  const versionNumber = Date.now();
-  const description = 'Ma may on dinh + khoa tao topic + /reset khong ket (CN Tax Tools)';
-  await api('POST', `projects/${SCRIPT_ID}/deployments/${meta.deploymentId}/revisions`, {
-    deploymentConfig: { scriptId: SCRIPT_ID, versionNumber },
-  }).catch(error => {
-    // createRevision đôi khi trả lỗi khi body phải là deploymentConfig; thử kiểu khác.
-    return api('POST', `projects/${SCRIPT_ID}/deployments/${meta.deploymentId}/revisions`, { versionNumber });
+  const description = 'CN Tax Tools: hidden billing, admin menu and usage reports';
+  const version = await api('POST', `projects/${SCRIPT_ID}/versions`, { description });
+  const updated = await api('PUT', `projects/${SCRIPT_ID}/deployments/${DEPLOYMENT_ID}`, {
+    deploymentConfig: { ...deployment.deploymentConfig, versionNumber: version.versionNumber, description },
   });
+  if (updated.deploymentId !== DEPLOYMENT_ID || updated.deploymentConfig.versionNumber !== version.versionNumber) {
+    throw new Error('Không xác nhận được deployment sau cập nhật.');
+  }
+  const readback = await api('GET', `projects/${SCRIPT_ID}/content`, undefined);
+  if (readback.files.find(f => f.name === live.name)?.source !== source) throw new Error('Mã nguồn đọc lại không khớp.');
 
   console.log(`\n✓ Đã deploy.`);
-  console.log(`  URL : https://script.google.com/macros/s/${meta.deploymentId}/exec`);
+  console.log(`  Version: ${version.versionNumber}`);
+  console.log(`  URL : https://script.google.com/macros/s/${DEPLOYMENT_ID}/exec`);
   console.log(`  (URL KHÔNG đổi — đây là revision mới của deployment cũ, không phải deployment mới.)`);
   console.log(`\nSao lưu nếu cần khôi phục: ${path.relative(process.cwd(), backupPath)}`);
 })().catch(error => { console.error('LỖI: ' + (error && error.message ? error.message : String(error))); process.exit(1); });

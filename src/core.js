@@ -70,7 +70,7 @@ function readStateFile(file) {
     const states = {};
     for (const [key, value] of Object.entries(source.states && typeof source.states === 'object' ? source.states : {})) {
       const state = String(value ?? '').trim();
-      if (key && /^[1-6]$/.test(state)) states[String(key)] = state;
+      if (key && /^\d+$/.test(state)) states[String(key)] = state;
     }
     const parties = {};
     for (const [key, value] of Object.entries(source.parties && typeof source.parties === 'object' ? source.parties : {})) {
@@ -171,7 +171,7 @@ function itemRow({ invoice: i, state, error, errorType, retryable, warning, file
     buyer: i.nmmst, buyerName: i.nmten,
     date: i.tdlap, amount: i.tgtttbso,
     tthai: i.tthai == null || i.tthai === '' ? '' : String(i.tthai),
-    stateLabel: invoiceState.label(i.tthai),
+    stateLabel: invoiceState.displayLabel(i.tthai),
     files: (files || []).slice(0, 3), state, error, errorType, retryable, warning,
   };
 }
@@ -275,8 +275,8 @@ function validateInvoiceXml(xml, invoice) {
   return { ...actual, verified: !!(actual.number || actual.symbol || actual.form) };
 }
 class Engine {
-  constructor({ store, request, identity, emit, pdf, excel, shouldSkip, autoRetry = false, log }) {
-    Object.assign(this, { store, request, identity, emit, pdf, excel, shouldSkip });
+  constructor({ store, request, identity, emit, pdf, excel, shouldSkip, onStates, autoRetry = false, log }) {
+    Object.assign(this, { store, request, identity, emit, pdf, excel, shouldSkip, onStates });
     // autoRetry: TỰ thử lại hoá đơn lỗi TẠM THỜI ngay trong lượt chạy (không bắt người dùng
     // bấm "Tải tiếp"). CHỈ bật cho luồng thủ công của nút Tải hóa đơn — Auto Sync và
     // retryFailed() giữ hành vi cũ (tự quyết định lúc nào thử lượt) để test và lịch nền
@@ -465,14 +465,18 @@ class Engine {
           const data = JSON.parse(response.toString('utf8'));
           if (!data || typeof data !== 'object' || !Array.isArray(data.datas)) throw new Error('API trả danh sách không hợp lệ; giữ tiến độ để thử lại.');
           const before = j.items.length;
+          const observedStates = new Map();
           for (const invoice of data.datas) {
             const inv = { ...invoice, family: task.family, direction: j.params.direction };
             const key = invoiceKey(inv);
             const state = String(inv.tthai ?? '');
             // Ghi lại trạng thái cho MỌI hoá đơn cổng trả về (đủ 1..6), khoá theo ĐÚNG định dạng
             // tầng dữ liệu để bộ nhập so khớp được. Thiếu trường ⇒ bỏ qua, không làm hỏng lượt tìm.
-            if (/^[1-6]$/.test(state)) {
-              try { states.set(buildInvoiceKey({ mstBan: inv.nbmst, khmshDon: inv.khmshdon, khhDon: inv.khhdon, shDon: inv.shdon }), state); }
+            if (/^\d+$/.test(state.trim())) {
+              try {
+                const stateKey = buildInvoiceKey({ mstBan: inv.nbmst, khmshDon: inv.khmshdon, khhDon: inv.khhdon, shDon: inv.shdon });
+                states.set(stateKey, state.trim()); observedStates.set(stateKey, state.trim());
+              }
               catch { /* cổng trả thiếu trường ⇒ không ghi được khoá */ }
             }
             // Ghi hai đầu mã + chiều đã tra cho MỌI hồ sơ cổng trả về (không phụ thuộc tthai có hợp lệ
@@ -490,7 +494,8 @@ class Engine {
             // kho. Chỉ lọc khi người dùng chủ động chọn đúng một trạng thái ở ô "Trạng thái hóa đơn".
             if (!keys.has(key) && (!j.params.status || state === j.params.status)) { keys.add(key); j.items.push({ invoice: inv, state: 'queued', files: [] }); order.set(key, [index, seq]); seq += 1; }
           }
-          if (states.size > statesSaved) { rememberStates(j, states, parties); statesSaved = states.size; }
+          if (observedStates.size || states.size > statesSaved) { rememberStates(j, states, parties); statesSaved = states.size; }
+          if (observedStates.size && this.onStates) await this.onStates(j, observedStates);
           const count = task.count + data.datas.length;
           const cursor = data.state === undefined || data.state === null ? '' : String(data.state);
           // Cổng thuế trả `total` KHÔNG nhất quán (đo thực tế: 295 vs 287 cho cùng một tháng;

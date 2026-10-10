@@ -334,6 +334,37 @@ const webhook = (text, headers = {}) => worker.fetch(new Request('https://gatewa
   body: JSON.stringify({ message: { chat:{id:ENV.TELEGRAM_CHAT_ID}, message_id: 1, from: { id: 1, is_bot: false }, message_thread_id: 10, date: Math.floor(Date.now() / 1000), text } }),
 }), ENV);
 
+test('topic menu opens through webhook and lock button requires bound confirmation before mutating',async()=>{
+ const storage=new Map();
+ setBackend({
+  firebase:(path,method,body)=>{if(method==='PUT'){storage.set(path,body);return body;}if(method==='DELETE'){storage.delete(path);return null;}return storage.get(path)||(path==='/telegramTopics/10.json'?{chatRoomId:ROOM}:null);},
+  gas:p=>({found:true,reply:p.text==='/check'?'KHÁCH TEST':'Đã khóa',keyName:'KEY-TEST',status:p.text==='/lock'?'Locked':'Active',expiryAt:'2030-01-01'}),
+ });
+ const menu=await webhook('/menu@TestBot');assert.equal(menu.status,200);
+ assert.ok(calls.telegram.some(c=>c.body.text?.includes('KHÁCH TEST')&&c.body.reply_markup?.inline_keyboard));
+ const button=data=>post('/v1/telegram/webhook',{callback_query:{id:'menu-cb',from:{id:1,is_bot:false},data,message:{message_id:42,message_thread_id:10,chat:{id:ENV.TELEGRAM_CHAT_ID}}}},{'X-Telegram-Bot-Api-Secret-Token':ENV.TELEGRAM_WEBHOOK_SECRET});
+ await button('billing:admin:prepare:lock');assert.equal(calls.gas.some(c=>c.text==='/lock'),false);
+ const state=storage.get('/adminMenuSessions/1/10.json');assert.equal(state.command,'/lock');
+ await button('billing:admin:confirm:'+state.token);assert.equal(calls.gas.filter(c=>c.text==='/lock').length,1);
+ assert.equal(calls.gas.find(c=>c.text==='/lock').expectedKey,'KEY-TEST');
+ assert.ok(calls.firebase.some(c=>c.method==='PUT'&&c.body?.status==='Locked'));
+ await button('billing:admin:confirm:'+state.token);assert.equal(calls.gas.filter(c=>c.text==='/lock').length,1);
+});
+test('check_sdt menu alias asks for phone and explicit alias passes the phone to CRM',async()=>{
+ setBackend({firebase:path=>path==='/telegramTopics/10.json'?{chatRoomId:ROOM}:null,gas:p=>p.action==='find_by_phone'?{devices:[]}: {reply:'OK'}});
+ await webhook('/check_sdt@TestBot');assert.ok(calls.telegram.some(c=>c.body.reply_markup?.force_reply));
+ await webhook('/check_sdt@TestBot 0987654321');assert.ok(calls.gas.some(c=>c.action==='find_by_phone'&&c.phone==='0987654321'));
+});
+test('expired menu confirmation reports a visible reason even when Telegram popup has expired',async()=>{
+ setBackend({
+  firebase:path=>path==='/telegramTopics/10.json'?{chatRoomId:ROOM}:null,
+  telegram:url=>url.endsWith('/answerCallbackQuery')?{ok:false,description:'query is too old'}:{ok:true,result:url.endsWith('/getChatMember')?{status:'administrator'}:{message_id:42}},
+ });
+ const r=await post('/v1/telegram/webhook',{callback_query:{id:'expired',from:{id:1},data:'billing:admin:confirm:old-token',message:{message_id:42,message_thread_id:10,chat:{id:ENV.TELEGRAM_CHAT_ID}}}},{'X-Telegram-Bot-Api-Secret-Token':ENV.TELEGRAM_WEBHOOK_SECRET});
+ assert.equal(r.status,200);assert.ok(calls.telegram.some(c=>c.url.endsWith('/sendMessage')&&c.body.text.includes('hết hạn')));
+ assert.equal(calls.gas.length,0);
+});
+
 // NÚT BẤM của /ai: Telegram gửi callback_query (không có `message`).
 const tap = (data, threadId = 10) => worker.fetch(new Request('https://gateway.test/v1/telegram/webhook', {
   method: 'POST',

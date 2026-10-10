@@ -175,7 +175,7 @@ test('nút Tải tiếp không được tải nhầm khoảng ngày đã đổi'
   assert.ok(/input\.confirm && isResumableJob\(currentJob\) && sameDownloadParams\(currentJob, requested\)/.test(server),
     'nhánh chạy tiếp phải đòi cả isResumableJob lẫn sameDownloadParams (lệch điều kiện tra cứu thì chạy lượt mới)');
   // validateParams phải nằm TRƯỚC nhánh (2) để nhánh đó có `requested` để so.
-  const requestedAt = server.indexOf('const requested = validateParams(input);', server.indexOf("url.pathname === '/api/download'"));
+  const requestedAt = server.indexOf('const requested = validateManualParams(input);', server.indexOf("url.pathname === '/api/download'"));
   const resumeAt = server.indexOf('isResumableJob(currentJob) && sameDownloadParams', server.indexOf("url.pathname === '/api/download'"));
   assert.ok(requestedAt > -1 && resumeAt > requestedAt, 'validateParams phải chạy trước nhánh chạy tiếp');
   // Giao diện cũng phải nói đúng việc sẽ làm: lệch điều kiện tra cứu thì hiện "Tải hóa đơn".

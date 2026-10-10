@@ -24,12 +24,17 @@ const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
  * Thử đăng nhập 1 lượt: lấy CAPTCHA → giải → authenticate.
  * @returns {Promise<{ok: boolean, token?: string, error?: string, attempt: number}>}
  */
-async function attemptOnce({ username, password, mst }) {
+async function attemptOnce({ username, password, mst }, options = {}) {
+  const stage = name => { try { options.onStage?.(name, options.attempt || 1); } catch { /* diagnostics must not change authentication */ } };
+  stage('captcha-request');
   const challenge = await tct.captcha(mst); // { key, captcha: 'data:image/svg+xml,...' }
+  stage('ocr-start');
   const text = await captchaSolver.solve(challenge.captcha, PORTAL);
   if (!text) throw Object.assign(new Error('Solver không đọc được CAPTCHA.'), { solver: true });
 
+  stage('authenticate-request');
   const token = await tct.authenticate({ username, password, ckey: challenge.key, captcha: text.toUpperCase() }, mst);
+  stage('authenticated');
   return { ok: true, token };
 }
 
@@ -50,7 +55,7 @@ async function autoLogin(input, scope = '') {
   let solverBroken = false;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
-      const result = await attemptOnce({ username, password, mst });
+      const result = await attemptOnce({ username, password, mst }, { onStage: input.onStage, attempt });
       return { ok: true, token: result.token, attempts: attempt };
     } catch (err) {
       lastError = err.message || String(err);

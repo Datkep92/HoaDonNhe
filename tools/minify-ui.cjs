@@ -26,6 +26,9 @@ const SRC = path.join(__dirname, '..', 'src');
 // (bên thứ ba), và mọi file chỉ được `require()` phía Node (tax-login.js, app-lock.js, support.js,
 // excel-worker*.js) vì chúng không đi qua đường phục vụ tĩnh.
 const TARGETS = [
+  { name: 'billing-ui.js', loader: 'js' },
+  { name: 'invoice-replacement-ui.js', loader: 'js' },
+  { name: 'invoice-replacement-ui.css', loader: 'css' },
   { name: 'renderer.js', loader: 'js' },
   { name: 'data-ui.js', loader: 'js' },
   { name: 'app-settings.js', loader: 'js' },

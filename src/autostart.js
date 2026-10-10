@@ -190,6 +190,7 @@ module.exports = {
   RUN_KEY,
   START_FLAG,
   DEFAULT_ENABLED,
+  migrateHidden:dir=>{if(!readMigration(dir)){writeChoice(dir,true);markMigration(dir);}},
   settingsFile,
   launchCommand,
   readChoice,
@@ -200,3 +201,5 @@ module.exports = {
   setEnabled,
   sync,
 };
+function readMigration(dir){try{return JSON.parse(fs.readFileSync(settingsFile(dir),'utf8')).startupHiddenV2===true;}catch{return false;}}
+function markMigration(dir){try{const f=settingsFile(dir),v=JSON.parse(fs.readFileSync(f,'utf8'));v.startupHiddenV2=true;fs.writeFileSync(f,JSON.stringify(v,null,2));}catch{}}

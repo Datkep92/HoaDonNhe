@@ -18,6 +18,9 @@ const path = require('node:path');
 // Danh sách BẮT BUỘC — rút từ package.json > pkg.assets, chỉ giữ thứ app THẬT SỰ cần lúc chạy.
 // Thiếu bất kỳ mục nào ⇒ EXE khuyết ⇒ build phải coi là thất bại.
 const REQUIRED = [
+  'features.js', 'basic-chat.js', 'execution-store.js', 'free-runtime.js',
+  'manual-download.js', 'portal-states.js',
+  'billing-ui.js', 'billing-core.js', 'billing-store.js', 'hardware-id.js', 'local-server.js',
   // Giao diện
   'index.html', 'style.css', 'login.css', 'data-view.css', 'icon.png',
   // Logo thương hiệu trong sidebar: index.html trỏ tới file riêng này (KHÔNG nhúng base64 để
@@ -40,6 +43,11 @@ const REQUIRED = [
   'bank-pdf.js', 'bank-statement.js', 'pdf.min.mjs', 'pdf.worker.min.mjs',
   // Dựng Excel (kể cả bản chạy trong worker thread)
   'xlsx.cjs', 'excel-worker.js', 'excel-worker-thread.js',
+  'invoice-replacement-ui.js', 'invoice-replacement-ui.css',
+  'invoice-replacement-misa.xls', 'replacement-input-guide.svg',
+  'replacement-mapping-guide.svg', 'replacement-output-guide.svg',
+  'invoice-replacement/worker.js', 'invoice-replacement/mapping.js',
+  'invoice-replacement/engine.js', 'invoice-replacement/export.js', 'invoice-replacement/service.js',
   // OCR CAPTCHA — chỗ đã từng thiếu và làm bản phát hành không đăng nhập tự động được
   'common.onnx', 'common.json', 'onnxruntime',
   // Tài nguyên dựng hoá đơn A4

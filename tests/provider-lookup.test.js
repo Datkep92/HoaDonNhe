@@ -253,11 +253,12 @@ test('Excel: cột cổng tra cứu + hyperlink bấm được; KHÔNG còn shee
     const XLSX = require(path.join(REPO, 'resources', 'xlsx.cjs'));
     const read = XLSX.read(book.buffer, { type: 'buffer' });
     const buy = XLSX.utils.sheet_to_json(read.Sheets['Hóa đơn mua vào'], { header: 1 });
-    assert.strictEqual(buy[0][buy[0].length - 1], 'Cổng tra cứu NCC');
-    assert.strictEqual(buy[1][buy[1].length - 1], 'https://hoadondientu.ezrx.com.vn');
+    assert.strictEqual(buy[0][buy[0].length - 2], 'Cổng tra cứu NCC');
+    assert.strictEqual(buy[1][buy[0].indexOf('Cổng tra cứu NCC')], 'https://hoadondientu.ezrx.com.vn');
 
+    const linkColumn = buy[0].indexOf('Cổng tra cứu NCC');
     const linked = Object.keys(read.Sheets['Hóa đơn mua vào'])
-      .filter(k => /^L\d+$/.test(k) && read.Sheets['Hóa đơn mua vào'][k].l);
+      .filter(k => !k.startsWith('!') && XLSX.utils.decode_cell(k).c === linkColumn && read.Sheets['Hóa đơn mua vào'][k].l);
     assert.ok(linked.length, 'ô cổng tra cứu phải bấm được');
   } finally { db.close(); fs.rmSync(dir, { recursive: true, force: true }); }
 });

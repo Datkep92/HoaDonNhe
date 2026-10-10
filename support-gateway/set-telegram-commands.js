@@ -22,6 +22,7 @@
 const https = require('node:https');
 
 const DEFAULT_LANGUAGE = 'vi';
+const LANGUAGES = ['', DEFAULT_LANGUAGE];
 
 // Danh sách lệnh của bot. `command` KHÔNG được chứa dấu "/" (Telegram tự thêm),
 // tối đa 32 ký tự, và CHỈ chữ thường + số + "_" — Telegram trả BOT_COMMAND_INVALID
@@ -30,25 +31,46 @@ const DEFAULT_LANGUAGE = 'vi';
 // thường). `description` tối đa 256 ký tự — giữ ngắn gọn vì Telegram hiện trên
 // nút hẹp, dài quá bị cắt. Thứ tự = thứ tự hiện trong menu.
 const COMMANDS = [
-  { command: 'stop', description: 'Đóng phiên admin trong topic này, cho AI hoạt động lại' },
-  { command: 'ai', description: 'Cấu hình AI của bot (menu nút bấm: xem/bật/thêm key/kiểm tra key)' },
-  { command: 'ai_add', description: 'Tạo mới hoặc sửa cấu hình AI: /ai add <tên> <url> <model>' },
-  { command: 'ai_use', description: 'Bật một cấu hình AI cho mọi máy: /ai use <tên>' },
-  { command: 'ai_del', description: 'Xoá một cấu hình AI: /ai del <tên>' },
-  { command: 'ai_url', description: 'Đổi địa chỉ API của cấu hình: /ai url <tên> <url>' },
-  { command: 'ai_model', description: 'Đổi model của cấu hình: /ai model <tên> <model>' },
-  { command: 'ai_key', description: 'Quản lý API key: /ai key <tên> add|list|del|check ...' },
-  { command: 'check', description: 'Xem thông tin bản quyền của máy trong topic này' },
-  { command: 'info', description: 'Tương tự /check — xem thông tin bản quyền của máy' },
-  { command: 'new', description: 'Cấp key mới: /new [thang|nam] [số máy]' },
-  { command: 'extend', description: 'Gia hạn thêm số ngày: /extend 30' },
-  { command: 'reset', description: 'Gỡ liên kết máy để khách kích hoạt sang máy khác' },
-  { command: 'lock', description: 'Khoá thiết bị' },
-  { command: 'unlock', description: 'Mở khoá thiết bị' },
-  { command: 'who', description: 'Trạng thái NGAY BÂY GIỜ của máy trong topic này' },
-  { command: 'online', description: 'Danh sách máy đang chạy / đã tắt app' },
-  { command: 'check_sdt', description: 'Tra cứu khách theo số điện thoại: /check_0987654321' },
-  { command: 'link', description: 'Gắn lại topic với máy: /link ROOM_WIN_XXXXXXXXXXXX' },
+  {
+    "command": "menu",
+    "description": "Quản lý khách trong Topic bằng nút bấm"
+  },
+  {
+    "command": "check",
+    "description": "Thông tin bản quyền của khách"
+  },
+  {
+    "command": "checkdulieu",
+    "description": "MST và thống kê sử dụng tháng / tổng"
+  },
+  {
+    "command": "billing",
+    "description": "Mở menu quản lý khách (tương đương /menu)"
+  },
+  {
+    "command": "online",
+    "description": "Danh sách thiết bị và tín hiệu gần nhất"
+  },
+  {
+    "command": "who",
+    "description": "Tín hiệu gần nhất của khách trong Topic"
+  },
+  {
+    "command": "check_sdt",
+    "description": "Tìm khách: /check_sdt 0987654321"
+  },
+  {
+    "command": "ai",
+    "description": "Quản lý AI bằng nút bấm"
+  },
+  {
+    "command": "stop",
+    "description": "Kết thúc hỗ trợ Admin, chuyển lại AI"
+  },
+  {
+    "command": "cancel",
+    "description": "Hủy bước nhập đang chờ"
+  }
 ];
 
 function post(token, method, payload) {
@@ -94,14 +116,18 @@ async function ask(question) {
     return;
   }
 
+  const scopes = [{ type: 'default' }, { type: 'all_group_chats' }];
+  const chatId = Number(process.env.TELEGRAM_CHAT_ID || 0);
+  if (chatId) scopes.push({ type: 'chat_administrators', chat_id: chatId });
+
   if (listOnly) {
     // Telegram lưu lệnh THEO NGÔN NGỮ. Danh sách được gán với language_code=vi
     // nên phải hỏi đúng ngôn ngữ đó; hỏi bản không ngôn ngữ sẽ ra rỗng và dễ
     // làm người vận hành tưởng chưa đăng ký gì cả.
     const rows = [];
-    for (const language of [DEFAULT_LANGUAGE, '']) {
-      const current = await post(token, 'getMyCommands', { scope: { type: 'default' }, language_code: language });
-      for (const item of current) rows.push('/' + item.command + ' — ' + item.description + '  [' + (language || 'mặc định') + ']');
+    for (const scope of scopes) for (const language of LANGUAGES) {
+      const current = await post(token, 'getMyCommands', { scope, language_code: language });
+      for (const item of current) rows.push('/' + item.command + ' — ' + item.description + '  [' + scope.type + ' / ' + (language || 'mặc định') + ']');
     }
     console.log(rows.length ? [...new Set(rows)].join('\n') : '(chưa có lệnh nào được đăng ký)');
     return;
@@ -114,23 +140,23 @@ async function ask(question) {
   // là admin — đúng chỗ admin gõ lệnh).
   // `chat_administrators` BẮT BUỘC kèm chat_id (Telegram trả lỗi "Can't find
   // field chat_id" nếu thiếu), nên chỉ gán phạm vi này khi có TELEGRAM_CHAT_ID.
-  const scopes = [{ type: 'default' }, { type: 'all_group_chats' }];
-  const chatId = Number(process.env.TELEGRAM_CHAT_ID || 0);
-  if (chatId) scopes.push({ type: 'chat_administrators', chat_id: chatId });
   let failed = 0;
-  for (const scope of scopes) {
+  for (const scope of scopes) for (const language_code of LANGUAGES) {
     try {
-      await post(token, 'setMyCommands', { scope, language_code: DEFAULT_LANGUAGE, commands: COMMANDS });
-      console.log('Đã gán ' + COMMANDS.length + ' lệnh cho phạm vi ' + scope.type + '.');
+      await post(token, 'setMyCommands', { scope, language_code, commands: COMMANDS });
+      const actual = await post(token, 'getMyCommands', { scope, language_code });
+      if (COMMANDS.some(expected => !actual.some(item => item.command === expected.command && item.description === expected.description))) throw new Error('Đọc lại danh sách chưa khớp với cấu hình.');
+      console.log('Đã gán và xác minh ' + COMMANDS.length + ' lệnh: ' + scope.type + ' / ' + (language_code || 'mặc định') + '.');
     } catch (error) {
       // Một phạm vi hỏng không được làm mất các phạm vi đã gán được, và phải nói
       // rõ phạm vi nào hỏng — im lặng thì admin tưởng đã xong xuôi.
       failed++;
-      console.error('⚠️ Phạm vi ' + scope.type + ': ' + error.message);
+      console.error('⚠️ Phạm vi ' + scope.type + ' / ' + (language_code || 'mặc định') + ': ' + error.message);
     }
   }
   if (!chatId) console.log('Bỏ qua phạm vi chat_administrators vì thiếu TELEGRAM_CHAT_ID (không bắt buộc).');
   console.log(failed ? '⚠️ Còn ' + failed + ' phạm vi chưa gán được.' : 'Xong. Mở lại nhóm Telegram (đóng/mở app) để thấy danh sách mới.');
+  if (failed) process.exitCode = 1;
 })().catch(error => {
   console.error('Không gán được danh sách lệnh: ' + error.message);
   process.exitCode = 1;

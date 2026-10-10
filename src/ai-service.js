@@ -11,6 +11,11 @@ const { createSessionStore } = require('./ai/session-store');
 const identity = require('./ai/identity');
 const { buildContext, explicitMemory } = require('./ai/context-manager');
 const { createPermissionEngine } = require('./ai/permission-engine');
+const { readFeatures } = require('./ai/features');
+const { basicChat, attachmentParts } = require('./ai/basic-chat');
+const { createRuntime } = require('./ai/free-runtime');
+const { createExecutionStore } = require('./ai/execution-store');
+const { randomUUID } = require('node:crypto');
 
 function licenseGate(check, signature, now = Date.now) {
   // Compatibility export; authoritative service owns all caching/offline policy.
@@ -20,6 +25,11 @@ function licenseGate(check, signature, now = Date.now) {
 // agentGateway() trả về null khi không có Gateway/token phiên — cấu hình AI quay
 // về key trên máy như trước. Nhận qua tham số để test không phải dựng Gateway giả.
 function createAiService({ dataDir, secrets, app, checkLicense, licenseSignature, fetchImpl = fetch, agentGateway = () => null, supportFlow=null }) {
+  const features = readFeatures(dataDir);
+  const basicProvider = { id: 'basic', label: 'AI Chat miễn phí', type: 'openai', baseURL: '', model: 'auto-free' };
+  const runtime = createRuntime(dataDir, { fetchImpl });
+  let executionStore;
+  const executions = () => executionStore || (executionStore = createExecutionStore(dataDir));
   const files = { providers: path.join(dataDir, 'ai-providers.json'), history: path.join(dataDir, 'ai-history.json') };
   function read(file, fallback) {
     try { return JSON.parse(fs.readFileSync(file, 'utf8')); }
@@ -47,7 +57,7 @@ function createAiService({ dataDir, secrets, app, checkLicense, licenseSignature
   function companyId() {
     const value = app?.context().currentUser?.selectedMst;
     if (value === '') return 'GLOBAL'; // Explicit no-company app state: knowledge/files workspace.
-    if (!/^\d{10}(?:-?\d{3})?$/.test(value || '')) throw new Error('Không xác định được phạm vi công ty.');
+    if (typeof value !== 'string' || !require('./mst-format').isValidMst(value)) throw new Error('Không xác định được phạm vi công ty.');
     return value;
   }
   const sessionOf = p => sessions().resolve(p.id, companyId());
@@ -63,8 +73,8 @@ function createAiService({ dataDir, secrets, app, checkLicense, licenseSignature
     cloudRefresh=(async()=>{try{const r=await fetchImpl(relay.configURL,{headers:{Authorization:'Bearer '+relay.token},signal:AbortSignal.timeout(5000),redirect:'error'});if(r.ok){const j=await r.json();if(j.ok){cloudConfig=j.value;cloudAt=Date.now();}}}catch{/* The relay resolves every turn even if metadata refresh is unavailable. */}finally{cloudRefresh=null;}})();
     return cloudRefresh;
   }
-  function publicConfig() { return { active: config.active, cloudConfig, identity, flags: access.flags, legacyHistoryAvailable: Object.keys(history).length > 0, companyId: app ? companyId() : null, providers: config.providers.map(p => ({ ...p,...(p.id==='agent'&&supportFlow?{routingMode:'auto'}:{}),...(p.id==='agent'&&(p.routingMode==='auto'||supportFlow)&&cloudConfig?.active?{cloudModel:cloudConfig.active.model,configRevision:cloudConfig.revision}:{}),hasKey: !!secrets.read(keyId(p.id), ['token']).token || (p.id === 'agent' && !!environment.apiKey) })) }; }
-  function provider(id) { const p = config.providers.find(p => p.id === id); if (!p) throw new Error('Không tìm thấy chế độ AI.'); return p; }
+  function publicConfig() { return { active: config.active, features, runtime: runtime.status(), cloudConfig, identity, flags: access.flags, legacyHistoryAvailable: Object.keys(history).length > 0, companyId: app ? companyId() : null, providers: [...(features.basic ? [basicProvider] : []), ...config.providers.map(p => ({ ...p,...(p.id==='agent'&&supportFlow?{routingMode:'auto'}:{}),...(p.id==='agent'&&(p.routingMode==='auto'||supportFlow)&&cloudConfig?.active?{cloudModel:cloudConfig.active.model,configRevision:cloudConfig.revision}:{}),hasKey: !!secrets.read(keyId(p.id), ['token']).token || (p.id === 'agent' && !!environment.apiKey) }))] }; }
+  function provider(id) { if (id === 'basic' && features.basic) return basicProvider; const p = config.providers.find(p => p.id === id); if (!p) throw new Error('Không tìm thấy chế độ AI.'); return p; }
   const save = (file, value) => atomicWrite(file, JSON.stringify(value, null, 2));
   function endpoint(p, suffix) { return p.baseURL.replace(/\/$/, '') + suffix; }
   function headers(p) {
@@ -77,12 +87,66 @@ function createAiService({ dataDir, secrets, app, checkLicense, licenseSignature
   const activeControllers = new Set(); let closing = false;
   const closeStores = () => { permissionStore?.close(); permissionStore = null; store?.close(); store = null; };
   const uploads = createAttachments(dataDir);
+  async function streamBasic(input, res) {
+    if (!features.basic) throw Error('AI Chat đã bị tắt bởi Admin.');
+    await gate();
+    const text = String(input.text || '').trim();
+    if (!text || text.length > 16000) throw Error('Tin nhắn không hợp lệ.');
+    if (input.companyId && input.companyId !== companyId()) throw Error('MST đã đổi. Gửi lại trong công ty hiện tại.');
+    const session = sessionOf(basicProvider), ids = input.attachments || [];
+    if (!Array.isArray(ids) || ids.length > 4) throw Error('Tối đa 4 file.');
+    const records = ids.map(id => uploads.load(id, 'basic', session.companyId));
+    if (records.reduce((n, f) => n + f.size, 0) > 24 * 1024 * 1024) throw Error('Tổng file vượt 24 MB.');
+    if (activeStreams.has('basic')) throw Error('AI Chat đang trả lời một tin nhắn khác.');
+    const record = executions().begin(input.requestId || randomUUID(), session.id, { mode: 'basic', text, ids });
+    res.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-store' });
+    const emit = value => { if (!res.destroyed) res.write('data: ' + JSON.stringify(value) + '\n\n'); };
+    if (record.state === 'completed') { emit({ delta: record.answer }); emit({ done: true, requestId: record.id }); res.end(); return true; }
+    const controller = new AbortController(), abort = () => controller.abort();
+    activeStreams.add('basic'); activeControllers.add(controller); res.on('close', abort);
+    const history = sessions().history(session, 80);
+    if (!record.userSaved) { sessions().append(session, { role: 'user', content: text, attachments: records.map(uploads.publicRecord) }); record.userSaved = true; executions().finish(record, 'running'); }
+    try {
+      emit({ status: 'AI Chat đang đọc yêu cầu…' });
+      const result = await basicChat({ relay: agentGateway(), sessionId: session.id, history, text,
+        parts: await attachmentParts(uploads, records, controller.signal), signal: controller.signal, fetchImpl, transport: runtime.chat });
+      await gate(); controller.signal.throwIfAborted();
+      if (companyId() !== session.companyId) throw Error('MST đã đổi trong khi xử lý.');
+      executions().finish(record, 'completed', result.answer);
+      sessions().append(session, { role: 'assistant', content: result.answer });
+      emit({ delta: result.answer }); emit({ done: true, requestId: record.id, sessionId: session.id, companyId: session.companyId, cloudModel: result.model });
+    } catch (error) { executions().finish(record, controller.signal.aborted ? 'cancelled' : 'failed'); emit({ error: controller.signal.aborted ? 'Đã dừng AI Chat.' : error.message }); }
+    finally { res.off('close', abort); controller.abort(); activeStreams.delete('basic'); activeControllers.delete(controller); res.end(); if (closing && !activeControllers.size) closeStores(); }
+    return true;
+  }
   async function handle(req, res, url, readBody, reply) {
     if (!url.pathname.startsWith('/api/ai/')) return false;
     if (closing) throw new Error('AI đang đóng; yêu cầu chưa bắt đầu sẽ không chạy.');
+    if (url.pathname === '/api/ai/requests' && req.method === 'GET') {
+      await gate(); const p = provider(url.searchParams.get('id')); reply(res, 200, { ok: true, value: executions().list(sessionOf(p).id) }); return true;
+    }
+    if (url.pathname === '/api/ai/runtime' && req.method === 'GET') { await gate(); reply(res, 200, { ok: true, value: runtime.status() }); return true; }
+    if (url.pathname === '/api/ai/runtime' && req.method === 'POST') {
+      await gate(); if (!features.agent) throw Error('Agent đã bị tắt bởi Admin.');
+      const input = await readBody(req);
+      if (input.action === 'install') { void runtime.install().catch(() => {}); }
+      else if (input.action === 'cancel') runtime.cancelInstall();
+      else throw Error('Thao tác thành phần không hợp lệ.');
+      reply(res, 200, { ok: true, value: runtime.status() }); return true;
+    }
+    if (url.pathname === '/api/ai/stream' && req.method === 'POST') {
+      if (!supportFlow) await gate();
+      req.unifiedBody = await readBody(req);
+      if (req.unifiedBody.mode === 'basic') return streamBasic(req.unifiedBody, res);
+      if (req.unifiedBody.mode === 'agent') {
+        if (!features.agent || !runtime.status().installed) throw Error('Agent đã bị tắt bởi Admin.');
+        if (!/^[a-f0-9-]{36}$/.test(req.unifiedBody.requestId || '')) throw Error('Thiếu request ID của Agent.');
+        req.unifiedBody.unified = false;
+      } else if (req.unifiedBody.mode) throw Error('Chế độ chat không hợp lệ.');
+    }
     // Human support remains accessible when the license has expired.
     if(url.pathname==='/api/ai/stream'&&req.method==='POST'&&supportFlow) {
-      const input=await readBody(req);
+      const input=req.unifiedBody || await readBody(req);
       if(input.unified===true) {
         input.id='agent';
         const text=String(input.text||'').trim();if(!text||text.length>16000)throw Error('Tin nhắn không hợp lệ.');
@@ -139,7 +203,7 @@ function createAiService({ dataDir, secrets, app, checkLicense, licenseSignature
     else if (url.pathname === '/api/ai/providers' && req.method === 'POST') {
       if (input.action === 'active') {
         if (input.id !== 'support') provider(input.id);
-        config.active = input.id;
+        if (input.id !== 'basic') config.active = input.id;
       } else if (input.action === 'delete') {
         provider(input.id);
         if (input.id === 'agent') throw new Error('AI Agent là chế độ tích hợp; có thể sửa cấu hình hoặc xoá key.');
@@ -150,6 +214,7 @@ function createAiService({ dataDir, secrets, app, checkLicense, licenseSignature
         if (config.active === input.id) config.active = 'support';
       } else {
         const p = providers.normalizeProvider(input.provider);
+        if (p.id === 'basic') throw Error('AI Chat được cấu hình trên máy chủ.');
         if (p.id === 'agent') { p.label = identity.agentName; if (p.type !== 'openai') throw new Error('CNTaxTools dùng API tương thích OpenAI.'); }
         if (activeStreams.has(p.id)) throw new Error('Dừng trả lời trước khi sửa chế độ.');
         if (input.apiKey !== undefined && (typeof input.apiKey !== 'string' || input.apiKey.length > 4096 || /[\r\n\x00-\x1f\x7f]/.test(input.apiKey))) throw new Error('API key không hợp lệ.');
@@ -203,6 +268,7 @@ function createAiService({ dataDir, secrets, app, checkLicense, licenseSignature
       fs.createReadStream(filePath).on('error', () => res.destroy()).pipe(res);
     } else if (url.pathname === '/api/ai/stream' && req.method === 'POST') {
       const savedProvider=provider(input.id),p=input.unified===true?{...savedProvider,routingMode:'auto'}:savedProvider;
+      if (p.id === 'basic') throw Error('AI Chat chỉ hỗ trợ chế độ basic.');
       if (input.companyId && input.companyId !== companyId()) throw new Error('MST đã đổi; tin nhắn chờ không được chuyển sang công ty khác.');
       const session = sessionOf(p), turnHistory = sessions().history(session, 80);
       const text = String(input.text || '').trim();
@@ -215,6 +281,11 @@ function createAiService({ dataDir, secrets, app, checkLicense, licenseSignature
       if (attachments.reduce((n, f) => n + f.size, 0) > 24 * 1024 * 1024) throw new Error('Tổng file trong ngữ cảnh vượt 24 MB. Mở Chat mới hoặc chọn file nhỏ hơn.');
       const options = { web: input.options?.web === true, python: input.options?.python === true };
       if (activeStreams.has(p.id)) throw new Error('AI đang trả lời một tin nhắn khác.');
+      const execution = input.mode === 'agent' ? { store: executions(), record: executions().begin(input.requestId, session.id, { mode: 'agent', text, ids, options: input.options || {}, screen: input.screen || {} }) } : null;
+      if (execution?.record.state === 'completed') {
+        res.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8' });
+        res.end('data: ' + JSON.stringify({ delta: execution.record.answer }) + '\n\ndata: ' + JSON.stringify({ done: true, requestId: input.requestId }) + '\n\n'); return true;
+      }
       const controller = new AbortController();
       const abort = () => controller.abort();
       res.on('close', abort);
@@ -223,9 +294,12 @@ function createAiService({ dataDir, secrets, app, checkLicense, licenseSignature
       activeStreams.add(p.id);
       activeControllers.add(controller);
       const userMessage = { role: 'user', content: text, attachments: currentAttachments.map(uploads.publicRecord) };
-      sessions().append(session, userMessage);
+      if (!execution?.record.userSaved) {
+        sessions().append(session, userMessage);
+        if (execution) { execution.record.userSaved = true; execution.store.finish(execution.record, 'running'); }
+      }
       const jobId = sessions().startJob(session);
-      let completed = false; const turnFiles = [];
+      let completed = false; const turnFiles = execution?.record.files || [];
       try {
         const memory = explicitMemory(text);
         const memoryWrite = memory ? sessions().remember(session, memory) : null;
@@ -236,20 +310,21 @@ function createAiService({ dataDir, secrets, app, checkLicense, licenseSignature
           memories: query => sessions().memories(session, query, 5).map(row => ({ ...row, content: row.content.slice(0, 1000) })),
           reference: name => { const value = sessions().references(session)[name]; if (!value) throw Object.assign(new Error('Chưa có tham chiếu này trong công ty hiện tại.'), { code: 'FILE_NOT_FOUND' }); return value; },
         };
-        const token = secrets.read(keyId(p.id), ['token']).token;
+        const token = (input.mode === 'agent' && secrets.readStrict ? secrets.readStrict(keyId(p.id), ['token']) : secrets.read(keyId(p.id), ['token'])).token;
         // Ưu tiên đường qua Gateway cho chế độ 'agent': Gateway giữ url/model/key và
         // xoay key khi hết hạn mức, nên key không nằm trên máy khách và admin đổi
         // cấu hình được bằng lệnh Telegram mà không phải sửa máy từng máy. Chỉ khi
         // không có Gateway (chạy local-mock / mất mạng) mới rơi về key trên máy.
-        const relay = p.id === 'agent' && p.routingMode==='auto' ? agentGateway() : null;
-        const useEnvironment = !relay && p.id === 'agent' && !token && !!environment.apiKey;
-        const aiConfig = relay
+        const runtimeMode = input.mode === 'agent' && p.id === 'agent' && p.routingMode === 'auto';
+        const relay = !runtimeMode && p.id === 'agent' && p.routingMode==='auto' ? agentGateway() : null;
+        const useEnvironment = input.mode !== 'agent' && !relay && p.id === 'agent' && !token && !!environment.apiKey;
+        const aiConfig = runtimeMode ? { endpoint: 'http://127.0.0.1/disabled-cloud', model: 'Auto Free', apiKey: 'runtime-local', publicFree: true, chatTransport: runtime.chat } : relay
           // Shared AUTO uses basic chat; local JSON tools do not require native tool/stream discovery.
           ? { endpoint: relay.baseURL, model: p.model, apiKey: relay.token, viaGateway: true,
               stream: false,
               nativeTools: false }
           : useEnvironment ? environment : { endpoint: endpoint(p, '/chat/completions'), model: p.model, apiKey: token || (p.type === 'local' ? 'ollama' : '') };
-        if(p.id==='agent'&&p.routingMode==='auto'&&!relay)throw new Error('Chưa kết nối Cloudflare. Kiểm tra đăng ký/bản quyền hoặc chọn MANUAL.');
+        if(p.id==='agent'&&p.routingMode==='auto'&&!relay&&!runtimeMode)throw new Error('Chưa kết nối Cloudflare. Kiểm tra đăng ký/bản quyền hoặc chọn MANUAL.');
         if(relay){aiConfig.conversationId=session.id;aiConfig.onGatewayConfig=value=>{cloudConfig={revision:value.revision,active:{...(cloudConfig?.active||{}),model:value.model}};cloudAt=Date.now();};}
         if (!aiConfig.apiKey) throw new Error('Chưa cấu hình API key. Bấm Cấu hình để lưu key cho AI Agent.');
         if (!app) throw new Error('Dịch vụ ứng dụng chưa sẵn sàng cho AI Agent.');
@@ -259,10 +334,10 @@ function createAiService({ dataDir, secrets, app, checkLicense, licenseSignature
         for (const key of ['from', 'to', 'direction']) if (typeof input.screen?.filters?.[key] === 'string' && input.screen.filters[key].length <= 20) screen.filters[key] = input.screen.filters[key];
         let streamed = false;
         const turnLicense=async()=>{const license=await checkLicense();if(input.supportTurn)await supportFlow.aiAllowed();controller.signal.throwIfAborted();return license;};
-        const answer = await runAgent({ config: aiConfig, history: turnHistory, text, screen, app, dataDir, files: exported, signal: controller.signal, fetchImpl, attachments, attachmentParts: uploads.parts(attachments), options, checkLicense:turnLicense, session, contextBundle, contextTools,
+        const answer = await runAgent({ config: aiConfig, history: turnHistory, text, screen, app, dataDir, files: exported, signal: controller.signal, fetchImpl, attachments, attachmentParts: uploads.parts(attachments), options, checkLicense:turnLicense, session, contextBundle, contextTools, execution,
           // Cho tool PDF đọc được bytes GỐC của file đính kèm + lần về bản gốc khi gặp bản dẫn xuất (.pdf.txt).
           attachmentFiles: { bytes: record => uploads.bytes(record), source: record => uploads.sourceRecord(record) },
-          permissionContext: () => permissionContext(session), permissions: { consume: (...args) => permissionEngine().consume(...args) },
+          permissionContext: () => ({ ...permissionContext(session), ...(execution ? { forceOnce: true } : {}) }), permissions: { consume: (...args) => permissionEngine().consume(...args) },
           requestApproval: async (tool, args, context) => {
             sessions().updateJob(jobId, 'waiting_approval', tool.name);
             emit({ status: 'Đang chờ bạn phê duyệt…' });
@@ -273,18 +348,20 @@ function createAiService({ dataDir, secrets, app, checkLicense, licenseSignature
             if (value.delta) streamed = true;
             if (value.reset) streamed = false;
             if (value.status) sessions().updateJob(jobId, 'running', value.status);
-            if (value.file) { value.file.companyId = session.companyId; exported[value.file.fileId].companyId = session.companyId; exported[value.file.fileId].verified = true; save(exportFile, exported); turnFiles.push(value.file); }
+            if (value.file) { value.file.companyId = session.companyId; exported[value.file.fileId].companyId = session.companyId; exported[value.file.fileId].verified = true; save(exportFile, exported); turnFiles.push(value.file); if (execution) { execution.record.files = turnFiles; execution.store.finish(execution.record, 'running'); } }
             emit(value);
           } });
         controller.signal.throwIfAborted();
         if(input.supportTurn){const posted=await supportFlow.completeUnified(input.supportTurn.id,input.supportTurn.control.revision,answer);if(!posted?.accepted)throw Error('Admin đã tiếp quản. AI tạm dừng.');}
         sessions().append(session, { role: 'assistant', content: answer, files: turnFiles });
+        if (execution) execution.store.finish(execution.record, 'completed', answer);
         emit(streamed ? { replace: answer } : { delta: answer });
         sessions().updateJob(jobId, 'completed'); completed = true; emit({ done: true, ...(relay?{configRevision:cloudConfig?.revision,cloudModel:cloudConfig?.active?.model}:{}),sessionId: session.id, companyId: session.companyId, selectedCompanyId: companyId(), jobId }); res.end();
       } catch (error) {
+        if (execution) execution.store.finish(execution.record, controller.signal.aborted ? 'cancelled' : error.code === 'AGENT_CONTINUATION_REQUIRED' ? 'paused' : 'failed');
         sessions().append(session, { role: 'assistant', content: 'Không hoàn tất: ' + (controller.signal.aborted ? 'Tác vụ đã dừng.' : error.message), files: turnFiles });
         if (!res.headersSent) throw error;
-        if (!res.destroyed) { res.write('data: ' + JSON.stringify({ error: controller.signal.aborted ? 'Tác vụ AI đã dừng hoặc admin đã tiếp quản.' : error.message }) + '\n\n'); res.end(); }
+        if (!res.destroyed) { res.write('data: ' + JSON.stringify({ error: controller.signal.aborted ? 'Tác vụ AI đã dừng hoặc admin đã tiếp quản.' : error.message, code: error.code, resumable: !!execution?.record.checkpoint, requestId: execution?.record.id }) + '\n\n'); res.end(); }
       } finally {
         if (!completed) sessions().updateJob(jobId, controller.signal.aborted ? 'cancelled' : 'failed');
         controller.abort(); clearTimeout(timer); res.off('close', abort); activeStreams.delete(p.id);
@@ -293,6 +370,6 @@ function createAiService({ dataDir, secrets, app, checkLicense, licenseSignature
     } else reply(res, 404, { ok: false, error: 'Không có chức năng AI này.' });
     return true;
   }
-  return { handle, pauseForAdmin() { for(const controller of activeControllers)controller.abort(); }, close() { closing = true; for (const controller of activeControllers) controller.abort(); permissionStore?.close(); if (!activeControllers.size) closeStores(); } };
+  return { handle, pauseForAdmin() { for(const controller of activeControllers)controller.abort(); }, close() { closing = true; runtime.close(); for (const controller of activeControllers) controller.abort(); permissionStore?.close(); if (!activeControllers.size) closeStores(); } };
 }
 module.exports = { createAiService, licenseGate };

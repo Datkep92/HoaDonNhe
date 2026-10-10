@@ -1,20 +1,23 @@
-# CN Tax Tools v1.1.6
+# CN Tax Tools v1.1.7
+
+**Miễn phí trong giai đoạn phát triển.**
 
 ## Có gì mới
 
-- Chrome của tab Tải tờ khai chạy ẩn khỏi taskbar; Đồng bộ Web mở cửa sổ đăng nhập, nhận phiên rồi tự ẩn lại.
-- Sửa hiển thị CAPTCHA; tra cứu MST chạy nền, lấy nhà cung cấp/người mua và chọn bằng checkbox.
-- Báo rõ khi cổng tra cứu trả HTML, giữ kết quả đã có và dừng khi lỗi lặp lại.
-- Nút Liên hệ Admin trong chat, tự đăng ký phiên hỗ trợ và giữ luồng liên hệ khi cần thử lại.
-- Xuất Excel riêng theo bộ lọc của từng tab; xuất PDF tổng hợp quý GTGT.
-- Thêm hồ sơ kiểm tra kế toán độc lập: đối chiếu tờ khai, danh sách cần xử lý, ghi chú và đóng gói chứng từ.
+- **AI hỗ trợ kế toán:** hiểu yêu cầu, tìm nguồn, phân tích và so sánh dữ liệu CNTaxTools với bảng xuất từ phần mềm kế toán. Hỗ trợ đối chiếu chênh lệch, tạo báo cáo/Excel, thực hiện các bước công việc được hỗ trợ và tiếp tục tác vụ dang dở.
+- **Ví dụ:** báo cáo theo tháng, so sánh hai kỳ, đối chiếu bảng kế toán với hóa đơn và xuất danh sách chênh lệch. AI hỏi thêm khi thiếu thông tin; cần kiểm tra số liệu và kết luận trước khi sử dụng.
+- **Bảo vệ dữ liệu gốc:** file mới nằm riêng, thao tác ghi cần xác nhận. Không yêu cầu cài thêm công cụ dòng lệnh. AI làm việc với nguồn và file được hỗ trợ, không tự kết nối trực tiếp mọi phần mềm kế toán; nguồn miễn phí có hạn mức.
+- **Ổn định hơn:** cải thiện mất kết nối khiến phải mở lại ứng dụng, giữ cổng kết nối khi khởi động lại và tránh mở nhiều phiên.
+- **Trạng thái hóa đơn:** cột cuối Excel gồm Mới, Thay thế, Điều chỉnh, Đã bị thay thế, Đã bị điều chỉnh, Đã bị hủy. Xuất đầy đủ hóa đơn theo bộ lọc; trạng thái thiếu được ghi Chưa xác định.
+- **Tải hai chiều:** chọn Mua vào + Bán ra bằng một thao tác, chạy tuần tự và giữ tiến độ riêng.
+- **Cập nhật bắt buộc từ phiên bản này:** đọc Có gì mới rồi bấm Cập nhật hoặc click bên ngoài thông báo để bắt đầu. Chờ lưu/hoàn tất công việc trước khi thay chương trình; tải lỗi giữ dữ liệu và bản cũ, cho Thử lại.
 
-## Tải và cập nhật
+## Tải và sử dụng
 
-- Cài mới: CN-Tax-Tools-Setup-v1.1.6.exe; hỗ trợ cài Windows hoặc portable.
-- Cập nhật: CN-Tax-Tools-v1.1.6.exe và file SHA-256.
-- Windows x64, có Chrome hoặc Edge. Không cần cài Node.js.
+**Cài lần đầu:** tải `CN-Tax-Tools-Setup-v1.1.7.exe` trong Assets. Chọn cài vào Windows hoặc Portable. Yêu cầu Windows 64 bit, Chrome hoặc Edge; không cần Node.js/npm/Python.
 
-## Kiểm tra và giới hạn
+**Đã cài:** cập nhật trong ứng dụng. Nếu bản cũ không cập nhật được, dùng bộ cài mới và giữ nguyên thư mục dữ liệu. Cách hiển thị thông báo bắt buộc mới chỉ có hiệu lực sau khi nâng cấp; không thể thay đổi giao diện của EXE cũ bằng ghi chú phát hành.
 
-Bản đóng gói được kiểm tra tài nguyên nhúng, giải CAPTCHA mẫu (--ocr-check) và khởi động API/giao diện (--smoke-test) trước khi phát hành. Chưa xác minh đăng nhập và tải tờ khai bằng tài khoản thuế thật.
+`CN-Tax-Tools-v1.1.7.exe` là chương trình dùng cho cập nhật. Hai file `.sha256` dùng kiểm tra tính toàn vẹn, không phải bộ cài bổ sung.
+
+Xem [danh sách chức năng và hướng dẫn](https://github.com/Datkep92/HoaDonNhe#readme). Khi cần, bấm **Liên hệ Admin** trong ứng dụng.

@@ -1,82 +1,66 @@
 'use strict';
-// Hộp thoại SELF-UPDATE. Trạng thái lấy từ /api/state (giao diện đã poll sẵn) — module này
-// không tự gọi GitHub và không tạo timer. App tải binary mới, xác minh SHA-256, rồi tự thay
-// file chương trình và khởi động lại (không chạy Setup).
 (() => {
   const $ = id => document.getElementById(id);
-  let dismissed = false;   // "Để sau" -> không mở lại trong phiên này
-  let busy = false;        // chặn bấm nhiều lần (không tạo nhiều lượt tải)
-  let lastState = window.HD_LAST_STATE || null;
-
-  const api = async (url, body) => {
-    const response = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body === undefined ? {} : body) });
-    const result = await response.json();
-    if (!result.ok) throw new Error(result.error || 'Không thực hiện được yêu cầu.');
-    return result.value;
-  };
-  const showError = text => { $('update-error').hidden = !text; $('update-error').textContent = text || ''; };
-  const megabytes = bytes => `${(Math.round(((bytes || 0) / 1048576) * 10) / 10)} MB`;
-
-  function paint(update) {
-    const latest = update.latest || update.version || '';
-    if (latest) $('update-title').textContent = `Có phiên bản mới v${latest}`;
-    $('update-current').textContent = update.current ? `v${update.current}` : '—';
-    $('update-latest').textContent = latest ? `v${latest}` : '—';
-
-    const stage = update.stage || 'idle';
-    const running = stage === 'downloading' || stage === 'verifying' || stage === 'applying';
-    $('update-progress').hidden = !running;
-    if (running) {
-      $('update-status').textContent = stage === 'verifying'
-        ? 'Đang xác minh bản cập nhật…'
-        : stage === 'applying'
-          ? 'Đang cập nhật. Ứng dụng sẽ tự khởi động lại…'
-          : 'Đang tải bản cập nhật…';
-      const percent = typeof update.percent === 'number' ? update.percent : null;
-      const bar = $('update-bar');
-      if (stage === 'downloading' && percent !== null) bar.value = percent; else bar.removeAttribute('value');
-      $('update-percent').textContent = stage === 'downloading' ? (percent === null ? megabytes(update.received) : `${percent}%`) : '';
-    }
-
-    const failed = stage === 'error';
-    const blocked = update.canSelfUpdate === false;
-    $('update-now').textContent = failed ? 'Thử lại' : 'Cập nhật ngay';
-    $('update-now').disabled = busy || running || blocked;
-    $('update-later').textContent = 'Để sau';
-    $('update-close').disabled = running;
-    $('update-note').hidden = !blocked;
-    if (blocked) $('update-note').textContent = update.error || 'Không thể tự cập nhật từ thư mục này.';
-    showError(failed ? `Không thể cập nhật.\nPhiên bản hiện tại vẫn được giữ nguyên.${update.error ? `\n(${update.error})` : ''}` : '');
+  const dialog = $('update-dialog');
+  const running = new Set(['downloading', 'verifying', 'waiting', 'applying']);
+  let lastState = window.HD_LAST_STATE || null, busy = false, localError = '';
+  const edited = new Set(), clientId = 'update-' + Date.now() + '-' + Math.random().toString(36).slice(2);
+  let protectedForms = null, bankDraft = false;
+  document.addEventListener?.('input', event => { const form = event.target.closest?.('form'); if(form) edited.add(form); });
+  function dirtyWork() {
+    return dirtyForms().length>0 || (bankDraft && !!$('bank-check-dialog')?.open);
   }
-
+  function dirtyForms() { return [...(protectedForms||edited)].filter(form => form.getClientRects().length && [...form.querySelectorAll('input,textarea,select')].some(input => input.value !== input.defaultValue && input.value !== '')); }
+  function reportWork() { return fetch('/api/update/work', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:clientId,dirty:dirtyWork(),forms:dirtyForms().map(form=>form.id)})}); }
+  function paint(update) {
+    const stage = update.stage || 'available', waiting = stage === 'waiting';
+    $('update-title').textContent = `Cập nhật CN Tax Tools v${update.latest || update.version || ''}`;
+    $('update-current').textContent = `v${update.current || ''}`;
+    $('update-latest').textContent = `v${update.latest || update.version || ''}`;
+    $('update-release-notes').textContent = update.notes || 'Bản cập nhật cải thiện ứng dụng. Vui lòng cập nhật để tiếp tục sử dụng.';
+    $('update-whats-new').hidden = waiting;
+    $('update-progress').hidden = !running.has(stage);
+    const labels = { downloading: 'Đang tải bản cập nhật…', verifying: 'Đang xác minh bản cập nhật…', waiting: 'Đã tải xong. Hoàn tất hoặc lưu công việc đang làm để tiếp tục cập nhật.', applying: 'Đang cài đặt. Ứng dụng sẽ tự mở lại…' };
+    $('update-status').textContent = (labels[stage] || '') + (waiting && update.blockers?.length ? '\n' + update.blockers.join('\n') : '');
+    if (stage === 'downloading' && typeof update.percent === 'number') $('update-bar').value = update.percent;
+    else $('update-bar').removeAttribute('value');
+    $('update-percent').textContent = stage === 'downloading' ? `${update.percent ?? Math.round((update.received || 0) / 1048576)}${update.percent == null ? ' MB' : '%'}` : '';
+    $('update-now').textContent = stage === 'error' || localError ? 'Thử lại' : 'Cập nhật';
+    $('update-now').disabled = busy || running.has(stage) || update.canSelfUpdate === false;
+    $('update-note').hidden = update.canSelfUpdate !== false;
+    $('update-note').textContent = update.canSelfUpdate === false ? (update.error || 'Không thể ghi vào thư mục ứng dụng. Tải bộ cài mới tại liên kết bên dưới.') : '';
+    $('update-manual').hidden = update.canSelfUpdate !== false;
+    const error = localError || (stage === 'error' ? `Cập nhật chưa thành công. Dữ liệu và phiên bản cũ được giữ nguyên.\n${update.error || ''}` : '');
+    $('update-error').hidden = !error; $('update-error').textContent = error;
+    if (dialog.open && dialog.classList.contains('update-waiting') !== waiting) dialog.close();
+    dialog.classList.toggle('update-waiting', waiting);
+    if (!dialog.open) { if (waiting) dialog.show(); else dialog.showModal(); }
+  }
   function onState(state) {
     lastState = state || lastState;
-    const update = (state && state.update) || null;
-    if (!update) return;
-    const dialog = $('update-dialog');
-    if (update.updateAvailable && !dismissed) {
-      if (!dialog.open) dialog.showModal();
-    }
-    if (dialog.open) paint(update);
+    if (lastState?.update?.updateAvailable) { if(!protectedForms){protectedForms=new Set(edited);bankDraft=!!$('bank-check-dialog')?.open;}paint(lastState.update);reportWork().catch(()=>{}); }
+    else if (dialog.open && !busy) dialog.close();
   }
-
+  async function startUpdate() {
+    const update = lastState?.update;
+    if (!update?.updateAvailable || busy || running.has(update.stage) || update.canSelfUpdate === false) return;
+    busy = true; localError = ''; paint(update);
+    try {
+      await reportWork();
+      const response = await fetch('/api/update/start', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ version: update.latest || update.version }) });
+      const result = await response.json();
+      if (!response.ok || !result.ok || result.value?.ok === false) throw new Error(result.error || result.value?.error || 'Không bắt đầu được cập nhật.');
+      update.stage = 'downloading';
+    } catch (error) { localError = `Cập nhật chưa thành công. Dữ liệu và phiên bản cũ được giữ nguyên.\n${error.message}`; }
+    finally { busy = false; paint(update); }
+  }
+  $('update-now').onclick = startUpdate;
+  dialog.addEventListener('cancel', event => event.preventDefault());
+  window.addEventListener('keydown', event => { if(dialog.open && event.key==='Escape'){event.preventDefault();event.stopImmediatePropagation();} }, true);
+  dialog.addEventListener('click', event => {
+    const rect = dialog.getBoundingClientRect();
+    if (event.target === dialog && (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom)) startUpdate();
+  });
   window.addEventListener('hd:state', event => onState(event.detail));
   if (lastState) onState(lastState);
-
-  $('update-close').onclick = () => { dismissed = true; $('update-dialog').close(); };
-  $('update-later').onclick = () => {
-    dismissed = true;
-    $('update-dialog').close();
-    api('/api/update/cancel').catch(() => {});
-  };
-  $('update-now').onclick = async () => {
-    if (busy) return;
-    busy = true;
-    showError('');
-    // Khoá nút và hiện trạng thái ngay, không phải chờ vòng poll 1,5 giây mới thấy phản hồi.
-    if (lastState && lastState.update) paint(lastState.update);
-    try { await api('/api/update/start'); }
-    catch (error) { showError(`Không thể cập nhật.\nPhiên bản hiện tại vẫn được giữ nguyên.\n(${error.message})`); }
-    finally { busy = false; onState(lastState); }
-  };
 })();

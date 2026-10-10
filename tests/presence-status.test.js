@@ -153,7 +153,7 @@ test('Worker và Apps Script dùng CÙNG một cửa sổ online', () => {
 
 test('/online và /who dùng CHUNG isOnlineAt, không tự tính riêng', () => {
   assert.match(bodyOf(workerSrc, 'async function onlineReport_'), /isOnlineAt\(/, '/online phải dùng hàm chung');
-  const at = workerSrc.indexOf('/^\\/who(\\s|$)/i.test(text)');
+  const at = workerSrc.indexOf('/^\\/who(?:@\\w+)?(\\s|$)/i.test(text)');
   assert.ok(at > 0, 'phải có lệnh /who');
   assert.match(workerSrc.slice(at, at + 2000), /isOnlineAt\(/, '/who phải dùng hàm chung');
 });
@@ -168,7 +168,7 @@ test('offline nghĩa là KHÔNG có tín hiệu trong cửa sổ, không phải 
 // 5. LỆNH /who
 // ---------------------------------------------------------------------------
 test('có lệnh /who hỏi trạng thái tại chỗ và sửa lại chấm trên topic', () => {
-  const at = workerSrc.indexOf('/^\\/who(\\s|$)/i.test(text)');
+  const at = workerSrc.indexOf('/^\\/who(?:@\\w+)?(\\s|$)/i.test(text)');
   assert.ok(at > 0, 'phải có lệnh /who');
   const body = workerSrc.slice(at, at + 2200);
   assert.match(body, /refreshTopicStatus_/, 'phải sửa lại chấm trên tên topic');
@@ -178,17 +178,17 @@ test('có lệnh /who hỏi trạng thái tại chỗ và sửa lại chấm tr�
 });
 
 test('/who nói rõ app đã đóng, không để admin hiểu là app lỗi', () => {
-  const at = workerSrc.indexOf('/^\\/who(\\s|$)/i.test(text)');
+  const at = workerSrc.indexOf('/^\\/who(?:@\\w+)?(\\s|$)/i.test(text)');
   assert.match(workerSrc.slice(at, at + 2400), /app đang đóng/, 'nhánh offline phải nói thẳng là app đóng');
 });
 
 test('/who hoạt động kể cả khi topic chưa gắn thiết bị', () => {
-  const at = workerSrc.indexOf('/^\\/who(\\s|$)/i.test(text)');
+  const at = workerSrc.indexOf('/^\\/who(?:@\\w+)?(\\s|$)/i.test(text)');
   assert.match(workerSrc.slice(at, at + 2400), /chưa gắn với thiết bị nào/, 'topic lạc phải báo rõ, không ném lỗi');
 });
 
 test('/who phải chạy TRƯỚC nhánh lệnh theo phòng, không bị nuốt vào admin_command', () => {
-  const who = workerSrc.indexOf('/^\\/who(\\s|$)/i.test(text)');
+  const who = workerSrc.indexOf('/^\\/who(?:@\\w+)?(\\s|$)/i.test(text)');
   const admin = workerSrc.indexOf("action: 'admin_command', chatRoomId: room");
   assert.ok(who > 0 && admin > 0);
   assert.ok(who < admin, '/who phải đứng trước, nếu không sẽ rơi vào lệnh theo phòng');

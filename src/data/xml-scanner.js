@@ -120,7 +120,7 @@ function readStates(mstDir) {
     const entries = raw && typeof raw === 'object' && raw.states && typeof raw.states === 'object' ? raw.states : {};
     for (const [key, value] of Object.entries(entries)) {
       const state = String(value ?? '').trim();
-      if (key && /^[1-6]$/.test(state)) states.set(String(key), state);
+      if (key && /^\d+$/.test(state)) states.set(String(key), state);
     }
   } catch { /* chưa có file mới */ }
   return states;
@@ -223,7 +223,8 @@ function previousFile(db, filePath) {
 // thường (đọc XML → upsert) để cập nhật tthai.
 function stateChanged(db, known, states) {
   if (!known || !known.invoice_key) return false;
-  const next = states.get(String(known.invoice_key)) || null;
+  if (!states.has(String(known.invoice_key))) return false;
+  const next = states.get(String(known.invoice_key));
   const row = findInvoiceByKey(db, known.invoice_key);
   if (!row) return false;
   return String(row.tthai ?? '') !== String(next ?? '');
@@ -261,6 +262,7 @@ function processFile({ db, mst, identifiers, filePath, folder, summary, states, 
       warnings.push('File không nằm trong thư mục Mua_vao/Ban_ra — giữ nguyên vị trí, ghi theo nội dung XML.');
     }
     const existing = findInvoiceByKey(db, record.invoiceKey);
+    if (!states.has(record.invoiceKey) && existing) record.tthai = existing.tthai;
     if (existing && known && known.invoice_key === record.invoiceKey) {
       const result = upsertInvoice(db, {
         ...record,

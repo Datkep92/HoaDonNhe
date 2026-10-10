@@ -16,6 +16,20 @@ const {
 } = require('../src/updater');
 const versionInfo = require('../src/version');
 
+test('automatic update verifies payload then waits before helper launch and preserves hidden restart', async () => {
+  const server=await assetsServer(), launches=[];
+  let release, entered;
+  const gate=new Promise(r=>{release=r;});
+  const atGate=new Promise(r=>{entered=r;});
+  try {
+    const updater=useLocalPlan(makeUpdater(server.address().port,{launch:async(f,args)=>{launches.push(args);return {ok:true,pid:1};}}),server.address().port);
+    updater.restartHidden=true;
+    const pending=updater.start(async()=>{assert.equal(updater.status().stage,'verifying');entered();await gate;});
+    await atGate;assert.equal(launches.length,0);release();
+    assert.equal((await pending).ok,true);assert.ok(launches[0].includes('--restart-hidden'));
+  } finally {release();server.close();}
+});
+
 const tempDir = prefix => fs.mkdtempSync(path.join(os.tmpdir(), prefix));
 const NEW_BYTES = Buffer.from('MZ new binary payload for self-update tests\n'.repeat(32));
 const NEW_SHA = crypto.createHash('sha256').update(NEW_BYTES).digest('hex');

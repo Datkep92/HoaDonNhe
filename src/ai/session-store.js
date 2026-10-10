@@ -39,7 +39,7 @@ function createSessionStore(dataDir) {
     }
     db.exec("PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; UPDATE jobs SET status='interrupted' WHERE status IN ('queued','running','waiting_approval')");
   } catch (error) { try { db.close(); } catch {} throw error; }
-  function company(id) { if (id !== 'GLOBAL' && !/^\d{10}(?:-?\d{3})?$/.test(id || '')) throw new Error('Thiếu phạm vi công ty hợp lệ.'); return id; }
+  function company(id) { if (typeof id !== 'string' || (id !== 'GLOBAL' && !require('../mst-format').isValidMst(id))) throw new Error('Thiếu phạm vi công ty hợp lệ.'); return id; }
   function resolve(providerId, companyId) {
     company(companyId);
     let session = db.prepare('SELECT * FROM sessions WHERE provider_id=? AND company_id=?').get(providerId, companyId);

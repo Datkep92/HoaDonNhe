@@ -90,7 +90,7 @@ test('itemsPage: MỚI NHẤT TRƯỚC, có tổng số, và cắt được theo
   assert.ok(row.date, 'dòng phải có NGÀY LẬP cho bảng kết quả');
   assert.equal(row.buyer, 'B', 'dòng phải có MST người mua');
   assert.equal(row.buyerName, 'Người mua', 'dòng phải có tên người mua');
-  assert.equal(row.stateLabel, '', 'chưa biết trạng thái ⇒ nhãn rỗng, KHÔNG bịa "Hóa đơn mới"');
+  assert.equal(row.stateLabel, 'Chưa xác định', 'chưa biết trạng thái ⇒ báo rõ, KHÔNG bịa "Hóa đơn mới"');
 });
 
 test('itemsPage: chế độ "Tải ngay" trả hoá đơn đã xong VÀ đã có sẵn, không trả cái còn chờ', t => {

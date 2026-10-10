@@ -35,6 +35,7 @@ function normalize(input) {
 }
 
 function denied(absPath) {
+  if (/(?:^|[\\/])(?:secrets|\.ssh|\.aws|\.gnupg)(?:[\\/]|$)|(?:^|[\\/])\.env(?:\.[^\\/]*)?$|[\\/](?:auth|credentials|ai-providers)\.json$|[\\/]agent[\\/]opencode(?:[\\/]|$)/i.test(absPath)) return true;
   if (/[<>"|?*\x00-\x1f]/.test(absPath)) return true;
   for (const re of DENY) if (re.test(absPath)) return true;
   const ext = path.extname(absPath).toUpperCase();
@@ -44,6 +45,7 @@ function denied(absPath) {
 function validate(absPath) {
   const p = normalize(absPath);
   if (denied(p)) throw err('Không được phép truy cập đường dẫn này.', 'ACCESS_DENIED');
+  if (fs.existsSync(p) && denied(fs.realpathSync(p))) throw err('Đích đường dẫn không được phép truy cập.', 'ACCESS_DENIED');
   return p;
 }
 
@@ -145,6 +147,7 @@ function search(root, opts = {}, signal) {
   const results = [];
   const started = Date.now();
   function walk(dir, depth) {
+    signal?.throwIfAborted?.();
     if (results.length >= maxResults || Date.now() - started > SEARCH_TIMEOUT_MS) return;
     let names;
     try { names = fs.readdirSync(dir); } catch { return; }
@@ -152,6 +155,7 @@ function search(root, opts = {}, signal) {
       if (results.length >= maxResults || Date.now() - started > SEARCH_TIMEOUT_MS) return;
       const full = path.join(dir, name);
       if (denied(full)) continue;
+      try { if (fs.lstatSync(full).isSymbolicLink() || denied(fs.realpathSync(full))) continue; } catch { continue; }
       if (name.toLowerCase().includes(query)) {
         try { results.push(statEntry(full)); } catch {}
       }
@@ -208,12 +212,14 @@ function glob(root, opts = {}, signal) {
   const matches = [];
   const rootPrefix = resolved.endsWith(path.sep) ? resolved : resolved + path.sep;
   function walk(dir, depth, rel) {
+    signal?.throwIfAborted?.();
     if (matches.length >= maxResults) return;
     let names;
     try { names = fs.readdirSync(dir); } catch { return; }
     for (const name of names) {
       if (matches.length >= maxResults) return;
       const full = path.join(dir, name);
+      try { if (fs.lstatSync(full).isSymbolicLink() || denied(fs.realpathSync(full))) continue; } catch { continue; }
       const childRel = rel ? rel + '/' + name : name;
       if (!denied(full) && re.test(childRel)) {
         try { matches.push(statEntry(full)); } catch {}

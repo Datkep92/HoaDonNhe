@@ -38,7 +38,7 @@ function device(input) {
   // trúng nữa.
   if (machineId && !ID_PATTERN.test(machineId)) throw Error('Invalid device identity.');
   if (!ID_PATTERN.test(installationId) || !ROOM_PATTERN.test(chatRoomId)) throw Error('Invalid device identity.');
-  return { machineId, installationId, hardwareId: installationId, chatRoomId };
+  return { machineId, installationId, hardwareId: installationId, hardwareIdV2: String(input.hardwareIdV2 || ''), chatRoomId };
 }
 
 // Thông tin đăng ký (gói + Họ tên + SĐT) và dấu vân tay phần cứng phải đi kèm lúc đăng
@@ -93,7 +93,9 @@ async function gas(env, payload) {
 }
 
 async function sessionValue(env, d, value) {
-  return { ...value, sessionToken: await session(env, { ...d, license: value.status || 'Unactivated' }) };
+  const state=String(value.status||'Unactivated').toLowerCase();
+  const access=value.billing && state!=='locked' && (value.billing.commercial===false || state==='expired') ? 'Active' : value.status || 'Unactivated';
+  return { ...value, sessionToken: await session(env, { ...d, license: access }) };
 }
 
 let googleToken = { value: '', expiry: 0 };
@@ -238,6 +240,7 @@ async function claimTopic_(env, room) {
   }
 
   await firebase(env, '/telegramTopics/' + created.message_thread_id, 'PUT', { chatRoomId: room, createdAt: Date.now() });
+  await telegram(env,'sendMessage',{chat_id:env.TELEGRAM_CHAT_ID,message_thread_id:created.message_thread_id,disable_notification:true,text:'QUẢN LÝ KHÁCH\nPhòng: '+room+'\nChọn thao tác bên dưới. Gõ /menu để mở lại bất kỳ lúc nào.',reply_markup:billingMenu_()}).catch(()=>{});
   return created.message_thread_id;
 }
 
@@ -362,7 +365,7 @@ async function announce(env, d, contact, value) {
   }
 
   if (value?.registered === true) {
-    const lines = ['⚡ *Thiết bị mới kết nối hệ thống*', '🆔 Mã máy: `' + plain(d.installationId) + '`'];
+    const lines = ['⚡ *Thiết bị mới kết nối hệ thống*', '🆔 Mã máy: `' + plain(d.hardwareIdV2 || d.machineId || d.installationId) + '`'];
     if (contact.phone) lines.push('📞 SĐT: `' + plain(contact.phone) + '`');
     if (contact.name) lines.push('👤 Tên: `' + plain(contact.name) + '`');
     if (contact.plan) lines.push('📦 Gói: *' + plain(contact.plan) + '*');
@@ -375,12 +378,31 @@ async function announce(env, d, contact, value) {
 async function webhook(env, request, ctx) {
   if (request.headers.get('X-Telegram-Bot-Api-Secret-Token') !== env.TELEGRAM_WEBHOOK_SECRET) return reply({ ok: false, error: 'Invalid webhook secret.' }, 403);
   const update = await request.json();
+  const cancel=update.message;
+  if(cancel?.message_thread_id&&/^\/cancel(?:@\w+)?$/i.test(String(cancel.text||'').trim())&&String(cancel.chat?.id)===String(env.TELEGRAM_CHAT_ID)){
+    const pending=await firebase(env,adminMenuPath_(cancel.from?.id,cancel.message_thread_id));
+    if(pending){
+      const member=await telegram(env,'getChatMember',{chat_id:env.TELEGRAM_CHAT_ID,user_id:cancel.from?.id});
+      if(['creator','administrator'].includes(member?.status)){await adminMenuMessage_(env,cancel,await firebase(env,'/telegramTopics/'+cancel.message_thread_id));return reply({ok:true});}
+    }
+  }
   if (env.AI_ADMIN_V2_ENABLED === '1' && await aiAdmin.handle(env, update, ctx, new URL(request.url).origin)) return reply({ ok: true });
   // NÚT BẤM của /ai: Telegram gửi callback_query, không có `message`. Xử lý
   // trước mọi thứ khác vì các nhánh dưới đều đòi có message.
   if (update.callback_query) {
     if (update.callback_query.from?.is_bot) return reply({ ok: true, ignored: true });
-    await aiCallback_(env, update.callback_query);
+    if(String(update.callback_query.data||'').startsWith('billing:')) {
+      try { await billingCallback_(env,update.callback_query); }
+      catch(error) {
+        const q=update.callback_query,reason=String(error.message||'Không xử lý được thao tác.');
+        await telegram(env,'answerCallbackQuery',{callback_query_id:q.id,text:reason.slice(0,180),show_alert:true}).catch(()=>{});
+        if(String(q.message?.chat?.id)===String(env.TELEGRAM_CHAT_ID)&&q.message?.message_thread_id){
+          const member=await telegram(env,'getChatMember',{chat_id:env.TELEGRAM_CHAT_ID,user_id:q.from?.id});
+          if(['creator','administrator'].includes(member?.status))await adminMenuSend_(env,q.message.message_thread_id,'⚠️ '+reason+'\nMở lại /menu hoặc chọn thao tác khác.');
+        }
+      }
+    }
+    else await aiCallback_(env, update.callback_query);
     return reply({ ok: true, value: { callback: String(update.callback_query.data || '') } });
   }
   const message = update.message;
@@ -391,6 +413,11 @@ async function webhook(env, request, ctx) {
   if(String(message.chat?.id)!==String(env.TELEGRAM_CHAT_ID))return reply({ok:true,ignored:true});
   const member=await telegram(env,'getChatMember',{chat_id:env.TELEGRAM_CHAT_ID,user_id:message.from?.id});
   if(!['creator','administrator'].includes(member?.status))return reply({ok:true,ignored:true});
+  if(await adminMenuMessage_(env,message,map))return reply({ok:true});
+  if(/^\/billing(?:@\w+)?(?:\s|$)/i.test(text)) {
+    await adminMenuMessage_(env,{...message,text:'/menu'},map);
+    return reply({ok:true});
+  }
   if(/^\/stop(?:@\w+)?(?:\s|$)/i.test(text)) {
     if(!map?.chatRoomId) {
       // Trước đây im lặng bỏ qua nên admin tưởng đã đóng hỗ trợ mà thực ra chưa: khách
@@ -411,7 +438,7 @@ async function webhook(env, request, ctx) {
   // CẦU NỐI GẮN LẠI: dùng khi Firebase bị xoá (mapping mất) mà topic trên Telegram còn.
   // Gõ trong chính topic đó:  /link ROOM_WIN_XXXXXXXXXXXX
   // Ghi CẢ HAI chiều nên tin user → Telegram và Telegram → user chạy lại ngay.
-  if (/^\/link(\s|$)/i.test(text)) {
+  if (/^\/link(?:@\w+)?(\s|$)/i.test(text)) {
     const room = String(text.split(/\s+/)[1] || '').trim().toUpperCase();
     let answer;
     if (!/^ROOM_WIN_[A-Z0-9]{8,40}$/.test(room)) {
@@ -428,7 +455,7 @@ async function webhook(env, request, ctx) {
   }
 
   // /online — ai đang chạy app, ai đã tắt. Lệnh toàn cục, không gắn với phòng.
-  if (/^\/online(\s|$)/i.test(text)) {
+  if (/^\/online(?:@\w+)?(\s|$)/i.test(text)) {
     const answer = await onlineReport_(env);
     await telegram(env, 'sendMessage', { chat_id: env.TELEGRAM_CHAT_ID, message_thread_id: threadId, text: answer });
     return reply({ ok: true, value: { command: '/online' } });
@@ -441,7 +468,7 @@ async function webhook(env, request, ctx) {
   // "tra cứu" nghĩa là tìm khách, nên phải chạy được từ bất kỳ topic nào, kể cả
   // topic chưa gắn máy. Đặt TRƯỚC nhánh lệnh theo phòng để /check_SDT không bị
   // nuốt vào /check; hai lệnh này khác nhau (/check = máy này, /check_SDT = tìm khách).
-  const phoneLookup = /^\/check[_\s]+(\+?[\d][\d\s.()-]{6,})$/i.exec(text);
+  const phoneLookup = /^\/(?:check_sdt(?:@\w+)?\s+|check[_\s]+)(\+?[\d][\d\s.()-]{6,})$/i.exec(text);
   if (phoneLookup) {
     const phone = phoneLookup[1].trim();
     const answer = await phoneReport_(env, phone);
@@ -453,7 +480,7 @@ async function webhook(env, request, ctx) {
 // 🟢/⚪️ trên tên topic. Cần lệnh này vì Gateway chỉ biết lúc khách "vừa gửi tín
 // hiệu"; khách đóng app thì không có ai báo, nên chấm trên tên topic có thể cũ tới
 // một cửa sổ ONLINE_WINDOW_MS. Gõ /who là admin hỏi đúng vào lúc cần.
-if (/^\/who(\s|$)/i.test(text) || /^\/trang-thai(\s|$)/i.test(text)) {
+if (/^\/who(?:@\w+)?(\s|$)/i.test(text) || /^\/trang-thai(\s|$)/i.test(text)) {
   const room = map?.chatRoomId || '';
   if (!room) {
     await telegram(env, 'sendMessage', { chat_id: env.TELEGRAM_CHAT_ID, message_thread_id: threadId, text: '⚠️ Topic này chưa gắn với thiết bị nào trong Firebase — chưa biết trạng thái khách nào.' });
@@ -494,10 +521,11 @@ if (/^\/who(\s|$)/i.test(text) || /^\/trang-thai(\s|$)/i.test(text)) {
       answer = '⚠️ Topic này chưa gắn với thiết bị nào (không có mapping trong Firebase).\nKhách chưa mở app, hoặc Topic được tạo ngoài Gateway.';
     } else {
       try {
-        const value = await gas(env, { action: 'admin_command', chatRoomId: room, command, text });
+        const value = await gas(env, { action: 'admin_command', chatRoomId: room, command, text, actor: String(message.from?.id || '') });
         // /lock, /unlock, /reset đổi trạng thái ngay trên Sheet. Ghi bản ghi nhớ
         // phía Firebase để app hỏi nhẹ (/v1/ping) nhận ra ngay.
         await cacheLicense_(env, room, value);
+        await billingRefresh_(env,value,command);
         answer = String(value?.reply || '').trim() || '⚠️ CRM không trả về nội dung.';
         // Lệnh cấp key / gia hạn: đẩy thông tin sang phòng chat của khách để khách
         // thấy ngay trong app, không phải chờ admin trao tay. Lệnh khác (/check,
@@ -887,22 +915,32 @@ async function aiProxy_(env, request, ctx) {
   if (!raw || raw.length > 2 * 1024 * 1024) throw Error('Request AI quá lớn.');
   let body;
   try { body = JSON.parse(raw); } catch { throw Error('Body AI không phải JSON hợp lệ.'); }
+  const cntaxBasic = body.metadata?.cntax_mode === 'basic';
+  if (cntaxBasic && (body.stream !== false || body.tools?.length)) return Response.json({ error: { code: 'BASIC_PROTOCOL_INVALID' } }, { status: 400 });
   if (env.AI_ADMIN_V2_ENABLED === '1') {
     const conversation = String(body.metadata?.conversation_id || '').slice(0,80);
     const managed = await aiAdmin.proxy(env, body, String(value.installationId || value.machineId || '') + ':' + conversation,ctx,new URL(request.url).origin);
     if (managed) return managed;
   }
   const config = await aiConfig_(env);
-  const chain = aiChain_(config);
+  let chain = aiChain_(config);
+  if (cntaxBasic) {
+    const aliases = String(env.AI_BASIC_PROFILE_ALIASES || '').split(',').map(s => s.trim()).filter(Boolean).slice(0, 3);
+    const allowed = aliases.length ? aliases : [chain[0]?.profile.alias];
+    chain = allowed.map(alias => chain.find(step => step.profile.alias === alias)).filter(Boolean);
+  }
   if (!chain.length) throw Error('Chưa có cấu hình AI trên máy chủ. Admin gõ /ai trong Telegram.');
   let lastError = null;
   // Đi hết chuỗi dự phòng: hết key của model này thì thử model kế tiếp CÙNG URL,
   // rồi mới sang URL sau. Model của mỗi lần thử lấy từ chính profile đó, không
   // dùng cứng model của profile đầu — nếu dùng cứng thì "chuyển model dự phòng"
   // chỉ đổi tên mà vẫn gọi model đã chết.
+  const basicStarted = Date.now();
   for (const step of chain) {
     const payload = JSON.stringify({ ...body, model: step.profile.model });
-    const response = await fetch(step.profile.baseURL + '/chat/completions', { method: 'POST', redirect: 'manual', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + step.key }, body: payload });
+    let response;
+    try { response = await fetch(step.profile.baseURL + '/chat/completions', { method: 'POST', redirect: 'manual', ...(cntaxBasic ? { signal: AbortSignal.timeout(Math.max(1, Math.min(25000, 85000 - (Date.now() - basicStarted)))) } : {}), headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + step.key }, body: payload }); }
+    catch (error) { if (!cntaxBasic) throw error; lastError = { status: 503, detail: 'Nguồn aichat không khả dụng.' }; continue; }
     if (response.ok) {
       // Chuyển thẳng stream của nhà cung cấp về app: app đọc SSE y hệt, nên logic
       // agent/model-provider cũ không phải đổi gì.
@@ -912,7 +950,7 @@ async function aiProxy_(env, request, ctx) {
     lastError = { status: response.status, detail };
     // Lỗi KHÔNG phải hết hạn mức (model sai, body sai, 500) thì đổi key/model cũng
     // không giúp — trả luôn lỗi thật cho app, đừng quay key vô ích.
-    if (!aiQuotaError_(response.status, detail)) break;
+    if (!aiQuotaError_(response.status, detail) && !(cntaxBasic && response.status >= 500)) break;
     aiKeysDown.set(step.key, Date.now() + AI_KEY_COOLDOWN_MS);
     console.log('AI key het han muc, thu tiep: ' + step.profile.alias + ' / ' + response.status);
   }
@@ -939,6 +977,7 @@ async function cacheLicense_(env, room, value) {
       status,
       expiryAt: value.expiryAt || '',
       trial: !!value.trial,
+      billing: value.billing || null, entitlement: value.entitlement || null,
       updatedAt: Date.now(),
     });
   } catch (error) {
@@ -1020,6 +1059,7 @@ async function sync_(env, request, input) {
   const d = device(input);
   const info = contact(input);
   const license = await gas(env, { action: 'register_device', ...d, ...info });
+  if(license.chatRoomId) d.chatRoomId=license.chatRoomId;
   await cacheLicense_(env, d.chatRoomId, license);
   // Đọc trạng thái cũ TRƯỚC khi ghi nhịp mới — để biết có phải sửa chấm topic hay không.
   const previous = (await firebase(env, '/devices/' + encodeURIComponent(d.chatRoomId) + '/presence')) || {};
@@ -1064,9 +1104,9 @@ function customerNotice_(command, value) {
   const key = plain(value.keyName);
   const expiry = value.expiryAt ? adminDateVN_(value.expiryAt) : '';
   // Số máy được phép dùng key này. maxDevices = 0 nghĩa là CRM không báo (key cũ).
-  const max = Number(value.maxDevices) || 0;
+  const max = Number(value.entitlement?.devices||value.maxDevices) || 0;
   const slots = max > 0 ? '💻 Số máy tối đa: ' + max + (max > 1 ? ' máy' : ' máy') + ' (đã dùng ' + (Number(value.usedSlots) || 0) + ')' : '';
-  if (/^\/new\b/i.test(command)) {
+  if (/^\/(new|newplan|approve)\b/i.test(command)) {
     const lines = [
       '🎉 Chào mừng bạn! License Key của bạn đã được cấp:',
       '',
@@ -1078,8 +1118,8 @@ function customerNotice_(command, value) {
     lines.push('Giữ mã này, không chia sẻ cho máy khác.');
     return lines.join('\n');
   }
-  if (/^\/extend\b/i.test(command)) {
-    const lines = ['✅ Bản quyền của bạn đã được gia hạn.'];
+  if (/^\/(extend|setplan)\b/i.test(command)) {
+    const lines = [command==='/setplan'?'✅ Gói bản quyền của bạn đã được cập nhật.':'✅ Bản quyền của bạn đã được gia hạn.'];
     if (expiry) lines.push('⏳ Hạn mới: ' + expiry);
     if (slots) lines.push(slots);
     lines.push('Bạn không cần làm gì thêm. Mở lại app là dùng được ngay.');
@@ -1249,7 +1289,10 @@ async function phoneReport_(env, phone) {
 }
 
 export default {
-  async scheduled(event,env,ctx) {ctx.waitUntil(aiAdmin.scheduled(env,ctx,'https://hoadon-support-gateway.linhnhaxac10.workers.dev'));},
+  async scheduled(event,env,ctx) {
+    ctx.waitUntil(aiAdmin.scheduled(env,ctx,'https://hoadon-support-gateway.linhnhaxac10.workers.dev'));
+    ctx.waitUntil(billingMaintenance_(env).catch(error=>console.log('Billing maintenance failed: '+error.message)));
+  },
   async fetch(request, env, ctx) {
     try {
       const url = new URL(request.url);
@@ -1284,6 +1327,21 @@ export default {
 
       // Đồng bộ lúc mở app và hỏi nhẹ cho app chạy nền. Khớp ĐÚNG ĐƯỜNG DẪN
       // (không so chuỗi chứa) để không lẫn với các route phía dưới.
+      if(url.pathname === '/v1/billing' && request.method === 'POST') {
+        if(limited(request,'billing',60))return reply({ok:false,error:'Too many requests.'},429);
+        const input=await request.json(), d=device(input), token=await claims(env,request);
+        if(token.installationId!==d.installationId||token.chatRoomId!==d.chatRoomId) throw Error('Support session does not match this device.');
+        const permitted=['config','quote','order','orders','cancel','usage','mst_use','mst_select','quota_reserve','quota_commit','quota_release'];
+        if(!permitted.includes(input.action)) throw Error('Unknown billing action.');
+        let value;
+        if(input.action==='config')value=await firebase(env,'/billing/config');
+        if(!value){value=await gas(env,{...input,...d,action:'billing',billingAction:input.action});if(input.action==='config')await firebase(env,'/billing/config','PUT',value);}
+        if(input.action==='order') {
+          const thread=await topic(env,d.chatRoomId);
+          await telegram(env,'sendMessage',{chat_id:env.TELEGRAM_CHAT_ID,message_thread_id:thread,text:'Yêu cầu mua gói '+value.id+'\n'+value.quote.planId+' · '+value.quote.devices+' máy · '+value.quote.term+'\nTổng: '+value.quote.total+'đ\nChọn bên dưới để xem và xác nhận sau khi nhận tiền.',reply_markup:{inline_keyboard:[[{text:'🧾 Xem / duyệt yêu cầu mua',callback_data:'billing:admin:orders'}]]}}).catch(()=>{});
+        }
+        return reply({ok:true,value});
+      }
       if (url.pathname === '/v1/sync' || url.pathname === '/v1/ping' || url.pathname === '/v1/chats/check') {
         if (request.method !== 'POST') return reply({ ok: false, error: 'Not found.' }, 404);
         if (limited(request, url.pathname, 30)) return reply({ ok: false, error: 'Too many requests.' }, 429);
@@ -1377,3 +1435,279 @@ export default {
     }
   }
 };
+
+function billingMenu_(){return adminMenuMarkup_('root');}
+async function billingRegisterCommands_(env) {
+ const scopes=[{type:'default'},{type:'all_group_chats'},{type:'chat_administrators',chat_id:env.TELEGRAM_CHAT_ID}];
+ const added=adminMenuCommands_().map(x=>[x.command,x.description]);
+ for(const scope of scopes)for(const language_code of ['', 'vi']) {
+  const inherited=await telegram(env,'getMyCommands',{scope:{type:'default'},language_code});
+  const current=await telegram(env,'getMyCommands',{scope,language_code});
+  const obsolete=new Set(['info','usage','new','newplan','setplan','plans','orders','approve','reject','commerce','mst','replace_mst','reset_mst_changes','release','extend','reset','lock','unlock','link','ai_add','ai_use','ai_del','ai_url','ai_model','ai_key']);
+  const commands=new Map([...inherited,...current].filter(x=>!obsolete.has(x.command)).map(x=>[x.command,x]));
+  for(const [command,description] of added)commands.set(command,{command,description});
+  if(commands.size>100)throw Error('Danh sách lệnh vượt giới hạn Telegram.');
+  await telegram(env,'setMyCommands',{scope,language_code,commands:[...commands.values()]});
+  const verified=await telegram(env,'getMyCommands',{scope,language_code});
+  if(!added.every(([name])=>verified.some(x=>x.command===name))||verified.some(x=>obsolete.has(x.command)))throw Error('Telegram chưa xác nhận menu gọn.');
+ }
+}
+async function billingMaintenance_(env) {
+ const path='/adminMaintenance/billing20261010v3';
+ if((await firebase(env,path))?.complete)return;
+ const setup=await gas(env,{action:'billing_setup',expectedSheetId:'1AAgGBqZG4SVbTmgd9zvNpfjDwS07lSVxwyw_IIYoJVQ'});
+ if(setup.commercial!==false)throw Error('Chế độ thương mại chưa ẩn.');
+ await billingRegisterCommands_(env);
+ await firebase(env,path,'PUT',{complete:true,at:Date.now(),revision:setup.revision,tables:setup.tables});
+ console.log('Billing maintenance verified: commercial=false; Telegram commands registered; usage tables ready.');
+}
+// Each step carries only validated choices. No customer data is placed in callback_data.
+function billingWizard_(data) {
+ const p=String(data).split(':'),op=p[2],plan=p[3],days=p[4],devices=p[5];
+ const plans=['MST10','MST20','MST30','MST50'],terms=['30','90','365'],machines=['1','2','3','5','10'];
+ if(!['newplan','setplan'].includes(op))throw Error('Thao tác không hợp lệ.');
+ const title=op==='newplan'?'Tạo key mới':'Đổi gói key hiện tại';
+ const button=(text,suffix)=>({text,callback_data:'billing:wizard:'+op+suffix});
+ const back=[{text:'Về menu',callback_data:'billing:menu'}];
+ if(!plan)return {text:title+' — chọn số MST tối đa:',markup:{inline_keyboard:[plans.map(x=>button(x.slice(3)+' MST',':'+x)),back]}};
+ if(!plans.includes(plan))throw Error('Gói không hợp lệ.');
+ if(!days)return {text:title+' · '+plan+' — chọn thời hạn tính theo ngày:',markup:{inline_keyboard:[terms.map(x=>button(x+' ngày',':'+plan+':'+x)),[{text:'Nhập số ngày khác',callback_data:'billing:admin:custom:'+op+':'+plan}],back]}};
+ if(!/^\d+$/.test(days)||Number(days)<1||Number(days)>3650)throw Error('Thời hạn không hợp lệ.');
+ if(!devices)return {text:title+' · '+plan+' · '+days+' ngày — chọn số thiết bị:',markup:{inline_keyboard:[machines.map(x=>button(x+' máy',':'+plan+':'+days+':'+x)),[{text:'Nhập số máy khác',callback_data:'billing:admin:custom:'+op+':'+plan+':'+days}],back]}};
+ if(!/^\d+$/.test(devices)||Number(devices)<1||Number(devices)>100)throw Error('Số máy không hợp lệ.');
+ const command='/'+op+' '+plan+' '+days+' '+devices;
+ if(p[6]==='confirm'&&p.length===7)return {command};
+ if(p.length!==6)throw Error('Nút không hợp lệ.');
+ return {text:title+'\nGói: '+plan+'\nThời hạn: '+days+' ngày từ hiện tại\nThiết bị: '+devices+'\n'+(op==='setplan'?'Thay quyền và ngày hết hạn của key hiện tại.':'Cấp thủ công; không xác nhận thanh toán tự động.')+'\nKiểm tra đúng Topic khách trước khi xác nhận.',markup:{inline_keyboard:[[button('Xác nhận',':'+plan+':'+days+':'+devices+':confirm')],back]}};
+}
+async function billingRefresh_(env,value,command){
+ if(value.billing)await firebase(env,'/billing/config','PUT',{config:value.billing,release:value.release||null});
+ for(const room of value.affectedRooms||[])await firebase(env,licensePath(room),'PUT',null);
+}
+async function billingCallback_(env,query){
+ if(String(query.message?.chat?.id)!==String(env.TELEGRAM_CHAT_ID))throw Error('Invalid admin group.');
+ const member=await telegram(env,'getChatMember',{chat_id:env.TELEGRAM_CHAT_ID,user_id:query.from?.id});
+ if(!['creator','administrator'].includes(member?.status))throw Error('Admin only.');
+ const thread=query.message?.message_thread_id,map=await firebase(env,'/telegramTopics/'+thread);
+ if(String(query.data).startsWith('billing:admin:'))return adminMenuCallback_(env,query,map);
+ if(!map?.chatRoomId)throw Error('Topic chưa gắn thiết bị.');
+ const parts=String(query.data).split(':'),name=parts[1];
+ let text,value,markup=billingMenu_(),command;
+ if(name==='menu')text='Quản lý key trong Topic này.';
+ else if(name==='wizard') {
+   const step=billingWizard_(query.data);text=step.text;markup=step.markup||markup;command=step.command;
+   if(command)return adminMenuReview_(env,query,map,command);
+ }
+ else if(name==='commerce'&&parts[3]!=='confirm') {
+   if(!['on','off'].includes(parts[2]))throw Error('Thao tác không hợp lệ.');
+   text=parts[2]==='on'?'Công khai chính sách key cho TOÀN BỘ người dùng? Bắt đầu khoảng sử dụng đầu 30 ngày theo cấu hình.':'Mở miễn phí TOÀN BỘ tính năng cho mọi người dùng? Khóa thiết bị của Admin vẫn giữ hiệu lực.';
+   markup={inline_keyboard:[[{text:'Xác nhận',callback_data:'billing:commerce:'+parts[2]+':confirm'}],[{text:'Hủy / về menu',callback_data:'billing:menu'}]]};
+ }
+ else if(name==='help')text='/newplan MST10 30 1 — cấp gói 10 MST, 30 ngày, 1 máy\n/extend 30 — gia hạn thêm 30 ngày\n/setplan MST20 30 2 — đổi gói và đặt hạn 30 ngày từ hiện tại\n/replace_mst MST_cũ MST_mới\n/reset_mst_changes — đặt lại số lần đổi miễn phí\n/lock | /unlock — khóa / mở khóa\n/reset — gỡ liên kết máy\n/commerce on | off — công khai / miễn phí toàn hệ thống\n/orders — xem đơn; /approve MÃ paid — xác nhận đã nhận tiền; /reject MÃ — từ chối';
+ else if(name==='release'&&parts[2]==='help')text='/release 1.2.3 Nội dung thay đổi — lưu bản nháp\n/release publish — công bố\n/release off — thu hồi';
+ else if(!text&&!command) {
+   const commands={plans:'/plans',orders:'/orders',check:'/check',mst:'/mst',usage:'/checkdulieu'};
+   command=name==='commerce'?'/commerce '+parts[2]:name==='release'?'/release '+parts[2]:name==='approve'?'/approve '+parts[2]+' paid':commands[name];
+ }
+ if(command) {
+   if(!['/check','/checkdulieu','/plans','/mst','/orders'].includes(command))return adminMenuReview_(env,query,map,command);
+   value=await gas(env,{action:'admin_command',chatRoomId:map.chatRoomId,text:command,actor:String(query.from.id),requestId:'TG-'+thread+'-'+query.message.message_id+'-'+String(query.data)});
+   await cacheLicense_(env,map.chatRoomId,value);await billingRefresh_(env,value,command);text=value.reply;
+ }
+ await telegram(env,'answerCallbackQuery',{callback_query_id:query.id,text:'Đã xử lý'});
+ await telegram(env,'sendMessage',{chat_id:env.TELEGRAM_CHAT_ID,message_thread_id:thread,text:String(text||'Không có dữ liệu').slice(0,4000),reply_markup:markup});
+}
+
+function adminMenuCommands_(){return [
+ {command:'menu',description:'Quản lý khách trong Topic bằng nút bấm'},
+ {command:'check',description:'Thông tin bản quyền của khách'},
+ {command:'checkdulieu',description:'MST và thống kê sử dụng tháng / tổng'},
+ {command:'billing',description:'Mở menu quản lý khách (tương đương /menu)'},
+ {command:'online',description:'Danh sách thiết bị và tín hiệu gần nhất'},
+ {command:'who',description:'Tín hiệu gần nhất của khách trong Topic'},
+ {command:'check_sdt',description:'Tìm khách: /check_sdt 0987654321'},
+ {command:'ai',description:'Quản lý AI bằng nút bấm'},
+ {command:'stop',description:'Kết thúc hỗ trợ Admin, chuyển lại AI'},
+ {command:'cancel',description:'Hủy bước nhập đang chờ'}
+];}
+function adminMenuMarkup_(page){
+ const b=(text,action)=>({text,callback_data:'billing:admin:'+action});
+ const back=[b('⬅ Menu khách','page:root')];
+ const pages={
+ root:[[b('👤 Thông tin / bản quyền','read:check'),b('📊 Dữ liệu sử dụng','read:usage')],
+ [b('🔑 Key / gói / gia hạn','page:key'),b('🖥 Thiết bị / MST','page:device')],
+ [b('🧾 Yêu cầu mua','orders'),b('💬 Hỗ trợ khách','page:support')],
+ [b('🌐 Quản trị toàn hệ thống','page:system'),b('🔄 Làm mới','page:root')]],
+ key:[[{text:'➕ Tạo key theo gói',callback_data:'billing:wizard:newplan'},{text:'✏ Đổi gói / số máy',callback_data:'billing:wizard:setplan'}],
+ [b('⏳ Gia hạn thêm ngày','prompt:extend'),b('📦 Xem gói / giá','read:plans')],back],
+ device:[[b('🗂 MST đăng ký theo key','read:mst'),b('🕒 Tín hiệu thiết bị','presence')],
+ [b('🔒 Khóa thiết bị','prepare:lock'),b('🔓 Mở khóa','prepare:unlock')],
+ [b('🔄 Gỡ liên kết key / máy','prepare:reset')],
+ [b('✏ Thay MST đăng ký','prompt:replace_mst'),b('Đặt lại số lần đổi MST','prepare:reset_mst_changes')],back],
+ support:[[b('👨‍💼 Nhận hỗ trợ trực tiếp','prepare:takeover'),b('🤖 Kết thúc / về AI','prepare:stop')],back],
+ system:[[b('📡 Thiết bị online','online'),b('🔎 Tìm theo SĐT','prompt:phone')],
+ [b('🤖 Cấu hình AI','ai')],
+ [b('📢 Công khai thương mại','prepare:commerce_on'),b('🆓 Mở miễn phí','prepare:commerce_off')],
+ [b('✍ Soạn nội dung cập nhật','prompt:release'),b('👁 Xem bản nháp','read:release')],
+ [b('📤 Công bố bản nháp','prepare:release_publish')],
+ [b('Thu hồi thông báo cập nhật','prepare:release_off')],back],
+ unlinked:[[b('🔗 Gắn Topic với khách','prompt:link'),b('🔎 Tìm theo SĐT','prompt:phone')],[b('📡 Thiết bị online','online')]]
+ };
+ if(!pages[page])throw Error('Trang menu không hợp lệ.');
+ return {inline_keyboard:pages[page]};
+}
+function adminMenuPath_(user,thread){return '/adminMenuSessions/'+user+'/'+thread;}
+async function adminMenuSend_(env,thread,text,markup,messageId){
+ const body={chat_id:env.TELEGRAM_CHAT_ID,text:String(text).slice(0,4000),reply_markup:markup||billingMenu_()};
+ if(messageId)try{return await telegram(env,'editMessageText',{...body,message_id:messageId});}catch(e){if(/message is not modified/i.test(String(e.message)))return;}
+ return telegram(env,'sendMessage',{...body,message_thread_id:thread});
+}
+async function adminMenuSave_(env,from,thread,room,value){
+ const state={...value,room:room||'',actor:String(from),thread:Number(thread),token:crypto.randomUUID().replace(/-/g,'').slice(0,20),expires:Date.now()+10*60000};
+ await firebase(env,adminMenuPath_(from,thread),'PUT',state);return state;
+}
+async function adminMenuState_(env,query,map,token){
+ const thread=query.message.message_thread_id,s=await firebase(env,adminMenuPath_(query.from.id,thread));
+ if(!s||s.actor!==String(query.from.id)||s.thread!==Number(thread)||s.room!==String(map?.chatRoomId||'')||s.expires<Date.now()||(token&&token!==s.token))throw Error('Thao tác đã hết hạn hoặc khách đã thay đổi. Mở lại /menu.');
+ return s;
+}
+async function adminMenuReview_(env,query,map,command,detail){
+ if(!map?.chatRoomId&&command.indexOf('/link ')!==0)throw Error('Topic chưa gắn khách. Mở /menu để liên kết.');
+ let info=null;
+ if(map?.chatRoomId)info=await gas(env,{action:'admin_command',chatRoomId:map.chatRoomId,text:'/check'});
+ if(info?.found===false)throw Error('Không tìm thấy khách. Kiểm tra liên kết Topic.');
+ const descriptions={
+ '/lock':'Khóa thiết bị này.','/unlock':'Mở khóa thiết bị này.','/reset':'Gỡ liên kết thiết bị khỏi key; giữ định danh phần cứng và dữ liệu.',
+ '/reset_mst_changes':'Đặt lại số lần đổi MST miễn phí.',
+ '/commerce on':'⚠️ CÔNG KHAI THƯƠNG MẠI cho TOÀN BỘ người dùng.',
+ '/commerce off':'⚠️ MỞ MIỄN PHÍ cho TOÀN BỘ người dùng; vẫn giữ khóa thiết bị của Admin.',
+ '/release publish':'⚠️ Công bố bản nháp cập nhật cho TOÀN BỘ người dùng. EXE phải được phát hành trên GitHub trước.',
+ '/release off':'⚠️ Thu hồi thông báo cập nhật toàn hệ thống.',
+ '/takeover':'Nhận hỗ trợ trực tiếp; AI tạm dừng trong phòng này.','/stop':'Kết thúc hỗ trợ trực tiếp; chuyển lại AI.'
+ };
+ let draft=null;
+ if(command==='/release publish'){
+   const preview=await gas(env,{action:'admin_command',chatRoomId:map.chatRoomId,text:'/release_preview'});draft=preview.menuRelease;
+   if(!draft)throw Error('Chưa có bản nháp cập nhật. Hãy soạn trước.');
+ }
+ const state=await adminMenuSave_(env,query.from.id,query.message.message_thread_id,map?.chatRoomId,{kind:'review',command,expectedKey:info?.keyName||'',...(draft?{expectedDraftAt:draft.at}:{})});
+ const effect=command.startsWith('/setplan ')?'Đặt lại gói, số thiết bị và hạn từ hôm nay; không cộng thêm hạn cũ.':command.startsWith('/newplan ')?'Tạo key mới theo gói; không đánh dấu đã thanh toán.':command.startsWith('/approve ')?'Xác nhận đã nhận đủ tiền; duyệt yêu cầu mua.':command.startsWith('/reject ')?'Từ chối yêu cầu mua.':descriptions[command]||'Áp dụng thông tin đã nhập.';
+ const args=command.split(/\s+/);let summary='';
+ if(['/newplan','/setplan'].includes(args[0]))summary='Gói: '+args[1]+' · '+args[2]+' ngày · '+args[3]+' thiết bị';
+ else if(args[0]==='/extend')summary='Cộng thêm '+args[1]+' ngày vào hạn còn hiệu lực; nếu hết hạn thì tính từ hôm nay.';
+ else if(args[0]==='/replace_mst')summary='MST cũ: '+args[1]+'\nMST mới: '+args[2];
+ else if(args[0]==='/link')summary='Phòng khách: '+args[1];
+ else if(args[0]==='/release'&&/^\d/.test(args[1]||''))summary='Bản nháp v'+args[1]+'\n'+args.slice(2).join(' ');
+ await adminMenuSend_(env,query.message.message_thread_id,'KIỂM TRA TRƯỚC KHI XÁC NHẬN\n'+(info?.reply||'Topic chưa gắn khách')+'\n\n'+effect+'\n'+summary+(detail?'\n'+detail:'')+(draft?'\n\nv'+draft.version+'\n'+String(draft.notes).slice(0,2400):'')+'\n\nXác nhận có hiệu lực trong 10 phút.',{inline_keyboard:[[{text:'✅ Xác nhận',callback_data:'billing:admin:confirm:'+state.token}],[{text:'Hủy / về menu',callback_data:'billing:admin:cancel:'+state.token}]]});
+}
+async function adminMenuPrompt_(env,query,map,op,prefix){
+ const questions={extend:'Nhập số ngày muốn cộng thêm (1–3650).',replace_mst:'Nhập MST cũ và MST mới, ngăn cách bằng khoảng trắng.',phone:'Nhập số điện thoại của khách cần tìm.',link:'Nhập mã phòng ROOM_WIN_… của khách. Bot sẽ kiểm tra phòng trước khi gắn.',release:'Nhập phiên bản ở dòng đầu (ví dụ 1.1.8), nội dung cập nhật ở những dòng tiếp theo.',custom:prefix?.split(':').length===3?'Nhập số máy (1–100).':'Nhập số ngày (1–3650).'};
+ if(!questions[op])throw Error('Bước nhập không hợp lệ.');
+ if(!map?.chatRoomId&&!['link','phone'].includes(op))throw Error('Topic chưa gắn khách.');
+ const label=String(query.from.first_name||'Admin');
+ const sent=await telegram(env,'sendMessage',{chat_id:env.TELEGRAM_CHAT_ID,message_thread_id:query.message.message_thread_id,text:label+': '+questions[op]+'\nTrả lời đúng tin này. /cancel để hủy.',entities:[{type:'text_mention',offset:0,length:label.length,user:{...query.from,first_name:label,is_bot:false}}],reply_markup:{force_reply:true,selective:true,input_field_placeholder:'Nhập giá trị'}});
+ await adminMenuSave_(env,query.from.id,query.message.message_thread_id,map?.chatRoomId,{kind:'prompt',op,prefix:prefix||'',messageId:sent.message_id});
+}
+async function adminMenuMessage_(env,message,map){
+ const text=String(message.text||'').trim(),thread=message.message_thread_id;
+ if(/^\/check_sdt(?:@\w+)?$/i.test(text)){
+   await adminMenuPrompt_(env,{from:message.from,message},map,'phone');return true;
+ }
+ if(/^\/(menu|start|help)(?:@\w+)?(?:\s|$)/i.test(text)){
+   await telegram(env,'sendChatAction',{chat_id:env.TELEGRAM_CHAT_ID,message_thread_id:thread,action:'typing'}).catch(()=>{});
+   await firebase(env,adminMenuPath_(message.from.id,thread),'DELETE');
+   let title='QUẢN LÝ KHÁCH TRONG TOPIC';
+   if(map?.chatRoomId){const info=await gas(env,{action:'admin_command',chatRoomId:map.chatRoomId,text:'/check'});title+='\n\n'+info.reply;}
+   else title+='\nChưa gắn thiết bị. Hãy liên kết đúng khách trước khi quản lý.';
+   await adminMenuSend_(env,thread,title,adminMenuMarkup_(map?.chatRoomId?'root':'unlinked'));return true;
+ }
+ const path=adminMenuPath_(message.from.id,thread),state=await firebase(env,path);
+ if(/^\/cancel(?:@\w+)?$/i.test(text)){
+   await firebase(env,path,'DELETE');await adminMenuSend_(env,thread,'Đã hủy bước nhập.',adminMenuMarkup_(map?.chatRoomId?'root':'unlinked'));return true;
+ }
+ if(state?.kind!=='prompt'||state.messageId!==message.reply_to_message?.message_id)return false;
+ try{
+   if(state.room!==String(map?.chatRoomId||'')||state.actor!==String(message.from.id)||state.expires<Date.now())throw Error('Bước nhập đã hết hạn hoặc khách đã đổi. Mở lại /menu.');
+   const q={from:message.from,message},op=state.op;let command;
+   if(op==='custom'){
+     const p=state.prefix.split(':'),max=p.length===3?100:3650;
+     if(!/^\d+$/.test(text)||Number(text)<1||Number(text)>max)throw Error('Nhập số nguyên từ 1 đến '+max+'.');
+     const step=billingWizard_('billing:wizard:'+state.prefix+':'+Number(text));
+     await firebase(env,path,'DELETE');await adminMenuSend_(env,thread,step.text,step.markup);return true;
+   }
+   if(op==='extend'){if(!/^\d+$/.test(text)||Number(text)<1||Number(text)>3650)throw Error('Số ngày phải từ 1 đến 3650.');command='/extend '+Number(text);}
+   else if(op==='replace_mst'){
+     const parts=text.split(/\s+/).map(x=>x.replace(/-/g,''));if(parts.length!==2||!parts.every(x=>/^\d{10}(\d{3})?$/.test(x))||parts[0]===parts[1])throw Error('Cần hai MST hợp lệ, khác nhau.');command='/replace_mst '+parts.join(' ');
+   } else if(op==='phone'){
+     if(!/^\+?\d[\d\s.()-]{6,20}$/.test(text))throw Error('Số điện thoại không hợp lệ.');
+     await adminMenuSend_(env,thread,await phoneReport_(env,text),adminMenuMarkup_(map?.chatRoomId?'root':'unlinked'));await firebase(env,path,'DELETE');return true;
+   } else if(op==='link'){
+     if(!/^ROOM_WIN_[A-Z0-9]{8,40}$/.test(text))throw Error('Mã phòng không hợp lệ.');
+     if(map?.chatRoomId&&map.chatRoomId!==text)throw Error('Topic đã gắn khách khác; không tự ghi đè.');
+     const info=await gas(env,{action:'admin_command',chatRoomId:text,text:'/check'});if(info.found===false)throw Error('Phòng chưa tồn tại trong CRM.');command='/link '+text;
+   } else if(op==='release'){
+     const m=/^(\d+\.\d+\.\d+)\s+([\s\S]+)$/.exec(text);if(!m||!m[2].trim())throw Error('Cần phiên bản và nội dung cập nhật.');command='/release '+m[1]+' '+m[2].trim().slice(0,3000);
+   }
+   if(!command)throw Error('Thao tác không hợp lệ.');await adminMenuReview_(env,q,map,command);
+ }catch(e){await adminMenuSend_(env,thread,String(e.message)+'\nTrả lời lại đúng tin yêu cầu, hoặc /cancel.');}
+ return true;
+}
+async function adminMenuCallback_(env,query,map){
+ const thread=query.message.message_thread_id;
+ if(!thread)throw Error('Mở menu trong Topic của khách.');
+ try{await telegram(env,'answerCallbackQuery',{callback_query_id:query.id});}catch{/* expired acknowledgment */}
+ const p=String(query.data).split(':'),action=p[2],arg=p[3];
+ const reads={check:'/check',usage:'/checkdulieu',plans:'/plans',mst:'/mst',release:'/release_preview'};
+ if(action==='page'){
+   await firebase(env,adminMenuPath_(query.from.id,thread),'DELETE');
+   const page=map?.chatRoomId?arg:'unlinked';let title=page==='system'?'TOÀN HỆ THỐNG — thao tác áp dụng cho mọi khách':'QUẢN LÝ KHÁCH · '+String(map?.chatRoomId||'chưa liên kết');
+   if(page==='root'&&map?.chatRoomId){const info=await gas(env,{action:'admin_command',chatRoomId:map.chatRoomId,text:'/check'});title=info.reply;}
+   return adminMenuSend_(env,thread,title,adminMenuMarkup_(page),query.message.message_id);
+ }
+ if(action==='prompt'||action==='custom')return adminMenuPrompt_(env,query,map,action==='custom'?'custom':arg,action==='custom'?p.slice(3).join(':'):'');
+ if(action==='cancel'){await adminMenuState_(env,query,map,arg);await firebase(env,adminMenuPath_(query.from.id,thread),'DELETE');return adminMenuSend_(env,thread,'Đã hủy thao tác.',adminMenuMarkup_(map?.chatRoomId?'root':'unlinked'));}
+ if(action==='online')return adminMenuSend_(env,thread,await onlineReport_(env),adminMenuMarkup_(map?.chatRoomId?'system':'unlinked'),query.message.message_id);
+ if(action==='ai')return aiAdmin.handle(env,{message:{...query.message,from:query.from,text:'/ai'}},{waitUntil:()=>{}},'https://hoadon-support-gateway.linhnhaxac10.workers.dev');
+ if(action==='prepare'){
+   const commands={lock:'/lock',unlock:'/unlock',reset:'/reset',reset_mst_changes:'/reset_mst_changes',takeover:'/takeover',stop:'/stop',commerce_on:'/commerce on',commerce_off:'/commerce off',release_publish:'/release publish',release_off:'/release off'};
+   if(!commands[arg])throw Error('Thao tác không hợp lệ.');return adminMenuReview_(env,query,map,commands[arg]);
+ }
+ if(action==='confirm'){
+   const state=await adminMenuState_(env,query,map,arg);if(state.kind!=='review')throw Error('Không có thao tác đang chờ.');
+   let text;
+   if(state.command.startsWith('/link ')){
+     const room=state.command.split(' ')[1],live=await firebase(env,'/telegramTopics/'+thread);
+     if(live?.chatRoomId&&live.chatRoomId!==room)throw Error('Topic đã gắn khách khác.');
+     const info=await gas(env,{action:'admin_command',chatRoomId:room,text:'/check'});if(info.found===false)throw Error('Phòng không còn trong CRM.');
+     await firebase(env,'/telegramTopics/'+thread,'PUT',{chatRoomId:room,createdAt:Date.now()});
+     await firebase(env,'/chats/'+encodeURIComponent(room)+'/meta','PATCH',{telegramThreadId:thread,telegramTopicCreatedAt:Date.now()});text='Đã gắn Topic với khách.\n'+info.reply;
+   }else if(['/takeover','/stop'].includes(state.command)){
+     await supportFlow.owner(env,state.room,state.command==='/stop'?'auto':'admin',String(query.from.id));text=state.command==='/stop'?'Đã kết thúc hỗ trợ; chuyển lại AI.':'Đã nhận hỗ trợ trực tiếp.';
+   }else{
+     const value=await gas(env,{action:'admin_command',chatRoomId:state.room,text:state.command,actor:String(query.from.id),expectedKey:state.expectedKey,...(state.expectedDraftAt!==undefined?{expectedDraftAt:state.expectedDraftAt}:{}),requestId:'MENU-'+state.token});
+     await cacheLicense_(env,state.room,value);await billingRefresh_(env,value,state.command);text=value.reply;
+     const notice=customerNotice_(state.command.split(' ')[0],value);
+     if(notice)await firebase(env,'/chats/'+encodeURIComponent(state.room)+'/messages/MENU-'+state.token,'PUT',{sender:'admin',text:notice,timestamp:Date.now(),source:'telegram',telegramThreadId:thread,deliveryStatus:'firebase'});
+   }
+   await firebase(env,adminMenuPath_(query.from.id,thread),'DELETE');return adminMenuSend_(env,thread,text);
+ }
+ if(!map?.chatRoomId)throw Error('Topic chưa gắn khách.');
+ if(action==='presence'){
+   const s=await firebase(env,'/devices/'+encodeURIComponent(map.chatRoomId)+'/presence')||{},age=Date.now()-Number(s.lastSeen||0);
+   return adminMenuSend_(env,thread,'TÍN HIỆU THIẾT BỊ\n'+(isOnlineAt(s.lastSeen,Date.now())?'🟢 Có tín hiệu gần đây':'⚪ Không có tín hiệu gần đây')+'\nPhiên bản: '+(s.appVersion||'—')+'\nNhận lần cuối: '+(s.lastSeen?Math.max(0,Math.floor(age/60000))+' phút trước':'chưa có')+'\nTrạng thái dựa trên tín hiệu; không xác nhận tiến trình đã tắt.',adminMenuMarkup_('device'),query.message.message_id);
+ }
+ if(action==='order'){
+   const s=await adminMenuState_(env,query,map,arg),i=Number(p[4]),op=p[5];if(s.kind!=='orders'||!Number.isInteger(i)||!s.orders[i]||!['approve','reject'].includes(op))throw Error('Yêu cầu không hợp lệ.');
+   const o=s.orders[i];return adminMenuReview_(env,query,map,'/'+op+' '+o.id+(op==='approve'?' paid':''),'Yêu cầu: '+o.id+'\nGói: '+o.planId+' · '+o.devices+' máy · '+o.term+'\nSố tiền: '+Number(o.total).toLocaleString('vi-VN')+'đ');
+ }
+ if(action==='read'||action==='orders'){
+   const command=action==='orders'?'/orders':reads[arg];if(!command)throw Error('Mục không hợp lệ.');
+   const value=await gas(env,{action:'admin_command',chatRoomId:map.chatRoomId,text:command});let markup=billingMenu_();
+   if(action==='orders'&&value.menuOrders?.length){
+     const state=await adminMenuSave_(env,query.from.id,thread,map.chatRoomId,{kind:'orders',orders:value.menuOrders});
+     markup={inline_keyboard:state.orders.map((o,i)=>[{text:'✅ Nhận tiền · '+o.planId+' · '+Number(o.total).toLocaleString('vi-VN')+'đ',callback_data:'billing:admin:order:'+state.token+':'+i+':approve'},{text:'Từ chối #'+(i+1),callback_data:'billing:admin:order:'+state.token+':'+i+':reject'}]).concat([[{text:'⬅ Menu khách',callback_data:'billing:admin:page:root'}]])};
+   }
+   return adminMenuSend_(env,thread,value.reply,markup,query.message.message_id);
+ }
+ throw Error('Nút đã cũ. Mở lại /menu.');
+}

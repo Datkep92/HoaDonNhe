@@ -65,6 +65,7 @@ async function checkUpdate(force) {
       latest,
       updateAvailable: !!latest && compareVersions(latest, current) > 0,
       name: data.name || data.tag_name || latest,
+      notes: String(data.body || '').slice(0,4000),
       url: data.html_url || `${releasesUrl}/latest`,
       publishedAt: data.published_at || '',
       draft: !!data.draft,

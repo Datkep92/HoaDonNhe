@@ -154,50 +154,8 @@ function fourPart(v) {
   const setupName = path.basename(setupExe);
   fs.writeFileSync(`${setupExe}.sha256`, `${hash}  ${setupName}${os.EOL}`);
 
-  const whatsNew = WHATS_NEW[version] || [];
-  const notes = [
-    `# CN Tax Tools v${version}`,
-    '',
-    ...(whatsNew.length ? ['## Có gì mới', '', ...whatsNew, ''] : []),
-    '## Cài lần đầu',
-    '',
-    `Tải **${setupName}** ở phần Assets bên dưới và chạy. Chỉ cần 1 file này — không cần ZIP/RAR,`,
-    'không cần cài thêm dependency.',
-    '',
-    '## Cập nhật cho máy đã cài',
-    '',
-    '**Đang dùng v1.0.2 trở lên**: bạn không cần tải gì — mở CN Tax Tools, app báo có bản mới rồi tự tải,',
-    'tự xác minh SHA-256, thay chương trình và khởi động lại. Setup chỉ dùng cho lần cài đầu tiên',
-    '(hoặc repair/gỡ cài đặt).',
-    '',
-    '**Đang dùng v1.0.0 hoặc v1.0.1**: bản cũ chỉ *báo* có bản mới chứ chưa tự cập nhật được. Hãy tải',
-    `**${setupName}** và chạy một lần — dữ liệu trong \`du_lieu\` (danh sách MST, phiên đăng nhập, hóa đơn)`,
-    'được giữ nguyên. Từ bản này trở đi, mọi lần cập nhật sau đều tự động trong app.',
-    '',
-    `Nếu muốn tải tay cho bản self-update: **CN-Tax-Tools-v${version}.exe** (kèm \`.sha256\`).`,
-    '',
-    'Khi chạy, trình cài đặt cho chọn 1 trong 2 chế độ:',
-    '',
-    '- **CÀI ĐẶT VÀO WINDOWS**: cài vào hồ sơ người dùng, tạo shortcut Desktop + Start Menu,',
-    '  có mục gỡ cài đặt trong Windows, có tuỳ chọn chạy ngay sau khi cài.',
-    '- **PORTABLE**: chỉ giải nén vào thư mục bạn chọn để chạy `CN-Tax-Tools.exe` trực tiếp,',
-    '  không ghi vào Windows, không có gỡ cài đặt.',
-    '',
-    'Yêu cầu: **Windows 64-bit (x64)**, có sẵn **Google Chrome** hoặc **Microsoft Edge**',
-    '(Edge có sẵn trong Windows 10/11). Không cần Node.js/Python/Chromium. Không cần quyền Administrator.',
-    '',
-    'Cả hai chế độ lưu dữ liệu trong thư mục `du_lieu` nằm cạnh `CN-Tax-Tools.exe`,',
-    'nên bản Portable có thể copy cả thư mục sang máy khác.',
-    '',
-    '## SHA-256',
-    '',
-    '```',
-    `${hash}  ${setupName}`,
-    '```',
-    '',
-  ].join('\n');
-  // Ghi chú sinh ở đây (không lấy từ repo) vì nó chứa SHA-256 của đúng file Setup vừa đóng gói.
-  // NSIS nhúng timestamp nên mỗi lần build cho SHA khác nhau — commit sẵn vào repo là vô nghĩa.
+  const notes = fs.readFileSync(path.join(root, '.github', 'RELEASE_NOTES.md'), 'utf8');
+  if (!notes.includes('v' + version)) throw new Error('Release notes version mismatch');
   fs.writeFileSync(path.join(releaseDir, 'RELEASE_NOTES.md'), notes);
 
   console.log(`\nSetup:   ${path.relative(root, setupExe)}`);

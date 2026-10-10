@@ -293,7 +293,7 @@ Section "Cài đặt ${PRODUCT_NAME}" SecMain
 
     ; Auto-update: cài xong thì mở lại app để người dùng thấy bản mới ngay.
     ${If} $UpdateMode == 1
-      Exec "$INSTDIR\${APP_EXE}"
+      Exec '"$INSTDIR\${APP_EXE}" --start-hidden'
     ${EndIf}
   ${Else}
     DetailPrint "Chế độ PORTABLE: chỉ giải nén, không tạo shortcut/gỡ cài đặt."

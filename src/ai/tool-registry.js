@@ -9,12 +9,23 @@ const { detect, listTables, schema, sample, queryReadonly } = require('./db-tool
 const pdfTools = require('./pdf-tools');
 const string = (extra = {}) => ({ type: 'string', maxLength: 200, ...extra });
 const date = string({ pattern: '^\\d{4}-\\d{2}-\\d{2}$' });
-const filters = { from: date, to: date, direction: string({ enum: ['BUY', 'SELL'] }), q: string(), state: string({ enum: ['active', 'inactive', '1', '2', '3', '4', '5', '6'] }) };
+const filters = { sourceId: string(), from: date, to: date, direction: string({ enum: ['BUY', 'SELL'] }), q: string(), state: string({ enum: ['active', 'inactive', '1', '2', '3', '4', '5', '6'] }) };
 function createRegistry({ app, datasets, dataDir, emit, files, attachments = [], attachmentFiles = null, cloud = null, options = {}, contextTools }) {
-  const scope = () => app.context().currentUser.selectedMst;
+  const taskScope = app.context().currentUser.selectedMst;
+  const scope = () => options.workspaceReads ? taskScope : app.context().currentUser.selectedMst;
   const rowsOf = id => datasets.get(id, scope());
   const put = rows => datasets.put(rows, scope());
   const tools = [];
+  const sourceResolver = require('./source-resolver');
+  const sourceAdapter = args => {
+    if (!args.sourceId) {
+      if (options.requireSource) throw Object.assign(new Error('Tên doanh nghiệp chưa được xác minh. Tiếp tục tìm nguồn hoặc hỏi người dùng; không dùng MST đang chọn thay thế.'), { code: 'TARGET_UNRESOLVED' });
+      return app;
+    }
+    const source = sourceResolver.catalog(app.context()).find(a => a.sourceId === args.sourceId);
+    if (!source || !app.forCompany) throw new Error('Nguồn không tồn tại. Dùng source.find để tìm lại.');
+    return app.forCompany(source.mst);
+  };
   function add(name, description, properties, required, permission, status, handler) {
     tools.push({ name, description, inputSchema: { type: 'object', properties, required, additionalProperties: false }, permission, status, handler });
   }
@@ -51,6 +62,46 @@ function createRegistry({ app, datasets, dataDir, emit, files, attachments = [],
   }
   add('app.get_state', 'Xem trạng thái, danh sách MST và tiến độ hiện tại; không trả secret.', {}, [], 'READ', 'Đang kiểm tra ứng dụng…', () => app.context());
   add('mst.get_selected', 'Xem MST đang chọn.', {}, [], 'READ', 'Đang kiểm tra MST…', () => ({ selectedMst: scope() }));
+  add('source.find', 'Tìm doanh nghiệp trong toàn bộ kho bằng tên hoặc MST, không đổi MST giao diện. Nhiều kết quả thì hỏi user; dùng sourceId khi đọc.', { query: string() }, ['query'], 'READ', 'Đang tìm doanh nghiệp…', args => sourceResolver.resolve(app.context(), args.query));
+  add('source.list', 'Liệt kê nguồn doanh nghiệp trong CNTaxTools khi user yêu cầu nhiều/toàn bộ doanh nghiệp. Không tự gộp số liệu các nguồn.', {}, [], 'READ', 'Đang liệt kê nguồn dữ liệu…', () => ({ sources: sourceResolver.catalog(app.context()) }));
+  add('invoice.summary_many', 'Báo cáo nhiều doanh nghiệp theo kỳ, tách rõ từng nguồn, không đổi MST và không tự gộp. Lấy sourceIds từ source.list/source.find; tối đa 50 nguồn mỗi lượt.', { from: date, to: date, sourceIds: { type: 'array', items: string(), minItems: 1, maxItems: 50 } }, ['sourceIds'], 'ANALYZE', 'Đang tổng hợp các doanh nghiệp…', async (args, signal) => {
+    if (args.from && args.to && args.from > args.to) throw new Error('Khoảng ngày không hợp lệ.');
+    const reports = [];
+    for (const sourceId of [...new Set(args.sourceIds)]) {
+      signal?.throwIfAborted();
+      try { reports.push({ sourceId, data: await sourceAdapter({ sourceId }).summary({ from: args.from, to: args.to }) }); }
+      catch (e) { if (signal?.aborted) throw e; reports.push({ sourceId, error: e.message }); }
+    }
+    return { reports, count: reports.length };
+  });
+  add('data.report', 'Hiển thị kết quả dataset đã tính tại máy trong câu trả lời, không gửi giá trị kế toán lên model miễn phí. Dùng sau js.execute_safe để báo cáo bảng/tổng đã tính; không thay cho xác minh nguồn.', { datasetId: string() }, ['datasetId'], 'ANALYZE', 'Đang lập báo cáo từ dữ liệu local…', args => {
+    const rows = rowsOf(args.datasetId), columns = [...new Set(rows.flatMap(r => Object.keys(r)))];
+    const cell = value => String(value == null ? '' : typeof value === 'object' ? JSON.stringify(value) : value).replace(/\|/g, '\\|').replace(/[\r\n]/g, ' ').slice(0, 300);
+    if (columns.length > 30) throw new Error('Bảng quá rộng; chọn các cột cần báo cáo hoặc xuất Excel.');
+    return { reportText: ['Kết quả tính từ dữ liệu local — ' + rows.length + ' dòng.', rows.length ? '| ' + columns.map(cell).join(' | ') + ' |\n| ' + columns.map(() => '---').join(' | ') + ' |\n' + rows.slice(0, 30).map(r => '| ' + columns.map(k => cell(r[k])).join(' | ') + ' |').join('\n') : 'Không có dòng trong kết quả.', rows.length > 30 ? 'Đang hiển thị 30 dòng đầu; xuất Excel để nhận toàn bộ.' : '', 'Kết quả xử lý tại máy, không sửa dữ liệu gốc.'].filter(Boolean).join('\n\n') };
+  });
+  add('local.roots', 'Thư mục ưu tiên tìm dữ liệu kế toán local; user có thể cung cấp đường dẫn khác.', {}, [], 'READ', 'Đang tìm thư mục dữ liệu…', () => ({ roots: app.context().localRoots || [] }));
+  add('local.find', 'Tìm file kế toán theo tên trong thư mục chỉ định hoặc các thư mục ưu tiên. Chỉ đọc metadata; nhiều kết quả phải hỏi chọn file.', { query: string(), path: string({ maxLength: 1000 }) }, ['query'], 'READ', 'Đang tìm file kế toán local…', (args, signal) => {
+    const roots = args.path ? [args.path] : app.context().localRoots || [];
+    const results = [], errors = [];
+    for (const root of [...new Set(roots)].slice(0, 8)) {
+      signal?.throwIfAborted();
+      try { results.push(...require('./fs-tools').search(root, { query: args.query, maxResults: 25, maxDepth: 4 }, signal).results); }
+      catch (e) { if (signal?.aborted) throw e; errors.push({ path: root, code: e.code || 'READ_FAILED' }); }
+    }
+    const unique = [...new Map(results.filter(r => r.type === 'file' && /\.(xlsx?|csv|tsv|xml|pdf|db|sqlite3?|bak)$/i.test(r.path)).map(r => [r.path, r])).values()];
+    return { results: unique.slice(0, 100), count: unique.length, errors, truncated: results.length >= 25, note: 'Tìm theo tên, độ sâu hữu hạn. Không có kết quả thì hỏi user đường dẫn, không kết luận máy không có dữ liệu.' };
+  });
+  add('file.read_local', 'Đọc Excel/CSV/TSV kế toán local thành dataset; nhiều sheet thì hỏi chọn sheet. Không sửa nguồn. MISA .bak không phải SQLite.', { path: string({ maxLength: 1000 }), sheet: string() }, ['path'], 'READ', 'Đang đọc bảng kế toán local…', (args, signal) => {
+    const file = require('./fs-tools').validate(args.path); signal?.throwIfAborted();
+    if (!/\.(xlsx?|csv|tsv)$/i.test(file)) throw new Error('Công cụ đọc Excel/CSV/TSV. Database MISA/SQL Server .bak cần xuất bảng hoặc adapter riêng.');
+    if (fs.statSync(file).size > 24 * 1024 * 1024) throw new Error('File vượt 24 MB; chọn bản xuất theo kỳ.');
+    const workbook = XLSX.read(fs.readFileSync(file), { type: 'buffer', cellDates: true });
+    if (!args.sheet && workbook.SheetNames.length > 1) return { sheetNames: workbook.SheetNames, needsSheet: true };
+    const sheet = args.sheet || workbook.SheetNames[0];
+    if (!workbook.Sheets[sheet]) throw new Error('Sheet không tồn tại.');
+    return { ...put(XLSX.utils.sheet_to_json(workbook.Sheets[sheet], { raw: false })), sourcePath: file, sheet, kind: 'local-accounting-table' };
+  });
 
   // ── filesystem (READ-ONLY) ──────────────────────────────────────────
   add('fs.list', 'Liệt kê file và thư mục con trong thư mục local. Trả tên, đường dẫn, loại, kích thước và ngày sửa. Tối đa 200 mục; không tự đọc nội dung file.', { path: string({ maxLength: 1000 }) }, ['path'], 'READ', 'Đang liệt kê thư mục…', (args, signal) => list(args.path, signal));
@@ -63,21 +114,21 @@ function createRegistry({ app, datasets, dataDir, emit, files, attachments = [],
 
   const search = async args => {
     if (args.from && args.to && args.from > args.to) throw new Error('Khoảng ngày không hợp lệ.');
-    const mst = scope(), rows = await app.search(args);
+    const adapter = sourceAdapter(args), mst = scope(), rows = await adapter.search(args);
     if (scope() !== mst) throw new Error('MST đã thay đổi; tìm lại dữ liệu.');
     return put(rows);
   };
   add('invoice.search', 'Tìm hóa đơn trong kho local, tạo dataset. Ngày YYYY-MM-DD, BUY=mua vào, SELL=bán ra. Tối đa 20.000 dòng, không cắt dữ liệu âm thầm.', filters, [], 'READ', 'Đang tìm hóa đơn…', search);
   add('data.query', 'Đọc dữ liệu hóa đơn local qua data service theo bộ lọc; tạo dataset.', filters, [], 'READ', 'Đang đọc dữ liệu…', search);
-  add('invoice.latest', 'Hóa đơn gần nhất theo ngày lập, cùng ngày ưu tiên dòng được nhập kho sau. Dùng cho câu hỏi hóa đơn gần nhất bao nhiêu tiền / nhà cung cấp nào.', { direction: filters.direction }, ['direction'], 'READ', 'Đang tìm hóa đơn gần nhất…', async args => {
-    if (app.latest) return app.latest(args);
-    const rows = await app.search(args);
+  add('invoice.latest', 'Hóa đơn gần nhất theo ngày lập, cùng ngày ưu tiên dòng được nhập kho sau. Dùng cho câu hỏi hóa đơn gần nhất bao nhiêu tiền / nhà cung cấp nào.', { direction: filters.direction, sourceId: string() }, ['direction'], 'READ', 'Đang tìm hóa đơn gần nhất…', async args => {
+    if (sourceAdapter(args).latest) return sourceAdapter(args).latest(args);
+    const rows = await sourceAdapter(args).search(args);
     rows.sort((a, b) => String(b.ngay_lap || '').localeCompare(String(a.ngay_lap || '')) || String(b.so_hd || '').localeCompare(String(a.so_hd || ''), 'vi', { numeric: true }));
     return { invoice: rows[0] || null, sameDateCount: rows[0] ? rows.filter(r => r.ngay_lap === rows[0].ngay_lap).length : 0, note: 'Cùng ngày: ưu tiên số hóa đơn lớn; ngày lập không thể hiện thứ tự thời gian chính xác trong ngày.' };
   });
-  if (app.goods) add('goods.query', 'Tổng hợp hàng hóa theo mã, tên, đơn vị và thuế suất qua cùng dịch vụ Kho dữ liệu; chỉ hóa đơn còn hiệu lực. Tạo dataset để xuất Excel hàng hóa. Tối đa dưới 500 nhóm; nếu vượt phải lọc lại.', { from: date, to: date, direction: filters.direction, q: string() }, [], 'READ', 'Đang tổng hợp hàng hóa…', async args => {
+  if (app.goods) add('goods.query', 'Tổng hợp hàng hóa theo mã, tên, đơn vị và thuế suất qua cùng dịch vụ Kho dữ liệu; chỉ hóa đơn còn hiệu lực. Tạo dataset để xuất Excel hàng hóa. Tối đa dưới 500 nhóm; nếu vượt phải lọc lại.', { sourceId: string(), from: date, to: date, direction: filters.direction, q: string() }, [], 'READ', 'Đang tổng hợp hàng hóa…', async args => {
     if (args.from && args.to && args.from > args.to) throw new Error('Khoảng ngày không hợp lệ.');
-    const mst = scope(), rows = await app.goods(args);
+    const mst = scope(), rows = await sourceAdapter(args).goods(args);
     if (scope() !== mst) throw new Error('MST đã thay đổi; tìm lại dữ liệu.');
     return put(rows);
   });
@@ -127,14 +178,14 @@ function createRegistry({ app, datasets, dataDir, emit, files, attachments = [],
     add('cloud.shell', 'Chạy lệnh Shell trong cloud Linux cô lập cho công việc người dùng yêu cầu; không truy cập máy Windows hoặc mạng. Chỉ stdout/stderr được trả về; file tạo trong cloud không tự tải về máy. Muốn xuất file tải được, dùng data.create và file.export.', { code: string({ maxLength: 12000 }) }, ['code'], 'ANALYZE', 'Đang chạy lệnh trong cloud…', (args, signal) => cloud.execute('shell', args.code, [], signal));
     tools[tools.length - 1].timeout = 90000;
   }
-  add('invoice.read', 'Đọc một hóa đơn và các dòng hàng theo invoice_key.', { key: string() }, ['key'], 'READ', 'Đang đọc hóa đơn…', args => app.read(args.key));
-  add('invoice.get_items', 'Đọc đầy đủ dòng hàng của một hóa đơn thành dataset để tính/xuất; không dùng phần xem trước đã cắt.', { key: string() }, ['key'], 'READ', 'Đang đọc hàng hóa…', async args => {
-    if (app.items) return put(await app.items(args.key));
-    const value = await app.read(args.key); if (value.truncated) throw new Error('Adapter chỉ có phần xem trước; không coi là toàn bộ dòng hàng.'); return put(value.items);
+  add('invoice.read', 'Đọc một hóa đơn và các dòng hàng theo invoice_key.', { key: string(), sourceId: string() }, ['key'], 'READ', 'Đang đọc hóa đơn…', args => sourceAdapter(args).read(args.key));
+  add('invoice.get_items', 'Đọc đầy đủ dòng hàng của một hóa đơn thành dataset để tính/xuất; không dùng phần xem trước đã cắt.', { key: string(), sourceId: string() }, ['key'], 'READ', 'Đang đọc hàng hóa…', async args => {
+    if (sourceAdapter(args).items) return put(await sourceAdapter(args).items(args.key));
+    const value = await sourceAdapter(args).read(args.key); if (value.truncated) throw new Error('Adapter chỉ có phần xem trước; không coi là toàn bộ dòng hàng.'); return put(value.items);
   });
-  add('invoice.summary', 'Tổng hợp hóa đơn theo cùng logic Kho dữ liệu: loại trừ hóa đơn không còn hiệu lực.', { from: date, to: date }, [], 'ANALYZE', 'Đang tổng hợp dữ liệu…', args => {
+  add('invoice.summary', 'Tổng hợp hóa đơn từ nguồn đang đọc hoặc sourceId; không cần đổi MST giao diện.', { from: date, to: date, sourceId: string() }, [], 'ANALYZE', 'Đang tổng hợp dữ liệu…', args => {
     if (args.from && args.to && args.from > args.to) throw new Error('Khoảng ngày không hợp lệ.');
-    return app.summary(args);
+    return sourceAdapter(args).summary(args);
   });
   add('invoice.find_duplicates', 'Tìm dấu hiệu trùng trong dataset: cùng chiều, MST người bán, ký hiệu, số, ngày và tổng tiền. Không kết luận là trùng pháp lý, không xóa dòng.', { datasetId: string() }, ['datasetId'], 'ANALYZE', 'Đang kiểm tra hóa đơn trùng…', args => {
     const groups = new Map();
@@ -163,9 +214,22 @@ function createRegistry({ app, datasets, dataDir, emit, files, attachments = [],
     }
     return { totals, byDirection, flagged: put(anomalies), note: 'Tổng dataset bao gồm các trạng thái đã tìm; dùng invoice.summary cho tổng còn hiệu lực.' };
   });
+  add('data.profile', 'Kiểm tra toàn bộ dataset tại máy: tên cột, kiểu giá trị, số ô trống và số giá trị dạng số. Dùng trước mapping/tính toán; không suy đoán kiểu từ vài dòng mẫu.', { datasetId: string() }, ['datasetId'], 'ANALYZE', 'Đang kiểm tra cấu trúc dữ liệu…', args => {
+    const rows = rowsOf(args.datasetId), names = [...new Set(rows.flatMap(r => Object.keys(r)))];
+    return { datasetId: args.datasetId, rowCount: rows.length, profile: names.map(name => {
+      const types = {}, stat = { name, empty: 0, numeric: 0, types };
+      for (const row of rows) {
+        const value = row[name];
+        if (value == null || value === '') { stat.empty++; continue; }
+        const type = typeof value; types[type] = (types[type] || 0) + 1;
+        if (type === 'number' && Number.isFinite(value) || type === 'string' && /^-?\d+(?:[.,]\d+)*$/.test(value.trim())) stat.numeric++;
+      }
+      return stat;
+    }) };
+  });
   let jsRuns = 0;
   add('js.compare_safe', 'Đối chiếu hai dataset đầy đủ bằng JS cô lập. input.left và input.right là hai mảng; helpers như execute_safe. Dùng cho so sánh hai file/sheet hoặc file với hóa đơn. return mảng/{rows} để tạo dataset kết quả hoặc object tóm tắt.', { leftDatasetId: string(), rightDatasetId: string(), code: string({ maxLength: 12000 }) }, ['leftDatasetId', 'rightDatasetId', 'code'], 'ANALYZE', 'Đang đối chiếu hai bảng dữ liệu…', async (args, signal) => {
-    if (++jsRuns > 3) throw new Error('Tối đa 3 lượt JS mỗi tác vụ.');
+    if (++jsRuns > 32) throw new Error('Đã lưu tiến độ; tiếp tục tác vụ để chạy phần phân tích còn lại.');
     const mst = scope(), value = await executeSafeJs(args.code, { left: rowsOf(args.leftDatasetId), right: rowsOf(args.rightDatasetId) }, signal);
     if (scope() !== mst) throw new Error('MST đã thay đổi; tìm lại dữ liệu.');
     const rows = Array.isArray(value) ? value : value?.rows;
@@ -174,7 +238,7 @@ function createRegistry({ app, datasets, dataDir, emit, files, attachments = [],
     return value;
   });
   add('js.execute_safe', 'Xử lý dataset bằng JS cô lập: input mảng, helpers number/normalizeText/groupBy/sum. Không Node, filesystem hoặc mạng. return mảng hoặc {rows,...}.', { datasetId: string(), code: string({ maxLength: 12000 }) }, ['datasetId', 'code'], 'ANALYZE', 'Đang tính toán dữ liệu…', async (args, signal) => {
-    if (++jsRuns > 3) throw new Error('Tối đa 3 lượt JS mỗi tác vụ.');
+    if (++jsRuns > 32) throw new Error('Đã lưu tiến độ; tiếp tục tác vụ để chạy phần phân tích còn lại.');
     const mst = scope(), value = await executeSafeJs(args.code, rowsOf(args.datasetId), signal);
     if (scope() !== mst) throw new Error('MST đã thay đổi; tìm lại dữ liệu.');
     const rows = Array.isArray(value) ? value : value?.rows;
@@ -248,7 +312,10 @@ function createRegistry({ app, datasets, dataDir, emit, files, attachments = [],
       note: 'Đã chuyển PDF tại máy. Nếu cần lọc/tính tiếp, dùng datasetId với data.analyze hoặc js.execute_safe rồi file.export_excel.' };
   });
   tools[tools.length - 1].timeout = 60000;
-  add('mst.select', 'Chọn MST đã tồn tại khi người dùng chỉ rõ MST. Không thêm hoặc xóa tài khoản.', { mst: string({ pattern: '^\\d{10}(?:-?\\d{3})?$' }) }, ['mst'], 'ACTION', 'Đang chọn MST…', (args, signal) => app.select(args.mst, scope(), signal));
+  add('mst.select', 'Chọn MST/mã hồ sơ đã tồn tại khi người dùng chỉ rõ. Không thêm hoặc xóa tài khoản.', { mst: string({ maxLength: 64 }) }, ['mst'], 'ACTION', 'Đang chọn MST…', (args, signal) => {
+    if (!require('../mst-format').isValidMst(args.mst)) throw Error('MST/mã hồ sơ không hợp lệ.');
+    return app.select(args.mst, scope(), signal);
+  });
   add('account.refresh', 'Kiểm tra/khôi phục phiên đăng nhập MST đang chọn bằng cơ chế hiện có. Không trả token/password.', {}, [], 'ACTION', 'Đang kiểm tra phiên đăng nhập…', (_, signal) => app.refresh(signal, scope()));
   add('invoice.download', 'Bắt đầu tác vụ tải nền cho MST đang chọn; không đồng nghĩa đã tải xong. Phải kiểm tra download_status. Không dừng tác vụ đang chạy.', { from: date, to: date, direction: string({ enum: ['BUY', 'SELL'] }) }, ['from', 'to', 'direction'], 'ACTION', 'Đang bắt đầu tải hóa đơn…', (args, signal) => app.download(args, signal, scope()));
   add('invoice.download_status', 'Kiểm tra tiến độ và kết quả tải hóa đơn đang chọn; phản ánh done/failed/busy.', {}, [], 'READ', 'Đang kiểm tra tiến độ tải…', () => app.downloadStatus());
@@ -261,7 +328,7 @@ function createRegistry({ app, datasets, dataDir, emit, files, attachments = [],
   add('db.query_readonly', 'Chạy SELECT/WITH READ-ONLY trên SQLite local. Tối đa 500 dòng. Chỉ SELECT/WITH, không được INSERT/UPDATE/DELETE/DROP/ALTER/PRAGMA. Dùng COUNT/SUM/GROUP BY/LIMIT để tổng hợp.', { path: string({ maxLength: 1000 }), sql: string({ maxLength: 4000 }) }, ['path', 'sql'], 'READ', 'Đang truy vấn database…', args => queryReadonly(args.path, args.sql));
 
   const verifiers = {
-    'mst.select': (value, args) => value?.selectedMst === args.mst && scope() === args.mst,
+    'mst.select': (value, args) => value?.selectedMst === args.mst && app.context().currentUser.selectedMst === args.mst,
     'account.refresh': (value, _, context) => value?.authenticated === true && value.mst === context.companyId && scope() === context.companyId,
     'invoice.download': (value, _, context) => value?.started === true && value.mst === context.companyId && typeof value.jobId === 'string' && app.downloadStatus().jobId === value.jobId,
   };

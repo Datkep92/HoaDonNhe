@@ -949,3 +949,7 @@ body.app-ready > aside, body.app-ready > main { animation: app-enter .55s cubic-
 .ai-approval pre { max-height: 160px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; }
 .ai-approval button, .ai-approval select { margin: 6px 6px 0 0; padding: 7px 10px; font: inherit; }
 #ai-permissions-dialog { width: min(650px, 92vw); max-height: 85vh; overflow: auto; }
+#update-dialog{max-width:640px;max-height:calc(100vh - 48px);overflow:auto}
+#update-release-notes{white-space:pre-wrap;line-height:1.65;max-height:45vh;overflow:auto;padding:12px;background:var(--bg,#f5f7fa);border-radius:8px}
+#update-status{white-space:pre-line}
+#update-dialog.update-waiting{position:fixed;inset:auto 20px 20px auto;margin:0;max-width:420px;z-index:1100;box-shadow:0 8px 30px #0002}

@@ -28,10 +28,15 @@ function label(value) {
   return LABELS[Number(value)] || String(value);
 }
 
+function displayLabel(value) {
+  const code = String(value ?? '').trim();
+  return !code ? 'Chưa xác định' : LABELS[code] || `Chưa xác định (mã ${code})`;
+}
+
 // Trạng thái chưa biết (null) KHÔNG bị coi là loại trừ — thiếu dữ liệu thì để nguyên, không đoán.
 function isExcluded(value) {
   if (value === null || value === undefined || value === '') return false;
   return EXCLUDED.includes(String(value));
 }
 
-module.exports = { LABELS, EXCLUDED, label, isExcluded };
+module.exports = { LABELS, EXCLUDED, label, displayLabel, isExcluded };

@@ -21,22 +21,22 @@
   const labelStatus = status => {
     const value = String(status || '').toLowerCase();
     if (value === 'active') return 'Đang hoạt động';
-    if (value === 'trial') return 'Đang dùng thử';
+    if (value === 'trial') return 'Đang hoạt động';
     if (value === 'locked') return 'Đã bị khóa';
     if (value === 'expired') return 'Đã hết hạn';
     if (value === 'unactivated' || value === 'invalid') return 'Chưa kích hoạt';
     if (value === 'device_limit_exceeded') return 'Vượt số thiết bị';
-    return status || 'Trial';
+    return status || 'Cơ bản';
   };
   const packageName = license => {
     const pkg = license?.packageType || license?.package || '';
     const status = String(license?.status || '').toLowerCase();
     if (status === 'active') return pkg || 'Activate';
-    if (status === 'trial') return 'Trial';
+    if (status === 'trial') return 'Cơ bản';
     if (status === 'locked') return 'Bị khóa';
     if (status === 'expired') return 'Hết hạn';
     if (status === 'device_limit_exceeded') return 'Vượt số thiết bị';
-    return 'Trial';
+    return 'Cơ bản';
   };
   const setMessage = (id, text) => { q(id).textContent = text || ''; };
   // Bước 4: khách điền Họ tên + SĐT khi bấm mua key, gửi về CRM để admin nhận diện máy.
@@ -62,17 +62,23 @@
     q('license-current-key').textContent = license.keyName || license.key || '—';
     q('license-current-name').textContent = device.name || '—';
     q('license-current-phone').textContent = device.phone || '—';
-    q('license-hardware-id').textContent = device.hardwareId || device.installationId || '—';
+    q('license-hardware-id').textContent = device.hardwareIdV2 || device.machineId || device.hardwareId || device.installationId || '—';
     q('unlock-hardware-id').textContent = device.hardwareId || device.installationId || '—';
     // Khóa bản quyền do admin bật (/lock): overlay tự hiện/ẩn theo vòng refresh 10 giây.
     q('license-lock').hidden = status !== 'locked';
 
     // Hết hạn (dùng thử hoặc key): overlay riêng, câu chữ tuỳ máy đã từng có key chưa.
     const hasKey = String(license.keyName || license.key || '').trim();
-    q('license-expired').hidden = status !== 'expired';
+    q('license-expired').hidden = true;
+    const commercial=license.billing?.commercial===true;
+    q('settings-license-form').hidden=!commercial;q('open-plans').hidden=true;q('main-license-badge').hidden=!commercial;
+    q('settings-tab-license').textContent=commercial?'Bản quyền & Gói':'Thông tin ứng dụng';
+    q('license-current-key').parentElement.hidden=!commercial;
+    q('license-current-expiry').parentElement.hidden=!commercial;
+    if(!commercial){q('license-current-package').textContent='Miễn phí trong giai đoạn phát triển';q('license-current-status').textContent=status==='locked'?'Đã bị khóa':'Đang hoạt động';q('side-license-state').textContent='Miễn phí';}
 
     if (status === 'expired') {
-      q('license-expired-title').textContent = hasKey ? 'License Key đã hết hạn' : 'Trial đã hết hạn';
+      q('license-expired-title').textContent = hasKey ? 'License Key đã hết hạn' : 'Gói hiện tại đã hết hạn';
       q('license-expired-text').textContent = hasKey
         ? 'Gia hạn key hiện tại hoặc nhập key mới để tiếp tục sử dụng.'
         : 'Gửi thông tin để được cấp License Key, hoặc nhập key nếu bạn đã có.';
@@ -149,7 +155,7 @@
     finally { box.disabled = false; }
   }
 
-  async function refreshSettings() { await refreshLicense(); await refreshLockStatus(); await refreshAutostart(); }
+  async function refreshSettings() { await refreshLicense(); await refreshLockStatus(); }
 
   function showPane(name) {
     const panes = ['license', 'lock', 'startup'];
@@ -169,7 +175,7 @@
     void refreshSettings();
   }
 
-  q('settings-tab-startup').onclick = () => showPane('startup');
+  q('settings-tab-startup').hidden=true;q('settings-startup').hidden=true;
   q('autostart-enabled').onchange = toggleAutostart;
 
   // Thẻ gói nằm ngay trong dialog đăng ký (#payment-plans) — DOM là nguồn duy nhất,

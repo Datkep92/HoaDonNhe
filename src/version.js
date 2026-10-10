@@ -20,7 +20,7 @@
 // ---------------------------------------------------------------------------
 module.exports = {
   name: 'CN Tax Tools',
-  version: '1.1.6',
+  version: '1.1.7',
   sourceRepository: 'Datkep92/HoaDonNhe',
   repository: 'Datkep92/HoaDonNhe',
   releasesUrl: 'https://github.com/Datkep92/HoaDonNhe/releases',

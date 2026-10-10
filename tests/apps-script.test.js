@@ -92,6 +92,7 @@ function load(sheets, options = {}) {
   const byName = new Map(sheets.map(sheet => [sheet.getName(), sheet]));
   let uuid = 0;
   const sandbox = {
+    LockService: { getScriptLock: () => ({ waitLock() {}, releaseLock() {} }) },
     PropertiesService: {
       getScriptProperties: () => ({
         getProperty: name => {

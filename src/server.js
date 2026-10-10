@@ -7,6 +7,7 @@ const crypto = require('node:crypto');
 const { execFile, spawn } = require('node:child_process');
 const { URL } = require('node:url');
 const { Engine, atomicWrite, validateParams, canReuseSearch, sameDownloadParams, companyNameFromItems, isResumableJob, classifyDownloadError } = require('./core');
+const { ManualDownloadEngine, validateManualParams } = require('./manual-download');
 const { TaxBrowser, browserPath, jwtAccount, disablePasswordManager } = require('./browser');
 const tct = require('./tct-api');
 const loginAuto = require('./login-auto');
@@ -59,6 +60,20 @@ if (process.argv.includes('--apply-update')) {
 }
 
 const packed = !!process.pkg;
+// Explicit diagnostic runs in an isolated temporary directory, before user data/support startup.
+if (process.argv.includes('--free-ai-check')) {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'cntax-free-exe-'));
+  const runtime = require('./ai/free-runtime').createRuntime(directory);
+  (async () => {
+    try {
+      const info = await runtime.inspect();
+      const result = await runtime.chat({ basic: true, messages: [{ role: 'user', content: 'Reply exactly OK.' }] });
+      if (result.final?.trim() !== 'OK') throw Error('Synthetic AI check did not return OK.');
+      console.log(JSON.stringify({ ok: true, packed, transport: info.transport, freeModels: info.freeModels.length, answer: result.final, requiresDownload: false }));
+    } finally { runtime.close(); fs.rmSync(directory, { force: true, recursive: true }); }
+  })().then(() => process.exit(0)).catch(e => { console.error(e.message); process.exit(1); });
+  return;
+}
 const appDir = packed ? path.dirname(process.execPath) : path.resolve(__dirname, '..');
 const testServer = process.argv.includes('--test-server');
 // Local packaging checks must not contact the gateway or start its stream.
@@ -88,6 +103,8 @@ const secrets = require('./secrets').init(dataDir);
 const accountsFile = path.join(dataDir, 'accounts.json');
 const support = new SupportStore(dataDir, { useDefaultGateway: !testServer });
 const appLock = new AppLockStore(dataDir, support);
+const billing = new (require('./billing-store').BillingStore)(dataDir,support);
+if(!support.data.billing)support.data.billing={commercial:false,revision:0};
 // EXE chạy không có cửa sổ console, nên thông báo khởi động và lỗi được ghi vào
 // du_lieu/nhat-ky.log; lỗi nghiêm trọng thì hiện thêm hộp thoại để người dùng biết.
 const logFile = path.join(dataDir, 'nhat-ky.log');
@@ -104,6 +121,7 @@ function reportFatal(message) {
 // EXE chạy ở chế độ GUI nên không có console: lỗi lúc khởi động trước đây không hiện ra đâu cả.
 // Ghi vào du_lieu/nhat-ky.log rỒi hiện hộp thoại để không còn cảnh "bấm EXE mà không thấy gì".
 process.on('uncaughtException', error => {
+  log('Lỗi tiến trình không được xử lý: ' + (error?.stack || String(error)));
   reportFatal(error && error.message ? error.message : String(error));
   setTimeout(() => process.exit(1), 1500); // chờ hộp thoại kịp hiện
 });
@@ -183,12 +201,60 @@ const updater = new Updater({
   execPath: process.execPath,
   localAppData: process.env.LOCALAPPDATA,
   checkUpdate,
+  mandatory: packed || process.env.HOADON_FORCE_UPDATE_CHECK === '1',
+  noticeFile: path.join(dataDir, 'update-notice.json'),
 });
 // Kiểm tra bản mới MỘT LẦN khi mở app (không polling). Tắt bằng HOADON_NO_UPDATE_CHECK=1.
 // HOADON_FORCE_UPDATE_CHECK=1 để bật cả khi chạy --test-server (dùng cho test tự động).
 const updateCheckEnabled = process.env.HOADON_NO_UPDATE_CHECK !== '1'
   && !localSelfCheck && (!testServer || process.env.HOADON_FORCE_UPDATE_CHECK === '1');
-if (updateCheckEnabled) updater.check().catch(() => {});
+let updatePending=updater.status().mandatory && updater.status().updateAvailable, activeMutations=0;
+if(updateCheckEnabled) {
+  const timer=setInterval(()=>automaticUpdate().catch(error=>log('Cập nhật nền: '+error.message)),60*1000);timer.unref();
+  setTimeout(()=>automaticUpdate().catch(()=>{}),15000).unref();
+}
+// Reporting must remain active when update checks are disabled.
+if (!localSelfCheck && !testServer) {
+  const reportUsage = () => billing.flush(activeAccounts().map(a => a.mst))
+    .catch(error => log('Không gửi được thống kê sử dụng: ' + error.message));
+  setTimeout(reportUsage, 60 * 1000).unref();
+  setInterval(reportUsage, 15 * 60 * 1000).unref();
+}
+let autoCheckAt=0,autoRunning=false,updateTask=null;
+const updateDrafts = new Map();
+async function automaticUpdate() {
+  if(autoRunning||updateTask||(!packed&&process.env.HOADON_FORCE_UPDATE_CHECK!=='1')||Date.now()-autoCheckAt<3600000)return;
+  autoCheckAt=Date.now();autoRunning=true;
+  try {
+    const state=await updater.check(true);updatePending=state.mandatory&&state.updateAvailable;
+    try {const value=await billing.remote('config');billing.configure(value.config);}catch(error){log('Không đọc được cấu hình: '+error.message);}
+  } finally {autoRunning=false;}
+}
+function updateBlockers() {
+  const reasons=[];
+  for(const [id,entry] of updateDrafts)if(Date.now()-entry.at>90000)updateDrafts.delete(id);
+  if([...updateDrafts.values()].some(entry=>entry.dirty))reasons.push('Lưu hoặc đóng biểu mẫu đang chỉnh sửa trong giao diện');
+  if([...mstLookupJobs.values(),...tokhaiJobs.values()].some(job=>job.running))reasons.push('Tra cứu MST hoặc tải tờ khai đang chạy');
+  if(activeMutations)reasons.push('Lưu hoặc xử lý dữ liệu đang thực hiện');
+  if(detachedTasks.length||engine?.busy||[...engines.values()].some(e=>e.busy)||autoSyncEngines.size)reasons.push('Tải hoặc đồng bộ hóa đơn đang chạy');
+  if(foregroundAuth.size)reasons.push('Đăng nhập cổng thuế đang thực hiện');
+  if(billing.pending.size)reasons.push('Tác vụ dữ liệu đang hoàn tất');
+  if(require('./invoice-replacement/service').hasUnsavedWork())reasons.push('Hoàn tất xuất file thay thế hóa đơn hoặc dừng lượt đang xử lý');
+  return reasons;
+}
+function beginMandatoryUpdate(version) {
+  if(updateTask||['downloading','verifying','waiting','applying'].includes(updater.state.stage))return {ok:true,started:true,alreadyRunning:true};
+  if(updater.state.mandatory&&version!==updater.state.latest)return {ok:false,error:'Phiên bản đã thay đổi. Đọc thông báo cập nhật mới rồi thử lại.'};
+  if(!updater.plan?.ok||!updater.state.canSelfUpdate)return {ok:false,error:updater.state.error||'Chưa thể tải bản cập nhật. Kiểm tra kết nối hoặc quyền thư mục ứng dụng.'};
+  updater.restartHidden=process.argv.includes(autostart.START_FLAG);
+  updateTask=updater.start(async()=>{
+    updater.state.stage='waiting';
+    while(true){const blockers=updateBlockers();updater.state.blockers=blockers;if(!blockers.length)break;await new Promise(resolve=>setTimeout(resolve,1000));}
+  },version).then(result=>{if(result.ok)setTimeout(()=>stop(),1500);return result;})
+    .catch(error=>{updater.state.stage='error';updater.state.error=error.message;log('Cập nhật lỗi: '+error.message);})
+    .finally(()=>{updateTask=null;});
+  return {ok:true,started:true};
+}
 // Dọn thư mục tạm của lần tự cập nhật trước (file đang bị khoá sẽ được dọn ở lần mở sau).
 cleanupUpdateTemp();
 let lastUiPoll = 0;
@@ -270,6 +336,8 @@ function autoSyncPreview(mst) {
   };
 }
 async function runAutoSyncFor(mst, reason) {
+  if(updatePending)return {skipped:true};
+  await ensureLicenseAllowed(mst);
   if (!safeMst(mst)) throw new Error('Chọn MST trước khi chạy Auto Sync.');
   const instance = autoSyncFor(mst);
   if (!instance) throw new Error('Chọn thư mục lưu trước khi chạy Auto Sync.');
@@ -300,6 +368,7 @@ async function runBackfillRange({ direction, from, to, onProgress, isCancelled, 
     // XML đã có trên đĩa mà DB thiếu ⇒ nhập trước, khỏi tải lại (mục 18/19 lớp 2).
     await data.xmlScanner.scanXmlFolder({ db, mst, identifiers: accountIdentifiers(mst), mstDir: dir });
     engine = new Engine({
+      onStates: (job, states) => updatePortalStates(job, states, mst),
       store: path.join(dir, 'backfill-job.json'),
       request: async (route, action, check) => {
         check(); const token = directTokens.get(mst);
@@ -349,6 +418,23 @@ async function runBackfillRange({ direction, from, to, onProgress, isCancelled, 
 // (`withScanLock`) – SQLite chỉ cho một luỒng ghi tại một thời điểm (WAL) và ghi chỒng sẽ báo BUSY.
 // Job tách theo hướng để hai engine không ghi chung một file tiến độ.
 let scanChain = Promise.resolve();
+const portalStateChanges = new Map();
+async function updatePortalStates(job, states, mst) {
+  if (!mst || !job.output || !states.size) return;
+  await withScanLock(() => {
+    const data = dataLayer();
+    const { db } = data.mst.ensureMst({ output: job.output, mst });
+    try {
+      const updated = require('./data/portal-states').applyPortalStates(db, states);
+      if (updated) {
+        data.reconciliation.forceReconcile(db);
+        const old = portalStateChanges.get(mst) || { revision: 0 };
+        portalStateChanges.set(mst, { revision: old.revision + 1, updated });
+        invalidateSyncCache(mst);
+      }
+    } finally { data.sqlite.closeDatabase(db); }
+  });
+}
 function withScanLock(fn) {
   const next = scanChain.then(fn, fn);
   scanChain = next.then(() => {}, () => {});
@@ -360,6 +446,8 @@ function withScanLock(fn) {
 const autoSyncEngines = new Set();
 
 async function runAutoSyncDirection({ direction, days, mst: targetMst }) {
+  if(updatePending)return {skipped:true};
+  await ensureLicenseAllowed(targetMst || selected);
   const data = dataLayer();
   const mst = targetMst || selected;
   if (!mst) throw new Error('Chưa chọn MST.');
@@ -373,6 +461,7 @@ async function runAutoSyncDirection({ direction, days, mst: targetMst }) {
     await withScanLock(() => data.xmlScanner.scanXmlFolder({ db, mst, identifiers: accountIdentifiers(mst), mstDir: dir, profileNames: profileNameList(mst, db) }));
     // 2) Tra cứu + tải phần còn thiếu.
     syncEngine = new Engine({
+      onStates: (job, states) => updatePortalStates(job, states, mst),
       store: path.join(dir, `autosync-job-${direction === 'BUY' ? 'buy' : 'sell'}.json`),
       request: async (route, action, check) => {
         check(); const token = directTokens.get(mst);
@@ -482,15 +571,15 @@ function profileNameList(mst, db) {
   return [...names];
 }
 
-async function autoImportAfterDownload(label) {
+async function autoImportAfterDownload(label, mst = selected, targetOutput = output) {
   try {
     const data = dataLayer();
-    if (!selected || !output) return;
+    if (!mst || !targetOutput) return;
     if (data.importJob.status().running) return;
-    log(`Tự nhập XML vào kho dữ liệu sau khi ${label} (MST ${selected})…`);
+    log(`Tự nhập XML vào kho dữ liệu sau khi ${label} (MST ${mst})…`);
     // profileNames: tên hỒ sơ để bộ nhập nhận diện hoá đơn thuộc hỒ sơ khi mã trong XML là mã
     // KHÁC MST hỒ sơ (một chủ có nhiều mã). Xem xml-scanner.js resolveOwnCode().
-    data.importJob.start({ output, mst: selected, identifiers: accountIdentifiers(selected), profileNames: profileNameList(selected) })
+    data.importJob.start({ output: targetOutput, mst, identifiers: accountIdentifiers(mst), profileNames: profileNameList(mst) })
       .then(result => {
         const own = result && result.ownCode;
         if (own) log(`Tự nhập: nhận diện mã ${own.code} là mã của hỒ sơ (${own.reason}, chiều ${own.direction}) → nhập lại ${own.files} file.`);
@@ -1225,8 +1314,9 @@ function maybeFirstScan(mst) {
 }
 function createEngine(mst) {
   if (engines.has(mst)) { engine = engines.get(mst); return engine; }
-  engine = new Engine({
+  engine = new ManualDownloadEngine({
     store: jobStore(mst),
+    onStates: (job, states) => updatePortalStates(job, states, mst),
     // A stale token must not be reused: drop the saved session so the UI asks for a fresh login.
     request: async (route, action, check) => {
       check(); const token = directTokens.get(mst);
@@ -1256,10 +1346,11 @@ function createEngine(mst) {
 }
 // Mọi lượt tải ghi vào thư mục lưu chung. Chỉ khi người dùng chưa chọn thư mục chung thì mới dùng
 // thư mục ghi trong lượt tải cũ, để không mất dữ liệu đang dở.
-async function applyOutput() {
-  if (!engine || !engine.job) return;
-  if (path.isAbsolute(output)) engine.job.output = output;
-  else if (path.isAbsolute(engine.job.output || '')) output = engine.job.output;
+async function applyOutput(target = engine) {
+  if (!target || !target.job) return;
+  if (target.job.combined) { await ensureFolder(target.job.output); return; }
+  if (path.isAbsolute(output)) target.job.output = output;
+  else if (path.isAbsolute(target.job.output || '')) output = target.job.output;
   else throw new Error('Chọn thư mục lưu hóa đơn trước khi tải.');
   await ensureFolder(output); // ổ gốc / ổ chỉ đọc bị chặn ngay, không để lỗi EPERM giữa lúc tải
 }
@@ -1413,7 +1504,10 @@ function ensureIdle(mst = selected) {
   const target = engineFor(mst);
   if (target && target.busy) throw new Error(`MST ${mst} đang chạy tác vụ – ngưng tác vụ của MST đó trước.`);
 }
-async function ensureLicenseAllowed() { return support.enforceLicense(); }
+async function ensureLicenseAllowed(mst = selected) {
+  const license=await support.enforceLicense();billing.configure(license.billing);
+  if(mst)await billing.checkMst(mst);return license;
+}
 async function authOperation(fn, mst) {
   const key = mst || selected;
   if (authBusy.has(key)) throw new Error('Đang xử lý phiên đăng nhập cho MST này. Vui lòng chờ.');
@@ -1530,7 +1624,10 @@ async function autoLoginFor(mst, input) {
   if (!password) throw new Error('MST này chưa lưu mật khẩu – nhập mật khẩu một lần trong form Đăng nhập rỒi bấm Tự động đăng nhập sau.');
   const username = String(input.username || '').trim() || mst;
   const keep = input.remember !== false;
-  const result = await loginAuto.autoLogin({ username, password, mst, maxAttempts: input.maxAttempts }, mst);
+  const stageNames = { 'captcha-request': 'lấy CAPTCHA', 'ocr-start': 'giải CAPTCHA bằng OCR', 'authenticate-request': 'gửi đăng nhập tới cổng thuế', authenticated: 'cổng thuế đã cấp phiên' };
+  const result = await loginAuto.autoLogin({ username, password, mst, maxAttempts: input.maxAttempts,
+    onStage: (stage, attempt) => log(`Đăng nhập MST ${mst} · PID ${process.pid} · lần ${attempt} · ${stageNames[stage] || stage}`),
+  }, mst);
   if (!result.ok) {
     // Hết lượt thử: trả về thông tin lỗi để bên gọi quyết định (báo lỗi hay mở form tay).
     const error = `Tự động đăng nhập chưa thành công sau ${result.attempts} lần thử. ${result.error || ''}`.trim();
@@ -2245,19 +2342,23 @@ function catchupStatus() {
 }
 
 // Agent adapter wraps existing services; no model-generated SQL, shell or page JS.
-function getAgentServices() {
+function getAgentServices(readCompany = null) {
   const clean = row => Object.fromEntries(Object.entries(row).filter(([key]) => !/file|path|url|lookup|token|password|secret/i.test(key)));
   const withAgentDb = fn => {
-    if (!selected) throw Object.assign(new Error('Chưa chọn MST. Chọn MST rồi thử lại.'), { code: 'MST_REQUIRED' });
+    const sourceMst = readCompany || selected;
+    if (!sourceMst) throw Object.assign(new Error('Bạn muốn đọc dữ liệu doanh nghiệp nào? Cho biết tên hoặc MST.'), { code: 'MST_REQUIRED' });
+    if (!activeAccounts().some(a => a.mst === sourceMst)) throw new Error('Doanh nghiệp không thuộc danh sách dữ liệu local.');
     if (!output) throw new Error('Chưa chọn thư mục lưu dữ liệu.');
-    const data = dataLayer(), dir = data.mst.mstDirectory(output, selected), file = path.join(dir, 'data.db');
+    const data = dataLayer(), dir = data.mst.mstDirectory(output, sourceMst), file = path.join(dir, 'data.db');
     if (!fs.existsSync(file)) throw Object.assign(new Error('MST này chưa có kho dữ liệu. Tải hoặc nhập XML trước.'), { code: 'DATA_NOT_READY' });
     return fn(readDatabase(file), data);
   };
   const context = () => ({
     app: { name: 'CNTaxTools', version: require('../package.json').version, today: new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Ho_Chi_Minh' }) },
     currentUser: { selectedMst: selected, accountStatus: !!selected && !!(authAccount || directTokens.has(selected)) ? 'authenticated' : 'unauthenticated' },
-    accounts: activeAccounts().map(account => ({ mst: account.mst, label: account.label || '' })),
+    accounts: activeAccounts().map(account => ({ mst: account.mst, label: account.label || '', company: companyNameFor(account.mst) || '' })),
+    readCompanyId: readCompany || selected,
+    localRoots: [output, path.join(require('node:os').homedir(), 'Documents'), path.join(require('node:os').homedir(), 'Desktop'), path.join(require('node:os').homedir(), 'Downloads'), ...(process.env.OneDrive ? [path.join(process.env.OneDrive, 'Documents'), path.join(process.env.OneDrive, 'Desktop')] : [])].filter(Boolean),
     download: downloadStatus(),
   });
   const downloadStatus = () => {
@@ -2266,6 +2367,10 @@ function getAgentServices() {
   };
   return {
     context, downloadStatus,
+    forCompany: mst => {
+      if (!activeAccounts().some(a => a.mst === mst)) throw new Error('Doanh nghiệp không thuộc danh sách dữ liệu local.');
+      return getAgentServices(mst);
+    },
     permissionContext: () => ({ deviceId: support.data.device.machineId,
       fingerprint: crypto.createHash('sha256').update(JSON.stringify({ selected, output, accounts: activeAccounts().map(a => a.mst), jobId: engineOf(selected)?.job?.id || '' })).digest('hex') }),
     openExport: file => new Promise((resolve, reject) => {
@@ -2302,7 +2407,7 @@ function getAgentServices() {
       if (value.items.length > 20000) throw new Error('Hóa đơn có hơn 20.000 dòng hàng; cần engine dữ liệu lớn trước khi xuất đầy đủ.');
       return value.items.map(clean);
     }),
-    summary: args => withAgentDb((db, data) => data.queries.summary(db, args)),
+    summary: args => withAgentDb((db, data) => ({ ...data.queries.summary(db, args), sourceMst: readCompany || selected, company: companyNameFor(readCompany || selected) || activeAccounts().find(a => a.mst === (readCompany || selected))?.label || '' })),
     select: async (mst, expectedSourceMst, signal) => {
       if (!activeAccounts().some(account => account.mst === mst)) throw new Error('MST không có trong danh sách ứng dụng.');
       await selectOperation(() => {
@@ -2359,6 +2464,7 @@ function getAgentServices() {
 let aiService;
 async function endpoint(req, res, url) {
   if (!allowed(req)) return reply(res, 403, { ok: false, error: 'Không có quyền truy cập giao diện.' });
+  if(updatePending&&!require('./update-policy').allowsDuringUpdate(req.method,url.pathname,{forms:[...updateDrafts.values()].filter(d=>Date.now()-d.at<90000).flatMap(d=>d.forms||[])}))return reply(res,423,{ok:false,code:'UPDATE_REQUIRED',error:'Có bản cập nhật bắt buộc. Bấm Cập nhật để tiếp tục; bạn vẫn có thể hoàn tất hoặc dừng công việc đang chạy.'});
   lastUiPoll = Date.now();
   if (url.pathname.startsWith('/api/ai/')) {
     try {
@@ -2377,6 +2483,22 @@ async function endpoint(req, res, url) {
     catch (error) { return reply(res, 400, { ok: false, error: error.message }); }
   }
   try {
+    if(url.pathname.startsWith('/api/billing/')) {
+      billing.configure(support.publicLicense().billing);
+      const action=url.pathname.slice('/api/billing/'.length);
+      if(action==='status')return reply(res,200,{ok:true,value:billing.status()});
+      if(req.method!=='POST')throw new Error('Yêu cầu POST.');
+      const input=await readBody(req);
+      if(action==='activity'){billing.record(String(input.feature||'activity'),true,Math.min(60,Math.max(0,Number(input.seconds)||0)));return reply(res,200,{ok:true,value:{saved:true}});}
+      if(!['quote','order','orders','cancel'].includes(action))throw new Error('Thao tác không hợp lệ.');
+      if(!billing.status().commercial)throw new Error('Hiện đang sử dụng miễn phí.');
+      const value=await billing.remote(action,input);return reply(res,200,{ok:true,value});
+    }
+    if (url.pathname.startsWith('/api/invoice-replacement/')) {
+      return await require('./invoice-replacement/service').handle(req, res, url, {
+        reply, dataDir, billing, checkLicense:ensureLicenseAllowed, readBody: r => readJsonBody(r, 70 * 1024 * 1024, 'hai file thay thế hóa đơn'),
+      });
+    }
     if (url.pathname.startsWith('/api/review/')) {
       return await require('./accounting-review/service').handle(req, res, url, {
         readBody, reply, readBankBody: req => readJsonBody(req, BANK_JSON_BODY_LIMIT, 'sao kê gốc bổ sung'),
@@ -2511,7 +2633,7 @@ async function endpoint(req, res, url) {
               const badge = data.originalPdf.badgeFor(row, original);
               return {
                 ...row,
-                stateLabel: data.invoiceState.label(row.tthai),
+                stateLabel: data.invoiceState.displayLabel(row.tthai),
                 original_state: badge.kind,
                 original_reason: original ? '' : data.originalPdf.reasonMissing(row),
               };
@@ -2632,7 +2754,7 @@ async function endpoint(req, res, url) {
       const input = await readBankJson(req);
       const rows = Array.isArray(input.rows) ? input.rows : [];
       if (!rows.length) throw new Error('Không có dòng nào để lưu.');
-      return withDatabase(db => {
+      const value = await billing.limited('bank',JSON.stringify({mst:currentMst(),rows}),()=>withDatabase(db => {
         // Chuẩn hoá LẠI trên server từ chính các dòng user xác nhận – không tin dữ liệu đã chuẩn hoá sẵn.
         // Dựng grid bằng hàm dùng chung với module (một nguỒn sự thật, tránh lệch giữa test và server).
         const grid = data.bankStatement.normalizedRowsToGrid(rows);
@@ -2641,8 +2763,10 @@ async function endpoint(req, res, url) {
           fileHash: String(input.fileHash || ''),
           rows: grid,
         });
-        return reply(res, 200, { ok: true, value });
-      });
+        return {...value,billingNoChange:value.imported===0};
+      }));
+      if(value.imported>0)billing.record('bank_import',true);
+      return reply(res,200,{ok:true,value});
     }
     // POST /api/db/bank/preview-rows : giống /preview nhưng UI đã đọc được GRID (PDF chữ local
     // bằng pdfjs) – server chỉ chuẩn hoá + kiểm tra, KHÓNG đọc file, KHÓNG ghi DB.
@@ -2659,10 +2783,12 @@ async function endpoint(req, res, url) {
     if (req.method === 'POST' && url.pathname === '/api/db/bank/import') {
       await ensureLicenseAllowed();
       const input = await readBankUpload(req);
-      return withDatabase(db => reply(res, 200, {
+      const value=await billing.limited('bank',crypto.createHash('sha256').update(input.buffer).digest('hex')+currentMst(),()=>withDatabase(db => {const result=data.bankStatement.importWorkbook(db,{buffer:input.buffer,fileName:input.fileName});return {...result,billingNoChange:result.imported===0};}));
+      if(value.imported>0)billing.record('bank_import',true);
+      return reply(res,200,{
         ok: true,
-        value: data.bankStatement.importWorkbook(db, { buffer: input.buffer, fileName: input.fileName }),
-      }));
+        value,
+      });
     }
     // POST /api/db/bank/move : chuyển TOÀN BỘ file sao kê (fileId) sang data.db của MST khác.
     if (req.method === 'POST' && url.pathname === '/api/db/bank/move') {
@@ -3033,7 +3159,9 @@ async function endpoint(req, res, url) {
     }
     if (req.method === 'GET' && url.pathname === '/api/db/changes') {
       const mst = currentMst();
-      return reply(res, 200, { ok: true, value: xmlWatcher.status(mst) });
+      const status = xmlWatcher.status(mst);
+      const changes = portalStateChanges.get(mst);
+      return reply(res, 200, { ok: true, value: { ...status, revision: status.revision + (changes?.revision || 0), updated: (status.updated || 0) + (changes?.updated || 0) } });
     }
     // ---- AUTO SYNC: trạng thái, cấu hình, chạy ngay (§26/§28/§30) ----
     if (req.method === 'GET' && url.pathname === '/api/db/autosync/status') {
@@ -3608,13 +3736,13 @@ async function endpoint(req, res, url) {
   }
   if (url.pathname === '/api/update') return reply(res, 200, { ok: true, value: { ...updater.status(), url: updater.status().releaseUrl } });
   // ---- Self update: mỗi thao tác do người dùng chủ động gọi ----
-  if (url.pathname === '/api/update/check') return reply(res, 200, { ok: true, value: await updater.check(true) });
+  if (url.pathname === '/api/update/work' && req.method === 'POST') {const input=await readBody(req);if(typeof input.id!=='string'||input.id.length>80)return reply(res,400,{ok:false,error:'Mã giao diện không hợp lệ.'});updateDrafts.set(input.id,{dirty:input.dirty===true,forms:Array.isArray(input.forms)?input.forms.filter(id=>['mst-form','identifiers-form'].includes(id)):[],at:Date.now()});return reply(res,200,{ok:true});}
+  if (url.pathname === '/api/update/check') {const state=await updater.check(true);updatePending=state.mandatory&&state.updateAvailable;return reply(res,200,{ok:true,value:state});}
   if (url.pathname === '/api/update/cancel') return reply(res, 200, { ok: true, value: updater.cancel() });
   if (url.pathname === '/api/update/start') {
-    const result = await updater.start();
-    // Tải + xác minh xong và helper đã khởi động -> trả lời rỒi tự đóng để helper thay file.
-    if (result.ok) setTimeout(() => { stop(); }, 1500);
-    return reply(res, 200, { ok: true, value: result });
+    if(req.method!=='POST')return reply(res,405,{ok:false,error:'Cần bấm Cập nhật trong thông báo.'});
+    const body=await readBody(req),result=beginMandatoryUpdate(body.version);
+    return reply(res,result.ok?200:409,{ok:result.ok,value:result,error:result.error});
   }
     if (req.method === 'POST' && !String(req.headers['content-type'] || '').startsWith('application/json')) throw new Error('Yêu cầu không hợp lệ.');
     if (req.method === 'POST' && url.pathname === '/api/app-lock/set-pin') { const input = await readBody(req); return reply(res, 200, { ok: true, value: appLock.setPin(input.pin) }); }
@@ -3653,7 +3781,7 @@ async function endpoint(req, res, url) {
       return { visible: browser.visible };
     }, browser.mst) });
     if (req.method === 'POST' && url.pathname === '/api/account/check') return reply(res, 200, { ok: true, value: await authOperation(checkLogin, selected) });
-    if (req.method === 'POST' && url.pathname === '/api/account/select') { const input = await readBody(req); return reply(res, 200, { ok: true, value: await selectOperation(() => selectAccount(input.mst), input.mst) }); }
+    if (req.method === 'POST' && url.pathname === '/api/account/select') { const input = await readBody(req); return reply(res, 200, { ok: true, value: await selectOperation(async () => { if(billing.status().basic)await billing.remote('mst_select',{mst:input.mst}); return selectAccount(input.mst); }, input.mst) }); }
     if (req.method === 'POST' && url.pathname === '/api/account/save') {
       const input = await readBody(req);
       const mst = String(input.mst || input.previous || '').trim();
@@ -3720,7 +3848,7 @@ async function endpoint(req, res, url) {
       output = folder; accounts.output = output; saveAccounts();
       // Trả lời NGAY, tác vụ chạy nền: progress/paused theo dõi qua /api/state (poll 0,8s khi bận).
       runDetached(target, target.job?.id || '', `Tra cứu MST ${target.mst}`, async () => {
-        await target.search(input, output);
+        await target.search(input, folder);
         await closeBrowserWhenIdle('tra cứu xong');
       }).then(() => {
         // Lượt dừng vì hết phiên ⇒ đăng lại ngay để lượt sau (nút Tiếp tục) chạy được.
@@ -3742,7 +3870,7 @@ async function endpoint(req, res, url) {
       const folder = String(input.output ?? output ?? '').trim();
       await ensureFolder(folder);
       output = folder; accounts.output = output; saveAccounts();
-      const requested = validateParams(input);
+      const requested = validateManualParams(input);
       const currentJob = target.job;
       // Luật tái sử dụng nằm ở core để test được (canReuseSearch + tests/core.test.js).
       const reuse = canReuseSearch(currentJob, requested);
@@ -3750,13 +3878,13 @@ async function endpoint(req, res, url) {
       runDetached(target, currentJob?.id || '', `Tải cuốn chiếu MST ${target.mst}`, async () => {
         if (reuse) {
           currentJob.mode = 'stream';
-          currentJob.output = output;
+          if (!currentJob.combined) currentJob.output = folder;
           await target.resume(true);
         } else {
-          await target.stream(requested, output);
+          await target.stream(requested, folder);
         }
         await closeBrowserWhenIdle('tải cuốn chiếu xong');
-        autoImportAfterDownload('tải cuốn chiếu xong');
+        autoImportAfterDownload('tải cuốn chiếu xong', target.mst, target.job.output);
       });
       return reply(res, 200, { ok: true, value: target.snapshot() });
     }
@@ -3765,7 +3893,7 @@ async function endpoint(req, res, url) {
       await ensureLicenseAllowed();
       const target = engineOf(String((await readBody(req)).mst || '').trim());
       if (!target) throw new Error('Chưa chọn MST và chưa tra cứu.');
-      await applyOutput();
+      await applyOutput(target);
       return reply(res, 200, { ok: true, value: await target.exportList() });
     }
     // ---------------------------------------------------------------------------
@@ -3798,7 +3926,7 @@ async function endpoint(req, res, url) {
       const currentJob = target.job;
       // validateParams() phải chạy TRƯỚC cả hai nhánh: nhánh (2) cần điều kiện tra cứu đã chuẩn
       // hoá để so với lượt cũ. Nó cũng là chốt chặn báo lỗi sớm, trước cả khi bấm "Ngưng".
-      const requested = validateParams(input);
+      const requested = validateManualParams(input);
       // (2) LƯỢT CÒN DỞ → chạy tiếp đúng chỗ dừng. isResumableJob() dùng CHUNG danh sách trạng
       // thái với giao diện (core.js) nên hai bên không tự chế mỗi bên một danh sách khác nhau.
       // Cần `confirm` từ giao diện: nếu không có, coi như người dùng bấm nút mới và chạy lượt mới
@@ -3812,7 +3940,7 @@ async function endpoint(req, res, url) {
         runDetached(target, currentJob.id, `Chạy tiếp MST ${target.mst}`, async () => {
           await target.resume(true);
           await closeBrowserWhenIdle('tải xong');
-          autoImportAfterDownload('chạy tiếp');
+          autoImportAfterDownload('chạy tiếp', target.mst, target.job.output);
         });
         return reply(res, 200, { ok: true, value: target.snapshot() });
       }
@@ -3823,13 +3951,13 @@ async function endpoint(req, res, url) {
       runDetached(target, currentJob?.id || '', `Tải hóa đơn MST ${target.mst}`, async () => {
         if (reuse) {
           currentJob.mode = 'stream';
-          currentJob.output = output;
+          if (!currentJob.combined) currentJob.output = folder;
           await target.resume(true);
         } else {
-          await target.stream(requested, output);
+          await target.stream(requested, folder);
         }
         await closeBrowserWhenIdle('tải xong');
-        autoImportAfterDownload('tải xong');
+        autoImportAfterDownload('tải xong', target.mst, target.job.output);
         // Lượt dừng vì hết phiên ⇒ đăng lại ngay để lần bấm "Tải tiếp" sau chạy được.
         if (target.job?.state === 'auth_required') maybeAutoRelogin(target.mst, 'phiên hết hạn khi tải hóa đơn');
       });
@@ -3839,11 +3967,11 @@ async function endpoint(req, res, url) {
       await ensureLicenseAllowed();
       const target = engineOf(String((await readBody(req)).mst || '').trim());
       if (!target) throw new Error('Chưa chọn MST.');
-      await applyOutput();
+      await applyOutput(target);
       runDetached(target, target.job?.id || '', `Chạy tiếp MST ${target.mst}`, async () => {
         await target.resume();
         await closeBrowserWhenIdle('tải xong');
-        autoImportAfterDownload('chạy tiếp');
+        autoImportAfterDownload('chạy tiếp', target.mst, target.job.output);
       });
       return reply(res, 200, { ok: true, value: target.snapshot() });
     }
@@ -4607,6 +4735,11 @@ function launchUi(port) {
 let uiWatchStarted = false;
 const server = http.createServer((req, res) => {
   const url = new URL(req.url, 'http://127.0.0.1');
+  if(req.method==='POST'&&!url.pathname.startsWith('/api/update/')) {
+    activeMutations++;
+    let finished=false;const finish=()=>{if(finished)return;finished=true;activeMutations--;try{if(/\/api\/(db\/bank|invoice-replacement|search|download|mst\/lookup|tokhai)/.test(req.url||''))billing.record(String(req.url).split('?')[0],res.statusCode<400);}catch{}};
+    res.once('finish',finish);res.once('close',finish);
+  }
   const host = `127.0.0.1:${server.address().port}`;
   if (req.headers.host !== host) return reply(res, 403, { ok: false, error: 'Host không hợp lệ.' });
   if (url.pathname === '/' && url.searchParams.get('launch') === sessionSecret) {
@@ -4643,7 +4776,11 @@ const server = http.createServer((req, res) => {
   if (url.pathname === '/data-ui.js') return staticFile(req, res, 'data-ui.js', 'text/javascript; charset=utf-8');
   if (url.pathname === '/bank-pdf.js') return staticFile(req, res, 'bank-pdf.js', 'text/javascript; charset=utf-8');
   if (url.pathname === '/dvt-ui.js') return staticFile(req, res, 'dvt-ui.js', 'text/javascript; charset=utf-8');
+  if (url.pathname === '/billing-ui.js') return staticFile(req, res, 'billing-ui.js', 'text/javascript; charset=utf-8');
   if (url.pathname === '/mst-lookup-ui.js') return staticFile(req, res, 'mst-lookup-ui.js', 'text/javascript; charset=utf-8');
+  if (url.pathname === '/invoice-replacement-ui.js') return staticFile(req, res, 'invoice-replacement-ui.js', 'text/javascript; charset=utf-8');
+  if (url.pathname === '/invoice-replacement-ui.css') return staticFile(req, res, 'invoice-replacement-ui.css', 'text/css; charset=utf-8');
+  if (['/replacement-input-guide.svg', '/replacement-mapping-guide.svg', '/replacement-output-guide.svg'].includes(url.pathname)) return staticFile(req, res, url.pathname.slice(1), 'image/svg+xml');
   if (url.pathname === '/accounting-review-ui.js') return staticFile(req, res, 'accounting-review-ui.js', 'text/javascript; charset=utf-8');
   if (url.pathname === '/accounting-review-ui.css') return staticFile(req, res, 'accounting-review-ui.css', 'text/css; charset=utf-8');
   if (url.pathname === '/tokhai-ui.js') return staticFile(req, res, 'tokhai-ui.js', 'text/javascript; charset=utf-8');
@@ -4664,7 +4801,7 @@ function localGet(port, pathname) {
     }).on('error', reject);
   });
 }
-server.listen(0, '127.0.0.1', async () => {
+async function onServerListening() {
   const { port } = server.address();
   // Kiểm CHÍNH BẢN ĐÒNG GÒI: bộ giải CAPTCHA có chạy được trong EXE không?
   // Vì sao cần cờ này: `pkg` KHÓNG tự nhúng thư viện native của gói phụ thuộc. Đã xảy ra thật –
@@ -4705,6 +4842,8 @@ server.listen(0, '127.0.0.1', async () => {
         'icon.png',
         // pdfjs nạp bằng import() động trong bank-pdf.js nên không xuất hiện trong index.html.
         'vendor/pdfjs/pdf.min.mjs', 'vendor/pdfjs/pdf.worker.min.mjs',
+        'billing-ui.js',
+        'replacement-input-guide.svg', 'replacement-mapping-guide.svg', 'replacement-output-guide.svg',
       ])];
       const broken = [];
       for (const asset of assets) {
@@ -4726,7 +4865,8 @@ if (broken.length) throw new Error(`EXE thiếu file giao diện: ${broken.join(
       if (unreadable.length) throw new Error(`EXE không đọc được script tải PDF gốc: ${unreadable.join(', ')} — tính năng sẽ chết lúc chạy.`);
       const aiResult = await require('./ai/safe-js').executeSafeJs('return input.filter(x=>helpers.number(x.total)>10)', [{ total: 20 }, { total: 5 }]);
       if (JSON.stringify(aiResult) !== '[{"total":20}]') throw new Error('Runtime JS của AI Agent không hoạt động trong EXE.');
-      console.log(JSON.stringify({ ok: true, packed, port, browser: browserPath() || null, ui: true, api: true, aiRuntime: true, assets: assets.length })); process.exitCode = 0; server.close();
+      const replacement = await require('./invoice-replacement/smoke').check();
+      console.log(JSON.stringify({ ok: true, packed, port, browser: browserPath() || null, ui: true, api: true, aiRuntime: true, invoiceReplacement: replacement, assets: assets.length })); process.exitCode = 0; server.close();
     } catch (error) { console.error(error.message); process.exitCode = 1; server.close(); }
   }
   else if (testServer && process.argv.includes('--check-login-page')) {
@@ -4746,10 +4886,13 @@ if (broken.length) throw new Error(`EXE thiếu file giao diện: ${broken.join(
   }
   else if (testServer) console.log(JSON.stringify({ testUrl: `http://127.0.0.1:${port}/?launch=${sessionSecret}`, packed }));
   else {
-    log(`Khởi động CN Tax Tools (${packed ? 'EXE' : 'node'}) · dữ liệu: ${dataDir} · cổng ${port}`);
+    log(`Khởi động CN Tax Tools (${packed ? 'EXE' : 'node'}) · PID ${process.pid} · dữ liệu: ${dataDir} · cổng ${port}`);
     // Một instance duy nhất: bản mở sau chỉ nhờ bản cũ mở lại cửa sổ rỒi thoát.
     claimSingleInstance(port).then(keepAlive => {
       if (!keepAlive) { server.close(() => process.exit(0)); return; }
+      // Only the winning instance saves its port; a simultaneous second launch
+      // must not overwrite it with a temporary fallback port.
+      require('./local-server').rememberPort(dataDir, port, log);
       // --start-hidden: đây là lúc Windows mở app cùng lúc khởi động máy. Không
       // mở cửa sổ Chrome – chỉ hiện icon khay, người dùng bấm vào mới mở. Không có
       // cờ này thì hành vi cũ: mở cửa sổ luôn.
@@ -4762,6 +4905,7 @@ if (broken.length) throw new Error(`EXE thiếu file giao diện: ${broken.join(
       // ĐỒng bộ khoá Run theo lựa chọn của người dùng. Làm ở đây (không chặn
       // khởi động) vì nó đụng reg.exe; lần chạy đầu sẽ ghi khoá Run, các lần sau
       // chỉ đọc để tự sửa khi đường dẫn EXE đổi.
+      autostart.migrateHidden(dataDir);
       autostart.sync(dataDir).then(result => {
         if (result.error) log('Không đỒng bộ được khởi động cùng Windows: ' + result.error);
         else if (result.changed) log('Đã đỒng bộ khởi động cùng Windows theo cài đặt.');
@@ -4780,6 +4924,33 @@ if (broken.length) throw new Error(`EXE thiếu file giao diện: ${broken.join(
       }, 5000);
     }).catch(error => log('Khởi động lỗi: ' + (error && error.message ? error.message : error)));
   }
+}
+require('./local-server').startLocalServer(server, {
+  dataDir, testMode: localSelfCheck || (testServer && !(process.env.HOADON_TEST_DATA && process.argv.includes('--test-persistent-port'))),
+  persistOnBind: testServer,
+  lockPort: packed || process.argv.includes('--test-persistent-port'),
+  onBound: packed && !testServer ? port => {
+    writeInstanceFile(port);
+    require('./local-server').rememberPort(dataDir, port, log);
+  } : undefined,
+  previousPort: readInstanceFile()?.port,
+  log,
+  reuseExisting: async () => {
+    const info = readInstanceFile();
+    if (!info || Number(info.pid) === process.pid) return false;
+    const ping = await callInstance(info, '/api/ping');
+    if (ping?.status !== 200) return false;
+    const shown = await callInstance(info, '/api/window/show', 'POST');
+    if (shown?.status !== 200) throw new Error('Ứng dụng đang chạy nhưng chưa mở lại được cửa sổ. Dùng icon khay để mở lại.');
+    log(`Dùng lại ứng dụng đang chạy · PID ${info.pid} · cổng ${info.port}; không mở máy chủ mới.`);
+    return true;
+  },
+}).then(result => {
+  if (result.reused) { process.exit(0); return; }
+  return onServerListening();
+}).catch(error => {
+  reportFatal('Không khởi động được máy chủ ứng dụng: ' + error.message);
+  setTimeout(() => process.exit(1), 1500);
 });
 // Đóng cửa sổ giao diện của CHÍNH app này (Chrome/Edge --app, profile ui-browser của app).
 // Cần cho "Thoát hoàn toàn": (1) yêu cầu là phải đóng các cửa sổ, và (2) cửa sổ còn mở giữ kết nối

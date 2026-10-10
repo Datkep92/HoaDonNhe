@@ -30,7 +30,7 @@
   const licenseLabel = status => {
     const value = String(status || '').toLowerCase();
     if (value === 'active') return 'Đang hoạt động';
-    if (value === 'trial') return 'Đang dùng thử';
+    if (value === 'trial') return 'Đang hoạt động';
     if (value === 'locked') return 'Bị khóa';
     if (value === 'expired') return 'Đã hết hạn';
     if (value === 'unactivated' || value === 'invalid') return 'Chưa kích hoạt';

@@ -18,6 +18,7 @@ const { insertInvoice } = require('../src/data/repository');
 const excelExport = require('../src/data/excel-export');
 
 const { SHEET } = excelExport;
+const invoiceState = require('../src/data/invoice-state');
 const MST = '0312345678';
 const OTHER = '0100000001';
 
@@ -54,6 +55,37 @@ const open = buffer => {
   const book = XLSX.read(buffer, { type: 'buffer' });
   return { names: book.SheetNames, rows: name => XLSX.utils.sheet_to_json(book.Sheets[name], { header: 1 }) };
 };
+
+test('invoice export includes every status and page, preserves text IDs, amounts, filters and hyperlinks', () => {
+  withDb(db => {
+    for (let i = 0; i < 208; i++) {
+      const status = [null, '1', '2', '3', '4', '5', '6', '99'][i % 8];
+      insertInvoice(db, sample({ soHd: String(i + 1).padStart(8, '0'), tthai: status,
+        tienTruocThue: 100, tienThue: 10, tongTien: 110, lookupUrl: 'https://example.com/invoice' }));
+    }
+    insertInvoice(db, sample({ soHd: 'outside', ngayLap: '2025-01-01' }));
+    insertInvoice(db, sample({ soHd: 'sold', direction: 'SELL', mstBan: MST, mstMua: OTHER }));
+    const filters = { from: '2026-09-01', to: '2026-09-30', direction: 'BUY', q: 'cong ty' };
+    const result = excelExport.buildWorkbook(db, filters, ['buy']);
+    assert.equal(result.counts.buy, 208);
+    const book = XLSX.read(result.buffer, { type: 'buffer' });
+    const sheet = book.Sheets[SHEET.buy], rows = XLSX.utils.sheet_to_json(sheet, { header: 1 });
+    const headers = rows.shift(), col = name => headers.indexOf(name);
+    assert.equal(col('Trạng thái hóa đơn'), headers.length - 1);
+    assert.equal(rows[0][col('Số hóa đơn')], '00000001');
+    assert.equal(rows[0][col('MST người bán')], OTHER);
+    assert.deepEqual(rows.slice(0, 8).map(row => row[col('Trạng thái hóa đơn')]), [null, 1, 2, 3, 4, 5, 6, 99].map(invoiceState.displayLabel));
+    assert.equal(rows.reduce((sum, row) => sum + row[col('Tổng tiền')], 0), 208 * 110);
+    assert.equal(sheet[XLSX.utils.encode_cell({ r: 1, c: col('Cổng tra cứu NCC') })].l.Target, 'https://example.com/invoice');
+    for (const state of ['1', '2', '3', '4', '5', '6']) {
+      const filtered = open(excelExport.buildWorkbook(db, { ...filters, state }, ['buy']).buffer).rows(SHEET.buy);
+      assert.equal(filtered.length, 27);
+      assert.ok(filtered.slice(1).every(row => row[col('Trạng thái hóa đơn')] === invoiceState.displayLabel(state)));
+    }
+    assert.equal(excelExport.buildWorkbook(db, { ...filters, state: 'inactive' }, ['buy']).counts.buy, 78);
+    assert.equal(excelExport.buildWorkbook(db, { ...filters, state: 'active' }, ['buy']).counts.buy, 130);
+  });
+});
 
 test('bank export includes all pages and applies account, amount, category, status, flow, dates and search', () => {
   withDb(db => {

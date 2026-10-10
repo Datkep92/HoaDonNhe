@@ -44,9 +44,9 @@ test('readStates: đọc file mới, gộp file bản cũ (tthai = 4), bỏ giá
     fs.writeFileSync(path.join(dir, STATE_FILE), JSON.stringify({ states: { 'b|1|Y|2': '2', 'c|1|Z|3': '6' } }));
     assert.deepEqual([...readStates(dir)], [['b|1|Y|2', '2'], ['c|1|Z|3', '6']], 'file mới thắng file cũ');
 
-    // Giá trị ngoài 1..6 bị bỏ qua, không làm hỏng cả file.
-    fs.writeFileSync(path.join(dir, STATE_FILE), JSON.stringify({ states: { 'd|1|W|4': '9', 'e|1|V|5': '1' } }));
-    assert.deepEqual([...readStates(dir)], [['b|1|Y|2', '4'], ['e|1|V|5', '1']], 'chỉ nhận 1..6');
+    // Mã mới giữ nguyên để báo chưa xác định; dữ liệu không phải mã bị bỏ qua.
+    fs.writeFileSync(path.join(dir, STATE_FILE), JSON.stringify({ states: { 'd|1|W|4': '9', 'e|1|V|5': '1', bad: { value: 1 } } }));
+    assert.deepEqual([...readStates(dir)], [['b|1|Y|2', '4'], ['d|1|W|4', '9'], ['e|1|V|5', '1']], 'giữ mã chưa biết, không đoán là hóa đơn mới');
 
     fs.writeFileSync(path.join(dir, STATE_FILE), '{ hong');
     assert.deepEqual([...readStates(dir)], [['b|1|Y|2', '4']], 'JSON hỏng ⇒ bỏ qua file mới, không ném lỗi');

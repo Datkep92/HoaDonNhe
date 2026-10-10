@@ -46,7 +46,7 @@ function createPermissionEngine(dataDir, { now = Date.now, expiryMs = 120000 } =
   async function request(tool, args, context, signal, emit) {
     validContext(context); signal.throwIfAborted();
     const actionHash = binding(tool, args, context);
-    const reusable = saved.records.slice().reverse().find(record => record.scope !== 'once' && applies(record, context, actionHash));
+    const reusable = !context.forceOnce && saved.records.slice().reverse().find(record => record.scope !== 'once' && applies(record, context, actionHash));
     if (reusable) { if (reusable.state === 'denied') throw failure('Bạn đã từ chối đúng hành động này. Thu hồi quy tắc từ chối trong Quyền AI nếu muốn đổi.'); return evidence(reusable, tool, args, context); }
     const record = { approvalId: randomUUID(), capability: tool.requiredPermissions[0], scope: 'once', tool: tool.name, version: tool.version,
       actionHash, companyId: context.companyId, sessionId: context.sessionId, workspace: context.workspace, application: context.application, deviceId: context.deviceId || '',
@@ -60,7 +60,7 @@ function createPermissionEngine(dataDir, { now = Date.now, expiryMs = 120000 } =
       timer = setTimeout(() => finish(failure('Phê duyệt hết thời gian.', 'APPROVAL_EXPIRED')), expiryMs);
       signal.addEventListener('abort', abort, { once: true });
       if (signal.aborted) { abort(); return; }
-      try { emit({ ...record, allowedScopes: SCOPES.filter(scope => !['device', 'always'].includes(scope) || !!context.deviceId) }); }
+      try { emit({ ...record, allowedScopes: context.forceOnce ? ['once', 'deny'] : SCOPES.filter(scope => !['device', 'always'].includes(scope) || !!context.deviceId) }); }
       catch (error) { finish(error); }
     });
   }
@@ -70,6 +70,7 @@ function createPermissionEngine(dataDir, { now = Date.now, expiryMs = 120000 } =
     if (!record || record.state !== 'pending' || Date.parse(record.expiresAt) <= now()) throw failure('Phê duyệt không còn chờ hoặc đã hết hạn.', 'APPROVAL_EXPIRED');
     if (record.actionHash !== actionHash || context.sessionId !== record.sessionId || context.companyId !== record.companyId || binding(waiting.tool, waiting.args, context) !== actionHash) throw failure('Hành động/phạm vi đã thay đổi; không dùng phê duyệt cũ.', 'APPROVAL_MISMATCH');
     if (!SCOPES.includes(scope) || !['allow', 'deny'].includes(decision) || ['device', 'always'].includes(scope) && !context.deviceId) throw failure('Phạm vi phê duyệt không hợp lệ.');
+    if (waiting.context.forceOnce && !['once', 'deny'].includes(scope)) throw failure('Thao tác nghiệp vụ cần xác nhận riêng từng lần.');
     record.scope = decision === 'deny' ? 'deny' : scope;
     record.state = decision === 'deny' || scope === 'deny' ? 'denied' : 'approved'; persist();
     if (record.state === 'denied') waiting.finish(failure('Bạn đã từ chối; không thực hiện hành động.'));
@@ -90,4 +91,4 @@ function createPermissionEngine(dataDir, { now = Date.now, expiryMs = 120000 } =
     close() { for (const waiting of [...pending.values()]) { waiting.record.state = 'interrupted'; waiting.finish(failure('Ứng dụng đóng; không thực hiện lại hành động.', 'USER_CANCELLED')); } tickets.clear(); },
   };
 }
-module.exports = { createPermissionEngine, binding, SCOPES };
+module.exports = { createPermissionEngine, binding, canonical, SCOPES };

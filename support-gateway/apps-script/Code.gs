@@ -64,7 +64,7 @@ const ID_PATTERN = /^(?:DEV_[A-F0-9]{12,32}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-
 const ROOM_PATTERN = /^ROOM_WIN_[A-Z0-9]{8,40}$/;
 
 // Cột tự sinh nếu chưa có, để không phải tự thêm cột bằng tay trên Sheet.
-const DEVICE_OPTIONAL_COLUMNS = ['Phone', 'Name', 'Plan', 'Hardware Hash', 'Machine ID', 'Telegram Topic ID', 'First Install Time', 'Last Seen Time', 'License Key', 'Chat Room ID'];
+const DEVICE_OPTIONAL_COLUMNS = ['Phone', 'Name', 'Plan', 'Hardware Hash', 'Machine ID', 'Telegram Topic ID', 'First Install Time', 'Last Seen Time', 'License Key', 'Chat Room ID', 'Hardware ID V2'];
 
 
 // Số slot của một key: tối đa bao nhiêu máy, và đã gán mấy máy.
@@ -283,6 +283,8 @@ function doPost(e) {
     if (needsCrm_(input.action)) ensureTabs_();
 
     const action = String(input.action || '');
+    if(action === 'billing_setup') return reply_({ok:true,value:billingSetup_(input)});
+    if(action === 'billing') return reply_({ok:true,value:billingAction_(input)});
     const chatRoomId = String(input.chatRoomId || '');
     const installId = String(input.installationId || '');
 
@@ -290,7 +292,7 @@ function doPost(e) {
     // Apps Script không tự nói chuyện với Telegram, Gateway lo phần gửi/nhận.
     if (action === 'admin_command') {
       if (!ROOM_PATTERN.test(chatRoomId)) throw new Error('Invalid device identity.');
-      return reply_({ ok: true, value: adminCommand_(input) });
+      return reply_({ ok: true, value: billingAdminResult_(adminCommand_(input),input) });
     }
 
     // list_devices là lệnh TOÀN CỤC của admin (xem /online): không gắn với máy
@@ -332,6 +334,7 @@ function doPost(e) {
     let result;
     if (action === 'register_device') {
       result = registerDevice_(input);
+      billingHardware_(input);
     } else if (action === 'verify_key') {
       result = verifyKey_(input);
     } else if (action === 'license_status') {
@@ -342,6 +345,7 @@ function doPost(e) {
       throw new Error('Unknown action.');
     }
 
+    if(['register_device','verify_key','license_status'].indexOf(action)>=0) result=billingAttach_(result,input);
     return reply_({ ok: true, value: result });
   } catch (error) {
     return reply_({ ok: false, error: error.message || 'Request failed.' });
@@ -414,6 +418,13 @@ function findDevice_(data, input) {
   const machineId = String(input.machineId || '').trim();
   const installId = String(input.installationId || '').trim();
 
+  const hw=String(input.hardwareIdV2||'');
+  if(hw) {
+    if(!/^HW2-[A-F0-9]{32}$/.test(hw)) throw new Error('Hardware ID không hợp lệ.');
+    const matches=data.values.map((r,i)=>String(r[optional_(header,'Hardware ID V2')]||'')===hw?i:-1).filter(i=>i>=0);
+    if(matches.length>1)throw new Error('Hardware ID trùng; liên hệ Admin.');
+    if(matches.length===1)return {index:matches[0],via:'hardwareIdV2'};
+  }
   if (machineId) {
     const byMachine = find_(data.values, optional_(header, 'Machine ID'), machineId);
     if (byMachine >= 0) return { index: byMachine, via: 'machineId' };
@@ -710,7 +721,8 @@ function verifyKey_(input) {
   const boundList = bindings ? bindings.values : [];
   const boundHardwareCol = bindings ? cell_(bindings.header, 'Hardware ID') : -1;
   const legacyBound = String(license[boundCol] || '').trim();
-  const alreadyHere = boundList.some(row => String(row[boundHardwareCol] || '').trim() === input.installationId) || legacyBound === input.installationId;
+  const canonicalInstall=String(device[cell_(deviceData.header,'Hardware ID')]||input.installationId);
+  const alreadyHere = boundList.some(row => String(row[boundHardwareCol] || '').trim() === input.installationId || String(row[boundHardwareCol]||'').trim()===canonicalInstall) || legacyBound === input.installationId || legacyBound===canonicalInstall;
   if (!alreadyHere) {
     const limit = maxDevices_(license, data.header);
     const used = boundList.length || (legacyBound ? 1 : 0);
@@ -721,14 +733,14 @@ function verifyKey_(input) {
     if (bindings) {
       appendMapped_(bindingsSheet_(), {
         'License Key': key,
-        'Hardware ID': input.installationId,
+        'Hardware ID': canonicalInstall,
         'Chat Room ID': input.chatRoomId,
         'Activated At': new Date()
       });
     }
   }
 
-  licenses.getRange(found + 2, boundCol + 1).setValue(legacyBound || input.installationId);
+  licenses.getRange(found + 2, boundCol + 1).setValue(legacyBound || canonicalInstall);
   // Phòng chat đã ghi một lần thì giữ nguyên, không đổi theo lần kích hoạt sau.
   const licenseRoomCol = cell_(data.header, 'Chat Room ID');
   if (!String(license[licenseRoomCol] || '').trim()) {
@@ -838,6 +850,22 @@ function adminDate_(value) {
 }
 
 function adminCommand_(input) {
+  var commerce = billingAdmin_(input); if(commerce) return commerce;
+  var lock=LockService.getScriptLock();lock.waitLock(30000);
+  try {
+    var receipt=input.requestId?billingJson_('AdminUIRequests',String(input.chatRoomId)+'|'+String(input.requestId).slice(0,200)):null;
+    if(receipt&&receipt.value)return receipt.value;
+    var out=adminLegacyCommand_(input);
+    if(out.found){
+      var fresh=rows_(deviceSheet_()),i=find_(fresh.values,cell_(fresh.header,'Chat Room ID'),input.chatRoomId);
+      if(i>=0)Object.assign(out,deviceResult_(fresh.values[i],fresh.header));
+      if(receipt)billingPut_(receipt,String(input.chatRoomId)+'|'+String(input.requestId).slice(0,200),out);
+      if(input.requestId)billingTable_('AdminAudit',['Time','Room','Actor','Command']).appendRow([new Date(),input.chatRoomId,String(input.actor||''),String(input.text||input.command)]);
+    }
+    return out;
+  } finally {lock.releaseLock();}
+}
+function adminLegacyCommand_(input) {
   const text = String(input.text || input.command || '').trim();
   const room = String(input.chatRoomId || '').trim();
   const sheet = deviceSheet_();
@@ -855,6 +883,7 @@ function adminCommand_(input) {
   }
 
   const row = data.values[index];
+  if(input.expectedKey!==undefined&&String(row[cell_(header,'License Key')]||'')!==String(input.expectedKey))throw new Error('Key đã thay đổi. Mở lại menu và kiểm tra khách.');
   const rowNumber = index + 2;
   const parts = text.split(/\s+/).filter(Boolean);
   // Bỏ hậu tố @BotName mà Telegram thêm vào lệnh trong group.
@@ -878,7 +907,7 @@ function adminCommand_(input) {
     const plan = planCol >= 0 ? String(row[planCol] || '').trim() : '';
     const lines = [
       '📊 THÔNG TIN BẢN QUYỀN',
-      '🆔 Máy: ' + installationId,
+      '🆔 Máy: ' + String(row[optional_(header,'Hardware ID V2')] || row[optional_(header,'Machine ID')] || installationId),
       '💬 Phòng chat: ' + room,
       '🔑 Key: ' + (info.keyName || 'Chưa có'),
       '⏳ Hạn: ' + (adminDate_(info.expiryAt) || 'Không có') + (info.trial ? ' (dùng thử ' + TRIAL_DAYS + ' ngày)' : ''),
@@ -928,6 +957,8 @@ function adminCommand_(input) {
     sheet.getRange(rowNumber, expiryCol + 1).setValue(base);
     sheet.getRange(rowNumber, cell_(header, 'Status') + 1).setValue('Active');
     syncLicense_(row, header, { expiry: base, status: 'Active' });
+    const oldEnt=billingEntitlement_(String(row[cell_(header,'License Key')]||''));
+    if(oldEnt){oldEnt.expiryAt=base.toISOString();oldEnt.revision++;billingPut_(billingJson_('KeyEntitlements',String(row[cell_(header,'License Key')])),String(row[cell_(header,'License Key')]),oldEnt);}
     return { ...result, reply: '⏳ Đã gia hạn thêm ' + days + ' ngày.\n📅 Hạn mới: ' + adminDate_(base) };
   }
 
@@ -1328,4 +1359,359 @@ function aiAdmin_(input) {
   }
 
   return done('❓ Không hiểu "' + text + '".\n\n' + AI_HELP);
+}
+
+'use strict';
+// Portable rules shared by Node, Apps Script and the gateway.
+function BillingCore() {
+  const defaults = [
+    { id: 'MST10', maxMst: 10, price: 50000 }, { id: 'MST20', maxMst: 20, price: 90000 },
+    { id: 'MST30', maxMst: 30, price: 120000 }, { id: 'MST50', maxMst: 50, price: 150000 },
+  ];
+  function integer(value, min, max) {
+    const n = Number(value);
+    if (!Number.isSafeInteger(n) || n < min || n > max) throw new Error('Số lượng không hợp lệ.');
+    return n;
+  }
+  function quote(input, plans = defaults) {
+    const mst = integer(input.mst, 1, 50), devices = integer(input.devices, 1, 10);
+    const term = String(input.term || 'month');
+    if (!['month', 'quarter', 'year'].includes(term)) throw new Error('Kỳ thanh toán không hợp lệ.');
+    const plan = plans.slice().sort((a,b) => a.maxMst-b.maxMst).find(p => p.maxMst >= mst);
+    if (!plan || !Number.isFinite(Number(plan.price)) || Number(plan.price) < 0) throw new Error('Chưa có báo giá phù hợp.');
+    const months = { month: 1, quarter: 3, year: 12 }[term];
+    const monthly = Number(plan.price) * (1 + (devices - 1) * .5);
+    const original = Math.round(monthly * months);
+    const total = Math.round(monthly * ({ month: 1, quarter: 2.85, year: 10 }[term]));
+    return { planId: plan.id, maxMst: plan.maxMst, requestedMst: mst, devices, term, months, monthly, original, discount: original-total, total, currency: 'VND' };
+  }
+  function addMonths(instant, months) {
+    const vn = new Date(Number(new Date(instant)) + 7*3600000);
+    if (!Number.isFinite(vn.getTime())) throw new Error('Ngày không hợp lệ.');
+    const day = vn.getUTCDate(); vn.setUTCDate(1); vn.setUTCMonth(vn.getUTCMonth()+months);
+    const last = new Date(Date.UTC(vn.getUTCFullYear(),vn.getUTCMonth()+1,0)).getUTCDate();
+    vn.setUTCDate(Math.min(day,last));
+    return new Date(vn.getTime()-7*3600000).toISOString();
+  }
+  function upgrade(current, next, time) {
+    const start = Number(new Date(current.periodStart)), end = Number(new Date(current.expiryAt));
+    if (!(end > time && end > start) || current.term !== next.term) throw new Error('Chỉ nâng cùng kỳ khi key còn hạn.');
+    if (next.maxMst < current.maxMst || next.devices < current.devices) throw new Error('Hạ gói áp dụng khi gia hạn.');
+    return Math.max(0,Math.round((next.total-current.periodPrice)*(end-time)/(end-start)));
+  }
+  const day = time => new Date(time+7*3600000).toISOString().slice(0,10);
+  const month = time => day(time).slice(0,7);
+  return { defaults, quote, upgrade, addMonths, day, month, integer };
+}
+
+
+// Billing extension. Called only after the existing gateway secret check.
+function billingConfig_() {
+  var p = PropertiesService.getScriptProperties();
+  var raw = p.getProperty('BILLING_CONFIG');
+  var c = raw ? JSON.parse(raw) : { commercial: false, revision: 0 };
+  c.plans = c.commercial ? billingPlans_() : BillingCore().defaults;
+  return c;
+}
+function billingTable_(name, columns) {
+  var ss=SpreadsheetApp.getActive(), s=ss.getSheetByName(name);
+  if(!s) { s=ss.insertSheet(name); s.appendRow(columns); }
+  ensureColumns_(s,columns); return s;
+}
+function billingSetup_(input) {
+  if(SpreadsheetApp.getActive().getId()!==String(input.expectedSheetId||'')) throw new Error('CRM Sheet không khớp.');
+  var lock=LockService.getScriptLock();lock.waitLock(30000);
+  try {
+    var names=['Quotes','Orders','KeyEntitlements','LicenseMSTs','QuotaLedger','Releases','AdminUIRequests'];
+    names.forEach(function(name){billingTable_(name,['ID','JSON']);});
+    billingPlans_();billingTable_('AdminAudit',['Time','Room','Actor','Command']);
+    billingTable_('UsageDaily',billingUsageColumns_());
+    billingTable_('UsageFeatures',['ID','Hardware ID','Installation ID','Ngày','Tính năng','Kết quả','Giá trị','Đơn vị','Cập nhật']);
+    return {commercial:billingConfig_().commercial,revision:'billing-20261010-v1',tables:names.concat(['Plans','AdminAudit','UsageDaily','UsageFeatures'])};
+  } finally {lock.releaseLock();}
+}
+function billingUsageColumns_() {
+  return ['ID','JSON','Hardware ID','Installation ID','Cập nhật','Số MST','Danh sách MST','Thời gian sử dụng (giây)','Yêu cầu tải hóa đơn','Nhập sao kê thành công','Yêu cầu tra cứu MST','Yêu cầu tải tờ khai','Xuất MISA thành công'];
+}
+function billingUsageSummary_(payload) {
+  var totals={activeSeconds:0,invoice:0,bank:0,lookup:0,declaration:0,replacement:0};
+  Object.keys(payload.counters||{}).forEach(function(key){
+    var m=/^(\d{4}-\d{2}-\d{2}):(.*):(ok|error)$/.exec(key), n=Number(payload.counters[key]);
+    if(!m||m[3]!=='ok'||!isFinite(n)||n<0)return;
+    var f=m[2];
+    if(f==='/api/download')totals.invoice+=n;
+    else if(f==='bank_import')totals.bank+=n;
+    else if(f==='/api/mst/lookup/search')totals.lookup+=n;
+    else if(f==='/api/tokhai/download')totals.declaration+=n;
+    else if(f==='/api/invoice-replacement/export')totals.replacement+=n;
+    else if(f.indexOf('/api/')!==0)totals.activeSeconds+=n;
+  });
+  return totals;
+}
+function billingDataReport_(row,header) {
+  var aliases=[row[optional_(header,'Hardware ID V2')],row[optional_(header,'Machine ID')],row[cell_(header,'Hardware ID')]].filter(Boolean).map(String);
+  var sheet=SpreadsheetApp.getActive().getSheetByName('UsageDaily'),byInstall={};
+  if(sheet) {
+    var data=rows_(sheet),jsonCol=cell_(data.header,'JSON'),idCol=cell_(data.header,'ID');
+    data.values.forEach(function(r){
+      var value;try{value=JSON.parse(String(r[jsonCol]||'null'));}catch{return;}
+      if(!value||aliases.indexOf(String(value.machine))<0)return;
+      var install=String(value.installationId||String(r[idCol]).split(':').slice(1).join(':'));
+      if(!byInstall[install]||Number(value.updatedAt)>Number(byInstall[install].updatedAt))byInstall[install]=value;
+    });
+  }
+  var reports=Object.keys(byInstall).map(function(k){return byInstall[k];}).sort(function(a,b){return Number(b.updatedAt)-Number(a.updatedAt);});
+  var name=String(row[optional_(header,'Name')]||row[optional_(header,'Phone')]||'Khách trong Topic này').slice(0,80);
+  var lines=['📊 DỮ LIỆU & HÀNH VI','👤 '+name];
+  if(!reports.length)return lines.concat(['','Chưa có báo cáo từ EXE mới.','Mở EXE mới: gửi sau 1 phút, rồi mỗi 15 phút.','Chưa có báo cáo không có nghĩa là số liệu bằng 0.']).join('\n');
+  var month=BillingCore().month(Date.now()),latest=reports[0],msts=Array.from(new Set(latest.mst||[]));
+  var empty=function(){return {activeSeconds:0,invoice:0,bank:0,lookup:0,declaration:0,replacement:0};};
+  var total=empty(),current=empty(),features={};
+  reports.forEach(function(v){
+    var counters=v.counters||{},monthly={};
+    Object.keys(counters).forEach(function(k){if(k.slice(0,7)===month)monthly[k]=counters[k];var m=/^(\d{4}-\d{2}-\d{2}):(.*):ok$/.exec(k),n=Number(counters[k]);if(m&&m[2].indexOf('/api/')!==0&&m[2]!=='bank_import'&&isFinite(n)&&n>0)features[m[2]]=(features[m[2]]||0)+n;});
+    var all=billingUsageSummary_(v),one=billingUsageSummary_({counters:monthly});Object.keys(total).forEach(function(k){total[k]+=all[k];current[k]+=one[k];});
+  });
+  var count=function(n){return String(Math.floor(n)).replace(/\B(?=(\d{3})+(?!\d))/g,'.');};
+  var duration=function(n){n=Math.floor(n);return n<60?n+' giây':Math.floor(n/3600)+' giờ '+Math.floor(n%3600/60)+' phút';};
+  lines.push('🗂 MST đang quản lý: '+count(msts.length),'🖥 Bản cài đã báo cáo: '+count(reports.length),'🕒 Cập nhật: '+Utilities.formatDate(new Date(Number(latest.updatedAt)),'Asia/Ho_Chi_Minh','dd/MM/yyyy HH:mm'));
+  if(Date.now()-Number(latest.updatedAt)>30*60*1000)lines.push('⚠️ Báo cáo đã quá 30 phút; máy có thể chưa mở hoặc chưa gửi lại.');
+  if(msts.length)lines.push('MST: '+msts.slice(0,8).join(', ')+(msts.length>8?' … (còn '+(msts.length-8)+' MST)':''));
+  lines.push('','📅 Tháng '+month.slice(5)+'/'+month.slice(0,4)+' / Tổng đã ghi nhận');
+  [['Tải hóa đơn (lượt yêu cầu)','invoice'],['Tra cứu MST (lượt yêu cầu)','lookup'],['Tải tờ khai (lượt yêu cầu)','declaration'],['Nhập sao kê thành công','bank'],['Xuất MISA thành công','replacement']].forEach(function(pair){lines.push('• '+pair[0]+': '+count(current[pair[1]])+' / '+count(total[pair[1]]));});
+  lines.push('• Thời gian tương tác: '+duration(current.activeSeconds)+' / '+duration(total.activeSeconds));
+  var top=Object.keys(features).sort(function(a,b){return features[b]-features[a];}).slice(0,3);
+  var labels={overview:'Tổng quan',invoice:'Hóa đơn',invoices:'Hóa đơn',bank:'Sao kê',goods:'Hàng hóa',partners:'Đối tác',mst:'Tra cứu MST',tokhai:'Tờ khai',replacement:'Thay thế hóa đơn',app:'Ứng dụng'};
+  if(top.length)lines.push('','⭐ Dùng nhiều: '+top.map(function(f){return (labels[f]||f).slice(0,60)+' ('+duration(features[f])+')';}).join(' · '));
+  lines.push('','Lượt yêu cầu ≠ số hóa đơn/tờ khai tải thành công.','Không bao gồm dữ liệu chưa gửi từ EXE.');
+  return lines.join('\n');
+}
+function billingSaveUsage_(input,d,now) {
+  var counters=input.snapshot||{}, keys=Object.keys(counters);
+  if(Array.isArray(counters)||keys.length>3000)throw new Error('Báo cáo không hợp lệ.');
+  keys.forEach(function(k){if(!/^(\d{4}-\d{2}-\d{2}):(.{1,60}):(ok|error)$/.test(k)||!isFinite(Number(counters[k]))||Number(counters[k])<0)throw new Error('Bộ đếm không hợp lệ.');});
+  var install=String(input.installationId), id=d.machine+':'+install;
+  if(input.reportId&&String(input.reportId)!==install)throw new Error('Bản cài không khớp báo cáo.');
+  var msts=Array.from(new Set((input.mst||[]).map(function(m){return String(m).trim();}).filter(function(m){return /^\d{10}(?:-?\d{3})?$/.test(m);})));
+  var payload={machine:d.machine,key:d.key,installationId:install,updatedAt:now,mst:msts,counters:counters};
+  if(JSON.stringify(payload).length>150000)throw new Error('Báo cáo quá lớn.');
+  var summary=billingUsageSummary_(payload),table=billingTable_('UsageDaily',billingUsageColumns_()),record=billingJson_('UsageDaily',id);
+  billingPut_(record,id,payload);
+  record=billingJson_('UsageDaily',id);
+  var values={'Hardware ID':d.machine,'Installation ID':install,'Cập nhật':new Date(now),'Số MST':msts.length,'Danh sách MST':msts.join(', '),'Thời gian sử dụng (giây)':summary.activeSeconds,'Yêu cầu tải hóa đơn':summary.invoice,'Nhập sao kê thành công':summary.bank,'Yêu cầu tra cứu MST':summary.lookup,'Yêu cầu tải tờ khai':summary.declaration,'Xuất MISA thành công':summary.replacement};
+  Object.keys(values).forEach(function(k){table.getRange(record.row,cell_(record.header,k)+1).setValue(values[k]);});
+  var features=billingTable_('UsageFeatures',['ID','Hardware ID','Installation ID','Ngày','Tính năng','Kết quả','Giá trị','Đơn vị','Cập nhật']);
+  var existing=rows_(features), index={};existing.values.forEach(function(r,i){index[String(r[0])]=i+2;});
+  keys.forEach(function(k){var m=/^(\d{4}-\d{2}-\d{2}):(.*):(ok|error)$/.exec(k),fid=id+':'+k;
+    var row=[fid,d.machine,install,m[1],m[2],m[3],Number(counters[k]),m[2].indexOf('/api/')!==0&&m[2]!=='bank_import'?'giây':'lượt',new Date(now)];
+    if(index[fid])features.getRange(index[fid],1,1,row.length).setValues([row]);else features.appendRow(row);
+  });
+  return {saved:true,mstCount:msts.length};
+}
+function billingPlans_() {
+  var s=billingTable_('Plans',['Plan ID','Max MST','Monthly Price']);
+  if(s.getLastRow()<2) BillingCore().defaults.forEach(function(p){s.appendRow([p.id,p.maxMst,p.price]);});
+  var d=rows_(s); return d.values.map(function(r){return {id:String(r[cell_(d.header,'Plan ID')]),maxMst:Number(r[cell_(d.header,'Max MST')]),price:Number(r[cell_(d.header,'Monthly Price')])};});
+}
+function billingJson_(name, id) {
+  var s=billingTable_(name,['ID','JSON']), d=rows_(s), i=find_(d.values,cell_(d.header,'ID'),id);
+  return {sheet:s, row:i<0?0:i+2, value:i<0?null:JSON.parse(String(d.values[i][cell_(d.header,'JSON')]||'null')),header:d.header};
+}
+function billingPut_(record,id,value) {
+  if(record.row) record.sheet.getRange(record.row,cell_(record.header,'JSON')+1).setValue(JSON.stringify(value));
+  else appendMapped_(record.sheet,{'ID':id,'JSON':JSON.stringify(value)});
+}
+function billingDevice_(input) {
+  var d=rows_(deviceSheet_()), f=findDevice_(d,input);
+  if(f.index<0) throw new Error('Thiết bị chưa đăng ký.');
+  var r=d.values[f.index], storedHardware=String(r[optional_(d.header,'Hardware ID V2')]||'');
+  if(input.hardwareIdV2&&storedHardware&&String(input.hardwareIdV2)!==storedHardware)throw new Error('Phần cứng thay đổi; cần Admin xác minh.');
+  var machine=storedHardware||String(input.machineId||r[optional_(d.header,'Machine ID')]||r[cell_(d.header,'Hardware ID')]||'');
+  if(String(r[cell_(d.header,'Chat Room ID')]||'')!==String(input.chatRoomId||''))throw new Error('Thiết bị không khớp phiên hỗ trợ.');
+  var key=String(r[cell_(d.header,'License Key')]||'');
+  if(String(r[cell_(d.header,'Status')]).toLowerCase()==='locked') throw new Error('Thiết bị đã bị khóa.');
+  return {machine:machine,key:key,row:f.index+2,header:d.header,firstInstall:r[optional_(d.header,'First Install Time')]};
+}
+function billingEntitlement_(key) {
+  return key&&SpreadsheetApp.getActive().getSheetByName('KeyEntitlements')?billingJson_('KeyEntitlements',key).value:null;
+}
+function billingAttach_(result,input) {
+  result.billing=billingConfig_();
+  result.entitlement=billingEntitlement_(result.keyName||'');
+  return result;
+}
+function billingAdminResult_(result,input) {
+  var s=deviceSheet_(),d=rows_(s),i=find_(d.values,cell_(d.header,'Chat Room ID'),input.chatRoomId);
+  if(i<0)return result;
+  var current=deviceResult_(d.values[i],d.header), key=current.keyName;
+  var cmd=String(input.text||input.command||'');
+  if(/^\/extend\b/.test(cmd)&&key) {
+    d.values.forEach(function(r,index){if(String(r[cell_(d.header,'License Key')])===key){s.getRange(index+2,cell_(d.header,'Expiry Date')+1).setValue(current.expiryAt);s.getRange(index+2,cell_(d.header,'Status')+1).setValue('Active');}});
+  }
+  result=Object.assign({},result,current);
+  result.billing=billingConfig_();result.entitlement=billingEntitlement_(key);
+  result.release=billingJson_('Releases','current').value;
+  result.affectedRooms=d.values.filter(function(r){return key&&String(r[cell_(d.header,'License Key')])===key;}).map(function(r){return String(r[cell_(d.header,'Chat Room ID')]);});
+  return result;
+}
+function billingAction_(input) {
+  var lock=LockService.getScriptLock(); lock.waitLock(30000);
+  try { return billingActionLocked_(input); } finally { lock.releaseLock(); }
+}
+function billingActionLocked_(input) {
+  var action=String(input.billingAction||''), c=billingConfig_(), core=BillingCore(), now=Date.now();
+  if(action==='config') return {config:c,release:billingJson_('Releases','current').value};
+  var d=billingDevice_(input), ent=billingEntitlement_(d.key);
+  if(action==='quote') {
+    if(!c.commercial) throw new Error('Hiện đang sử dụng miễn phí.');
+    var q=core.quote(input,c.plans); q.owner=d.machine; q.createdAt=now;q.validUntil=now+86400000;
+    q.periodFullPrice=q.total;
+    if(input.upgrade) { if(!ent) throw new Error('Key chưa có gói để nâng cấp.'); q.upgrade=true;q.total=core.upgrade(ent,q,now);q.entitlementRevision=ent.revision; }
+    var id='Q-'+Utilities.getUuid();billingPut_(billingJson_('Quotes',id),id,q);return {quoteId:id,quote:q};
+  }
+  if(action==='order') {
+    var qr=billingJson_('Quotes',String(input.quoteId)), q=qr.value;
+    if(!q||q.validUntil<now) throw new Error('Báo giá đã hết hiệu lực.');
+    if(q.owner&&q.owner!==d.machine) throw new Error('Báo giá không thuộc thiết bị.');
+    // Legacy quotes created before owner support are rejected, never adopted.
+    if(!q.owner) throw new Error('Vui lòng lấy báo giá mới.');
+    var id='O-'+String(input.quoteId).slice(2), existing=billingJson_('Orders',id);
+    if(existing.value) return existing.value;
+    var o={id:id,machine:d.machine,key:d.key,room:input.chatRoomId,quote:q,status:'pending',createdAt:now};
+    billingPut_(existing,id,o);return o;
+  }
+  if(action==='orders'||action==='cancel') {
+    var table=billingTable_('Orders',['ID','JSON']), all=rows_(table).values.map(function(r){return JSON.parse(String(r[1]));}).filter(function(o){return o.machine===d.machine;});
+    if(action==='orders')return all.slice(-30);
+    var item=all.find(function(o){return o.id===input.orderId;});if(!item||item.status!=='pending')throw new Error('Yêu cầu không thể hủy.');
+    item.status='cancelled';billingPut_(billingJson_('Orders',item.id),item.id,item);return item;
+  }
+  if(action==='usage') {
+    return billingSaveUsage_(input,d,now);
+  }
+  if(!c.commercial)return {allowed:true};
+  var license=licenseStatus_(input), initial=!license.keyName&&now<Math.max(Number(new Date(c.launchAt||0)),Number(new Date(d.firstInstall||c.launchAt||0)))+30*86400000;
+  var active=String(license.status).toLowerCase()==='active';
+  if(initial||active&&!ent)return {allowed:true};
+  var basic=!active, owner=basic?d.machine:d.key;
+  if(action==='mst_use'||action==='mst_select') {
+    var mst=String(input.mst||'').replace(/-/g,'');if(!/^\d{10}(\d{3})?$/.test(mst))throw new Error('MST không hợp lệ.');
+    var r=billingJson_('LicenseMSTs',owner), value=r.value||{mst:[],changes:0};
+    if(basic) {
+      if(!value.selectedMst)value.selectedMst=mst;
+      else if(value.selectedMst!==mst) {if(action!=='mst_select')throw new Error('Chọn MST được phép trong danh sách tài khoản trước.');if(value.changes>=3)throw new Error('Đã dùng hết 3 lần đổi MST. Liên hệ Admin.');value.changes++;value.selectedMst=mst;}
+      value.mst=[mst];
+    } else {
+      if(value.mst.length>ent.maxMst)throw new Error('Gói đã giảm; cần Admin chọn lại danh sách MST.');
+      if(value.mst.indexOf(mst)<0) {if(value.mst.length>=ent.maxMst)throw new Error('Đã hết suất MST; liên hệ Admin nâng gói hoặc thay MST.');value.mst.push(mst);}
+    }
+    billingPut_(r,owner,value);return {allowed:true,selectedMst:value.selectedMst||'',changes:value.changes,mst:value.mst};
+  }
+  if(action.indexOf('quota_')===0) {
+    if(!basic)return {ticket:'unlimited'};
+    var record=billingJson_('QuotaLedger',owner), ledger=record.value||{}, ticket=String(input.ticket||'');
+    if(action==='quota_reserve') {
+      var kind=String(input.kind);if(['bank','replacement'].indexOf(kind)<0)throw new Error('Loại hạn mức không hợp lệ.');
+      var period=core.month(now), bucket=kind+':'+period, hash=String(input.fingerprint||'');
+      if(!/^[a-f0-9]{64}$/.test(hash))throw new Error('Dấu nhận diện file không hợp lệ.');
+      ticket=bucket+':'+hash;
+      if(ledger[ticket]&&ledger[ticket].state==='committed')return {ticket:ticket};
+      var count=Object.keys(ledger).filter(function(k){return k.indexOf(bucket+':')===0&&(ledger[k].state==='committed'||ledger[k].until>now);}).length;
+      if(count>=(kind==='bank'?2:1)&&!(ledger[ticket]&&ledger[ticket].until>now))throw new Error('Đã hết lượt '+(kind==='bank'?'sao kê tháng này.':'xuất MISA tháng này.'));
+      ledger[ticket]={state:'reserved',until:now+30*60000};
+    } else {
+      if(ticket==='unlimited')return {ok:true};
+      if(!ledger[ticket])throw new Error('Lượt giữ chỗ không tồn tại.');
+      if(action==='quota_commit')ledger[ticket]={state:'committed',at:now};
+      else if(action==='quota_release'&&ledger[ticket].state!=='committed')delete ledger[ticket];
+      else if(action!=='quota_release')throw new Error('Thao tác không hợp lệ.');
+    }
+    billingPut_(record,owner,ledger);return {ticket:ticket};
+  }
+  throw new Error('Thao tác chưa hỗ trợ.');
+}
+function billingAdmin_(input) {
+  var text=String(input.text||input.command||''), parts=text.trim().split(/\s+/), cmd=parts[0].toLowerCase().replace(/@\w+$/,'');
+  if(['/commerce','/plans','/orders','/approve','/reject','/newplan','/setplan','/usage','/checkdulieu','/mst','/replace_mst','/reset_mst_changes','/release','/release_preview'].indexOf(cmd)<0)return null;
+  var lock=LockService.getScriptLock();lock.waitLock(30000);
+  try {
+    var ds=rows_(deviceSheet_()), idx=find_(ds.values,cell_(ds.header,'Chat Room ID'),input.chatRoomId);
+    if(idx<0)throw new Error('Không tìm thấy thiết bị.');
+    var uiReceipt=null;
+    if(input.requestId&&['/newplan','/setplan','/commerce','/approve','/reject','/replace_mst','/reset_mst_changes','/release'].indexOf(cmd)>=0) {
+      var uiId=String(input.chatRoomId)+'|'+String(input.requestId).slice(0,200);
+      uiReceipt=billingJson_('AdminUIRequests',uiId);
+      if(uiReceipt.value)throw new Error('Thao tác này đã được xử lý. Mở menu mới để thực hiện yêu cầu khác.');
+    }
+    var row=ds.values[idx], key=String(row[cell_(ds.header,'License Key')]||''), machine=String(row[optional_(ds.header,'Hardware ID V2')]||row[optional_(ds.header,'Machine ID')]||row[cell_(ds.header,'Hardware ID')]);
+    if(input.expectedKey!==undefined&&key!==String(input.expectedKey))throw new Error('Key đã thay đổi. Mở lại menu và kiểm tra khách.');
+    var reply='',menuOrders=null,menuRelease=null;
+    if(cmd==='/commerce') {
+      if(['on','off'].indexOf(parts[1])<0)throw new Error('/commerce on|off');
+      var c=billingConfig_();c.commercial=parts[1]==='on';c.revision=Number(c.revision||0)+1;
+      if(c.commercial&&!c.launchAt)c.launchAt=new Date().toISOString();
+      delete c.plans;PropertiesService.getScriptProperties().setProperty('BILLING_CONFIG',JSON.stringify(c));reply=c.commercial?'Đã công bố thương mại.':'Đã bật miễn phí toàn bộ.';
+    } else if(cmd==='/plans') reply=billingPlans_().map(function(p){return p.id+': '+p.maxMst+' MST / '+p.price+'đ/tháng';}).join('\n');
+    else if(cmd==='/orders') {
+      var orders=rows_(billingTable_('Orders',['ID','JSON'])).values.map(function(r){return JSON.parse(r[1]);}).filter(function(o){return o.room===input.chatRoomId;});
+      menuOrders=orders.filter(function(o){return o.status==='pending';}).slice(-10).map(function(o){return {id:o.id,planId:o.quote.planId,devices:o.quote.devices,term:o.quote.term,total:o.quote.total};});
+      reply=orders.slice(-10).map(function(o){return o.id+' '+o.quote.planId+' '+o.quote.devices+' máy '+o.quote.term+' '+o.quote.total+'đ '+o.status;}).join('\n')||'Chưa có yêu cầu.';
+    } else if(cmd==='/approve'||cmd==='/reject') {
+      var rec=billingJson_('Orders',parts[1]), o=rec.value;
+      if(!o||o.room!==input.chatRoomId)throw new Error('Yêu cầu không thuộc Topic này.');
+      if(o.status!=='pending')return {reply:'Yêu cầu đã được xử lý: '+o.status};
+      if(cmd==='/reject'){o.status='rejected';billingPut_(rec,o.id,o);reply='Đã từ chối '+o.id;}
+      else {
+        if(parts[2]!=='paid')throw new Error('Xác nhận đã nhận tiền: /approve '+o.id+' paid');
+        var q=o.quote, old=billingEntitlement_(o.key), start=Date.now(), expiry;
+        if(q.upgrade){if(!old||old.revision!==q.entitlementRevision)throw new Error('Key đã thay đổi; cần báo giá mới.');if(new Date(old.expiryAt)<=new Date())throw new Error('Key đã hết hạn; cần báo giá mới.');expiry=old.expiryAt;}
+        else {start=Math.max(start,old?Number(new Date(old.expiryAt)):0);expiry=BillingCore().addMonths(start,q.months);}
+        key=o.key||'KEY-'+Utilities.getUuid().replace(/-/g,'').slice(0,16).toUpperCase();
+        billingGrant_(key,input.chatRoomId,q,expiry,q.upgrade?old.periodStart:new Date(start).toISOString(),q.periodFullPrice);
+        o.status='approved';o.key=key;o.approvedAt=Date.now();billingPut_(rec,o.id,o);reply='Đã xác nhận '+o.id+'\nKey: '+key+'\nHạn: '+expiry;
+      }
+    } else if(cmd==='/newplan'||cmd==='/setplan') {
+      var p=billingPlans_().find(function(p){return p.id===String(parts[1]).toUpperCase();});if(!p)throw new Error('Gói không hợp lệ.');
+      var devices=BillingCore().integer(parts[3]||1,1,100), days=BillingCore().integer(parts[2]||30,1,3650), expiry=new Date(Date.now()+days*86400000).toISOString();
+      if(cmd==='/newplan')key='KEY-'+Utilities.getUuid().replace(/-/g,'').slice(0,16).toUpperCase();else if(!key)throw new Error('Thiết bị chưa có key.');
+      billingGrant_(key,input.chatRoomId,{planId:p.id,maxMst:p.maxMst,devices:devices,term:'custom'},expiry,new Date().toISOString(),0);reply='Key: '+key+'\nGói: '+p.id+'\nHạn: '+expiry;
+    } else if(cmd==='/mst'||cmd==='/replace_mst'||cmd==='/reset_mst_changes') {
+      var owner=key&&billingEntitlement_(key)?key:machine, r=billingJson_('LicenseMSTs',owner), v=r.value||{mst:[],changes:0};
+      if(cmd==='/replace_mst'){var old=String(parts[1]||''), next=String(parts[2]||'').replace(/-/g,'');if(!/^\d{10}(\d{3})?$/.test(next)||v.mst.indexOf(old)<0||v.mst.indexOf(next)>=0)throw new Error('/replace_mst <MST cũ> <MST mới>');v.mst[v.mst.indexOf(old)]=next;if(v.selectedMst===old)v.selectedMst=next;}
+      if(cmd==='/reset_mst_changes')v.changes=0;
+      billingPut_(r,owner,v);reply='MST: '+v.mst.join(', ')+'\nSố lần đổi: '+v.changes;
+    } else if(cmd==='/usage'||cmd==='/checkdulieu') {
+      reply=billingDataReport_(row,ds.header);
+    } else if(cmd==='/release_preview') {
+      menuRelease=billingJson_('Releases','draft').value;
+      reply=menuRelease?'BẢN NHÁP CẬP NHẬT\nv'+menuRelease.version+'\n'+menuRelease.notes+'\nChưa công bố.':'Chưa có bản nháp cập nhật.';
+    } else if(cmd==='/release') {
+      if(parts[1]==='off'){billingPut_(billingJson_('Releases','current'),'current',{published:false});reply='Đã thu hồi cập nhật.';}
+      else if(parts[1]==='publish'){var draft=billingJson_('Releases','draft').value;if(!draft)throw new Error('Chưa có bản nháp.');if(input.expectedDraftAt!==undefined&&Number(input.expectedDraftAt)!==Number(draft.at))throw new Error('Bản nháp đã thay đổi. Xem lại trước khi công bố.');draft.published=true;billingPut_(billingJson_('Releases','current'),'current',draft);reply='Đã công bố v'+draft.version+'\n'+draft.notes;}
+      else {var version=parts[1];if(!/^\d+\.\d+\.\d+$/.test(version))throw new Error('/release <phiên bản> <nội dung>');var notes=parts.slice(2).join(' ');if(!notes)throw new Error('Cần nội dung cập nhật.');var value={version:version,notes:notes.slice(0,4000),published:false,at:Date.now()};billingPut_(billingJson_('Releases','draft'),'draft',value);reply='Bản nháp v'+version+'\n'+value.notes+'\nCông bố: /release publish';}
+    }
+    var audit=billingTable_('AdminAudit',['Time','Room','Actor','Command']);audit.appendRow([new Date(),input.chatRoomId,String(input.actor||''),text]);
+    var result={...deviceResult_(rows_(deviceSheet_()).values[idx],ds.header),reply:reply,billing:billingConfig_(),release:billingJson_('Releases','current').value,entitlement:billingEntitlement_(key),affectedRooms:rows_(deviceSheet_()).values.filter(function(r){return key&&String(r[cell_(ds.header,'License Key')])===key;}).map(function(r){return String(r[cell_(ds.header,'Chat Room ID')]);})};
+    if(menuOrders)result.menuOrders=menuOrders;
+    if(cmd==='/release_preview')result.menuRelease=menuRelease;
+    if(uiReceipt)billingPut_(uiReceipt,uiId,result);
+    return result;
+  } finally {lock.releaseLock();}
+}
+function billingGrant_(key,room,q,expiry,start,price) {
+  var s=licenseSheet_(),d=rows_(s),i=find_(d.values,cell_(d.header,'License Key'),key);
+  var fields={'License Key':key,'Status':'Active','Expiry Date':new Date(expiry),'Chat Room ID':room,'Max Devices':q.devices};
+  if(i<0)appendMapped_(s,fields);else Object.keys(fields).forEach(function(k){s.getRange(i+2,cell_(d.header,k)+1).setValue(fields[k]);});
+  var old=billingEntitlement_(key), ent={planId:q.planId,maxMst:q.maxMst,devices:q.devices,term:q.term,expiryAt:expiry,periodStart:start,periodPrice:price,revision:(old?old.revision:0)+1};
+  billingPut_(billingJson_('KeyEntitlements',key),key,ent);
+  var ds=deviceSheet_(),data=rows_(ds);
+  data.values.forEach(function(r,i){if(String(r[cell_(data.header,'License Key')])===key||String(r[cell_(data.header,'Chat Room ID')])===room){ds.getRange(i+2,cell_(data.header,'License Key')+1).setValue(key);ds.getRange(i+2,cell_(data.header,'Status')+1).setValue('Active');ds.getRange(i+2,cell_(data.header,'Expiry Date')+1).setValue(new Date(expiry));}});
+}
+function billingHardware_(input) {
+  if(!input.hardwareIdV2)return;
+  var sheet=deviceSheet_();ensureColumns_(sheet,['Hardware ID V2']);
+  var data=rows_(sheet), f=findDevice_(data,input);if(f.index<0)return;
+  var col=cell_(data.header,'Hardware ID V2'), old=String(data.values[f.index][col]||'');
+  if(old&&old!==input.hardwareIdV2)throw new Error('Phần cứng thay đổi; cần Admin xác minh.');
+  sheet.getRange(f.index+2,col+1).setValue(input.hardwareIdV2);
 }

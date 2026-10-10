@@ -234,7 +234,7 @@ test('banner dòng MST: có đủ trạng thái đang chạy / xong / trống / 
   const start = renderer.indexOf('function syncBanner(');
   assert.ok(start > -1, 'phải có hàm syncBanner');
   const body = renderer.slice(start, renderer.indexOf('\n}', start));
-  for (const need of ['Đang tải', 'Đang tra cứu', 'Xong', 'Không có HĐ mới', 'Lỗi']) {
+  for (const need of ['Đang đồng bộ', 'Đã đồng bộ', 'Không có HĐ mới', 'Lỗi']) {
     assert.ok(body.includes(need), `banner phải có trạng thái "${need}"`);
   }
   // Trạng thái CUỐI phải kèm MỐC THỜI GIAN đã ghi trong sync.json. Mốc này được ghi lại mỗi lượt

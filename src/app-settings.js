@@ -71,7 +71,7 @@
     const hasKey = String(license.keyName || license.key || '').trim();
     q('license-expired').hidden = true;
     const commercial=license.billing?.commercial===true;
-    document.querySelectorAll('.support-license-activate').forEach(element=>{element.hidden=!commercial;});
+    document.querySelectorAll('.support-license').forEach(element=>{element.hidden=!commercial;});
     q('settings-license-form').hidden=!commercial;q('open-plans').hidden=true;q('main-license-badge').hidden=!commercial;
     q('settings-tab-license').textContent=commercial?'Bản quyền & Gói':'Thông tin ứng dụng';
     q('license-current-key').parentElement.hidden=!commercial;

@@ -4,11 +4,16 @@
 
 ## Tải và cài đặt
 
-Vào [bản phát hành mới nhất](https://github.com/Datkep92/HoaDonNhe/releases/latest), chọn file **CN-Tax-Tools-Setup-v…exe** trong mục Assets rồi chạy bộ cài. Có thể cài vào Windows hoặc chọn Portable để dùng trong một thư mục riêng.
+**Người dùng mới: ưu tiên Windows Setup Script.**
 
-Yêu cầu Windows **64 bit**, có Google Chrome hoặc Microsoft Edge và kết nối Internet khi đăng nhập, tải dữ liệu hoặc sử dụng AI. Không cần cài Node.js, npm, Python hay công cụ dòng lệnh.
+1. **[Windows Setup Script — Khuyên dùng](https://github.com/Datkep92/HoaDonNhe/releases/download/v1.4.0/CNTaxTools-Windows-Setup-Script-KhuyenDung-v1.4.0.zip)**: giải nén toàn bộ ZIP, mở cai-dat-giao-dien.vbs, bấm Cài đặt. Tự chọn Windows x64/ARM64; không cần cài Node.js.
+2. **[Windows Setup EXE — Dự phòng](https://github.com/Datkep92/HoaDonNhe/releases/download/v1.4.0/CNTaxTools-Windows-Setup-EXE-DuPhong-v1.4.0.exe)**: dùng nếu không cài được bằng script. Hai cách dùng cùng chương trình và dữ liệu.
 
-Mở ứng dụng, thêm mã số thuế, đăng nhập cổng thuế và chọn kỳ cần làm việc. Khi đóng cửa sổ, ứng dụng có thể tiếp tục chạy ở khay hệ thống; mở lại qua biểu tượng hoặc chọn Thoát hoàn toàn khi muốn kết thúc.
+Cài lại vào cùng thư mục để dùng tiếp dữ liệu. Khi chuyển từ bản EXE cũ, hoàn tất công việc rồi chọn đúng thư mục du_lieu có accounts.json; nguồn cũ được giữ lại.
+
+Bản EXE cũ vẫn dùng chức năng cập nhật trong ứng dụng hoặc bộ CN-Tax-Tools-Setup-v1.4.0.exe. Không gỡ bản cũ và xóa dữ liệu trước khi nâng cấp.
+
+Cần Windows 10/11 64-bit và Google Chrome hoặc Microsoft Edge. Script chưa có nghĩa là được ký Authenticode; Windows hoặc phần mềm bảo vệ vẫn có thể cảnh báo.
 
 ## Các chức năng
 
@@ -41,11 +46,11 @@ File mới được tạo trong thư mục riêng. Thao tác ghi cần xác nh�
 
 ## Cập nhật và sao lưu
 
-Từ v1.1.7, khi phát hiện bản mới, ứng dụng hiển thị **Có gì mới**. Bấm **Cập nhật** hoặc click bên ngoài thông báo để bắt đầu. Công việc đang chạy cần hoàn tất hoặc lưu trước khi thay chương trình; lỗi tải sẽ giữ phiên bản cũ và cho thử lại.
+Thông báo cập nhật hiển thị nội dung thay đổi để đọc trước khi cài. Bạn có thể chọn Để sau, dấu × hoặc Esc để tiếp tục làm việc; mở lại thông báo bằng nút Cập nhật ở cuối thanh bên. Chỉ bấm Cập nhật khi muốn bắt đầu tải và cài.
 
-Từ v1.1.8, ứng dụng kiểm tra bản mới mỗi 15 phút ngay cả khi đã đóng giao diện và vẫn chạy trong khay hệ thống. Có bản mới sẽ hiện thông báo Windows; bấm thông báo để mở nội dung cập nhật. Nếu mất mạng, ứng dụng thử lại sau 5 phút. Windows có thể ẩn thông báo khi bật chế độ Không làm phiền; nội dung cập nhật vẫn hiện khi mở giao diện.
+Với bản cài script, tải bộ Windows Setup Script mới và cài lại vào cùng thư mục để dùng tiếp dữ liệu. Bản EXE cũ vẫn có EXE cập nhật tương thích trên trang phát hành.
 
-Cơ chế này có hiệu lực trong phiên bản đã nâng cấp. Các bản cũ có cách cập nhật riêng; nếu không nâng cấp được trong ứng dụng, tải bộ cài mới từ GitHub. Giữ bản sao thư mục dữ liệu trước khi chuyển máy hoặc thực hiện thao tác quan trọng. Không chia sẻ thư mục dữ liệu chứa thông tin doanh nghiệp và phiên đăng nhập.
+Giữ bản sao thư mục dữ liệu trước khi chuyển máy hoặc nâng cấp quan trọng. Không gỡ ứng dụng và xóa dữ liệu trước khi nâng cấp. Không chia sẻ thư mục chứa phiên đăng nhập, mật khẩu hoặc dữ liệu doanh nghiệp.
 
 ## Hỗ trợ
 

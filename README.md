@@ -4,16 +4,11 @@
 
 ## Tải và cài đặt
 
-**Người dùng mới: ưu tiên Windows Setup Script.**
+Tải **[CNTaxTools-Setup-v1.8.2.exe](https://github.com/Datkep92/HoaDonNhe/releases/download/v1.8.2/CNTaxTools-Setup-v1.8.2.exe)** rồi chạy bộ cài. Có sẵn giao diện, Node x86, OCR và thư viện thông thường; lần cài đầu cần mạng để tải thêm phần xử lý đã ký vào Engine riêng, ẩn. Không cần cài Node hoặc giải nén ZIP/script.
 
-1. **[Windows Setup Script — Khuyên dùng](https://github.com/Datkep92/HoaDonNhe/releases/download/v1.4.0/CNTaxTools-Windows-Setup-Script-KhuyenDung-v1.4.0.zip)**: giải nén toàn bộ ZIP, mở cai-dat-giao-dien.vbs, bấm Cài đặt. Tự chọn Windows x64/ARM64; không cần cài Node.js.
-2. **[Windows Setup EXE — Dự phòng](https://github.com/Datkep92/HoaDonNhe/releases/download/v1.4.0/CNTaxTools-Windows-Setup-EXE-DuPhong-v1.4.0.exe)**: dùng nếu không cài được bằng script. Hai cách dùng cùng chương trình và dữ liệu.
+Người dùng 1.7.0 có thể cập nhật trong ứng dụng. Giữ thư mục dữ liệu đang dùng; khi đổi vị trí, chọn đúng du_lieu chứa accounts.json. Không tự gộp hai kho. Gỡ/cài lại giữ dữ liệu và cookie.
 
-Cài lại vào cùng thư mục để dùng tiếp dữ liệu. Khi chuyển từ bản EXE cũ, hoàn tất công việc rồi chọn đúng thư mục du_lieu có accounts.json; nguồn cũ được giữ lại.
-
-Bản EXE cũ vẫn dùng chức năng cập nhật trong ứng dụng hoặc bộ CN-Tax-Tools-Setup-v1.4.0.exe. Không gỡ bản cũ và xóa dữ liệu trước khi nâng cấp.
-
-Cần Windows 10/11 64-bit và Google Chrome hoặc Microsoft Edge. Script chưa có nghĩa là được ký Authenticode; Windows hoặc phần mềm bảo vệ vẫn có thể cảnh báo.
+Đã kiểm EXE/Engine x86 trên Windows x64; chưa kiểm Windows 32-bit thật. Cần Chrome hoặc Edge. EXE chưa có chứng thư Windows Authenticode; Engine có chữ ký kiểm toàn vẹn. [Ghi chú và giới hạn 1.8.2](https://github.com/Datkep92/HoaDonNhe/releases/tag/v1.8.2).
 
 ## Các chức năng
 
@@ -21,7 +16,7 @@ Cần Windows 10/11 64-bit và Google Chrome hoặc Microsoft Edge. Script chưa
 - **Nhiều doanh nghiệp:** quản lý danh sách MST, phiên đăng nhập và tiến độ đồng bộ riêng.
 - **Hàng hóa và đối tác:** tổng hợp từ hóa đơn, lọc theo kỳ và xuất Excel riêng cho từng tab.
 - **Sao kê ngân hàng:** nhập file được hỗ trợ, phân loại giao dịch và đối chiếu với hóa đơn. Kiểm tra kết quả nhận diện trước khi sử dụng.
-- **Tổng quan và hỗ trợ kế toán:** xem doanh thu, chi phí, dòng tiền, công nợ, các chứng từ cần kiểm tra; tổng hợp quý phục vụ kê khai GTGT và xuất PDF.
+- **Tổng quan và Tổng hợp GTGT:** thống nhất số tiền với Dữ liệu, kết hợp XML và dữ liệu cục thuế khi chưa có XML, tách ngoại tệ và cảnh báo tiền thuế còn thiếu. Tổng hợp GTGT/Excel giữ phần lẻ và ghi phần chưa phân loại theo suất; đây là bảng đối chiếu, chưa phải tờ khai đã chốt.
 - **Tra cứu MST:** nhập danh sách hoặc lấy MST nhà cung cấp/người mua từ dữ liệu đã lưu, chọn các đối tác cần kiểm tra và xuất kết quả.
 - **Tờ khai:** đăng nhập, đồng bộ phiên web khi cần và tải tờ khai theo điều kiện hỗ trợ.
 - **Thay thế hóa đơn hàng loạt:** nhận hai file Excel, kiểm tra nhận diện cột, đối chiếu thuế suất và xuất theo mẫu MISA. File xuất để nhập vào MISA, **chưa phải hóa đơn đã phát hành**. Cần kiểm tra trên phiên bản MISA đang dùng. Với phần mềm khác, gửi mẫu file cho Admin để đánh giá hỗ trợ.
@@ -48,7 +43,7 @@ File mới được tạo trong thư mục riêng. Thao tác ghi cần xác nh�
 
 Thông báo cập nhật hiển thị nội dung thay đổi để đọc trước khi cài. Bạn có thể chọn Để sau, dấu × hoặc Esc để tiếp tục làm việc; mở lại thông báo bằng nút Cập nhật ở cuối thanh bên. Chỉ bấm Cập nhật khi muốn bắt đầu tải và cài.
 
-Với bản cài script, tải bộ Windows Setup Script mới và cài lại vào cùng thư mục để dùng tiếp dữ liệu. Bản EXE cũ vẫn có EXE cập nhật tương thích trên trang phát hành.
+Dùng bộ cài EXE của phiên bản mới hoặc nút Cập nhật trong ứng dụng; tiếp tục dùng đúng thư mục dữ liệu cũ. Các ZIP/script lịch sử vẫn được giữ trên GitHub nhưng không phải bộ cài được khuyên dùng cho phiên bản này.
 
 Giữ bản sao thư mục dữ liệu trước khi chuyển máy hoặc nâng cấp quan trọng. Không gỡ ứng dụng và xóa dữ liệu trước khi nâng cấp. Không chia sẻ thư mục chứa phiên đăng nhập, mật khẩu hoặc dữ liệu doanh nghiệp.
 

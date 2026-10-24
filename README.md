@@ -4,11 +4,11 @@
 
 ## Tải và cài đặt
 
-Tải **[CNTaxTools-Setup-v1.8.2.exe](https://github.com/Datkep92/HoaDonNhe/releases/download/v1.8.2/CNTaxTools-Setup-v1.8.2.exe)** rồi chạy bộ cài. Có sẵn giao diện, Node x86, OCR và thư viện thông thường; lần cài đầu cần mạng để tải thêm phần xử lý đã ký vào Engine riêng, ẩn. Không cần cài Node hoặc giải nén ZIP/script.
+Tải **[CNTaxTools-Setup-v1.8.3.exe](https://github.com/Datkep92/HoaDonNhe/releases/download/v1.8.3/CNTaxTools-Setup-v1.8.3.exe)** rồi chạy bộ cài. Có sẵn giao diện, Node x86, OCR và thư viện thông thường; lần cài đầu cần mạng để tải thêm phần xử lý đã ký vào Engine riêng, ẩn. Không cần cài Node hoặc giải nén ZIP/script.
 
-Người dùng 1.7.0 có thể cập nhật trong ứng dụng. Giữ thư mục dữ liệu đang dùng; khi đổi vị trí, chọn đúng du_lieu chứa accounts.json. Không tự gộp hai kho. Gỡ/cài lại giữ dữ liệu và cookie.
+Bản 1.8.3 sửa lỗi cập nhật từ bộ cài 1.7 xong vẫn mở lại bản cũ do đọc sai tệp chọn thư mục dữ liệu. Người dùng 1.7.0 có thể cập nhật trong ứng dụng. Giữ thư mục dữ liệu đang dùng; khi đổi vị trí, chọn đúng du_lieu chứa accounts.json. Không tự gộp hai kho. Gỡ/cài lại giữ dữ liệu và cookie.
 
-Đã kiểm EXE/Engine x86 trên Windows x64; chưa kiểm Windows 32-bit thật. Cần Chrome hoặc Edge. EXE chưa có chứng thư Windows Authenticode; Engine có chữ ký kiểm toàn vẹn. [Ghi chú và giới hạn 1.8.2](https://github.com/Datkep92/HoaDonNhe/releases/tag/v1.8.2).
+Đã kiểm EXE/Engine x86 trên Windows x64; chưa kiểm Windows 32-bit thật. Cần Chrome hoặc Edge. EXE chưa có chứng thư Windows Authenticode; Engine có chữ ký kiểm toàn vẹn. [Ghi chú và giới hạn 1.8.3](https://github.com/Datkep92/HoaDonNhe/releases/tag/v1.8.3).
 
 ## Các chức năng
 
